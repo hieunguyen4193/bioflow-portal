@@ -18,6 +18,7 @@ PIPELINE_REGISTRY = {
             {"key": "max_features", "label": "Max features per cell",  "type": "int",   "default": 5000},
             {"key": "max_mt_pct",   "label": "Max % mitochondrial",    "type": "float", "default": 20},
             {"key": "sample_name",  "label": "Sample name",            "type": "str",   "default": "sample"},
+            {"key": "remove_TCR_genes", "label": "Reomove TCR genes",  "type": "bool",   "default": False}  
         ],
     },
 }

@@ -12,13 +12,7 @@ export default function SubmitJobPage() {
   const { data: pipelines = [] } = useQuery({ queryKey: ['pipelines'], queryFn: listPipelines })
   const [selectedPipeline, setSelectedPipeline] = useState('seurat_from_10x')
   const [files, setFiles] = useState<File[]>([])
-  const [params, setParams] = useState<Record<string, string>>({
-    sample_name: 'sample',
-    min_cells: '3',
-    min_features: '200',
-    max_features: '5000',
-    max_mt_pct: '20',
-  })
+  const [params, setParams] = useState<Record<string, string>>({})
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
 
@@ -130,13 +124,24 @@ export default function SubmitJobPage() {
               {currentPipeline.params.map((p: any) => (
                 <div key={p.key}>
                   <label className="block text-xs font-medium mb-1">{p.label}</label>
-                  <input
-                    type={p.type === 'str' ? 'text' : 'number'}
-                    step={p.type === 'float' ? '0.1' : '1'}
-                    value={params[p.key] ?? p.default}
-                    onChange={(e) => setParams((prev) => ({ ...prev, [p.key]: e.target.value }))}
-                    className="w-full border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  />
+                  {p.type === 'bool' ? (
+                    <select
+                      value={String(params[p.key] ?? p.default)}
+                      onChange={(e) => setParams((prev) => ({ ...prev, [p.key]: e.target.value }))}
+                      className="w-full border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option value="true">True</option>
+                      <option value="false">False</option>
+                    </select>
+                  ) : (
+                    <input
+                      type={p.type === 'str' ? 'text' : 'number'}
+                      step={p.type === 'float' ? '0.1' : '1'}
+                      value={params[p.key] ?? p.default}
+                      onChange={(e) => setParams((prev) => ({ ...prev, [p.key]: e.target.value }))}
+                      className="w-full border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    />
+                  )}
                 </div>
               ))}
             </div>
