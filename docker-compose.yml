@@ -24,7 +24,7 @@ services:
       - ./backend:/app
       - /Users/hieunguyen/src/bioflow-portal/data/uploads:/Users/hieunguyen/src/bioflow-portal/data/uploads
       - /Users/hieunguyen/src/bioflow-portal/data/results:/Users/hieunguyen/src/bioflow-portal/data/results
-      - ./nextflow:/nextflow
+      - /Users/hieunguyen/src/bioflow-portal/nextflow:/Users/hieunguyen/src/bioflow-portal/nextflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"

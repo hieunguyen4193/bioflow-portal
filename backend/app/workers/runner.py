@@ -36,8 +36,15 @@ def _run(job_id: str):
         user_id     = job.user_id
 
     output_dir  = os.path.join(user_id, job_id)
-    output_path = os.path.join(settings.RESULTS_DIR, output_dir)
-    os.makedirs(output_path, exist_ok=True)
+    job_base    = os.path.join(settings.RESULTS_DIR, output_dir)
+    os.makedirs(job_base, exist_ok=True)
+
+    # Let user name the results subfolder; default to "results" if blank
+    user_outdir = params.pop("outdir", "") or "results"
+    # Sanitise: no absolute paths or directory traversal
+    user_outdir = user_outdir.strip("/").replace("..", "").strip("/") or "results"
+    outdir_path = os.path.join(job_base, user_outdir)
+    os.makedirs(outdir_path, exist_ok=True)
 
     _update_job(job_id, status="running", output_dir=output_dir)
 
@@ -45,8 +52,8 @@ def _run(job_id: str):
     cmd = [
         settings.NEXTFLOW_BIN, "run", pipeline_dir,
         "-profile", "docker",
-        "--outdir", output_path,
-        "-work-dir", os.path.join(output_path, "work"),
+        "--outdir", outdir_path,
+        "-work-dir", os.path.join(job_base, "work"),
     ]
 
     for f in input_files:
@@ -60,10 +67,11 @@ def _run(job_id: str):
             cmd += ["--matrix", abs_path]
 
     for k, v in params.items():
-        cmd += [f"--{k}", str(v)]
+        if v != "" and v is not None:
+            cmd += [f"--{k}", str(v)]
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=output_path)
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=job_base)
         log  = proc.stdout + "\n" + proc.stderr
         status = "done" if proc.returncode == 0 else "failed"
         _update_job(job_id, status=status, log=log)
