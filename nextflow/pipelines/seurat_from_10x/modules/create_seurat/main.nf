@@ -1,7 +1,6 @@
 process CREATE_SEURAT {
     tag "${sample}"
     publishDir "${params.outdir}/s1_seurat",               mode: "copy"
-    publishDir "${params.outdir}/intermediates/s1_seurat", mode: "copy", pattern: "*_s1.rds"
 
     input:
     tuple val(sample), path(barcodes), path(features), path(matrix)

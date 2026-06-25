@@ -1,7 +1,6 @@
 process REGRESS_OUT {
     tag "${sample}"
     publishDir "${params.outdir}/s7_regress_out",               mode: "copy"
-    publishDir "${params.outdir}/intermediates/s7_regress_out", mode: "copy", pattern: "*_s7.rds"
 
     input:
     tuple val(sample), path(seurat_rds)

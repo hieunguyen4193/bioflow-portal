@@ -1,7 +1,6 @@
 process CELL_CYCLE_SCORING {
     tag "${sample}"
     publishDir "${params.outdir}/s5_cell_cycle",               mode: "copy"
-    publishDir "${params.outdir}/intermediates/s5_cell_cycle", mode: "copy", pattern: "*_s5.rds"
 
     input:
     tuple val(sample), path(seurat_rds)

@@ -1,7 +1,6 @@
 process AMBIENT_DECONTAMINATION {
     tag "${sample} / ${method}"
     publishDir "${params.outdir}/s2_ambient",               mode: "copy"
-    publishDir "${params.outdir}/intermediates/s2_ambient", mode: "copy", pattern: "*_s2.rds"
 
     input:
     tuple val(sample), path(seurat_rds)

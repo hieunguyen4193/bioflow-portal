@@ -30,6 +30,17 @@ PIPELINE_REGISTRY = {
                 ],
             },
             {
+                "key": "s1b",
+                "label": "S1b — Downsample Cells",
+                "run_key": "run_downsample",
+                "params": [
+                    {"key": "downsample_type",  "label": "Method",
+                     "type": "select", "default": "percent", "options": ["percent", "number"]},
+                    {"key": "downsample_value", "label": "Value (% or cell count)",
+                     "type": "float", "default": ""},
+                ],
+            },
+            {
                 "key": "s2",
                 "label": "S2 — Ambient RNA Correction",
                 "run_key": "run_s2",

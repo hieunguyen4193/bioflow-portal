@@ -1,7 +1,6 @@
 process FILTER_CELLS {
     tag "${sample}"
     publishDir "${params.outdir}/s3_filter",               mode: "copy"
-    publishDir "${params.outdir}/intermediates/s3_filter", mode: "copy", pattern: "*_s3.rds"
 
     input:
     tuple val(sample), path(seurat_rds)

@@ -1,4 +1,5 @@
 include { QC_AND_SEURAT            } from '../subworkflows/qc_and_seurat'
+include { DOWNSAMPLE_WF            } from '../subworkflows/downsample'
 include { AMBIENT_CORRECTION       } from '../subworkflows/ambient_correction'
 include { FILTER_CELLS_WF          } from '../subworkflows/filter_cells'
 include { DOUBLET_DETECTION_WF     } from '../subworkflows/doublet_detection'
@@ -23,15 +24,27 @@ workflow SEURAT_PIPELINE {
         params.remove_TCR_genes
     )
 
+    // ── Step 1b: Downsampling (optional) ───────────────────────────────────
+    if (params.run_downsample) {
+        DOWNSAMPLE_WF(
+            QC_AND_SEURAT.out.seurat_rds,
+            params.downsample_type,
+            params.downsample_value
+        )
+        ch_s2_input = DOWNSAMPLE_WF.out.seurat_rds
+    } else {
+        ch_s2_input = QC_AND_SEURAT.out.seurat_rds
+    }
+
     // ── Step 2: Ambient RNA decontamination ─────────────────────────────────
     if (params.run_s2 && params.ambient_method != "none") {
         AMBIENT_CORRECTION(
-            QC_AND_SEURAT.out.seurat_rds,
+            ch_s2_input,
             params.ambient_method
         )
         ch_s3_input = AMBIENT_CORRECTION.out.seurat_rds
     } else {
-        ch_s3_input = QC_AND_SEURAT.out.seurat_rds
+        ch_s3_input = ch_s2_input
     }
 
     // ── Step 3: Cell filtering ──────────────────────────────────────────────

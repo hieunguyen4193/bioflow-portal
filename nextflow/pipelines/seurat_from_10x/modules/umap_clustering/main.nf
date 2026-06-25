@@ -1,7 +1,6 @@
 process UMAP_CLUSTERING {
     tag "${sample}"
     publishDir "${params.outdir}/s8_umap_clustering",               mode: "copy"
-    publishDir "${params.outdir}/intermediates/s8_umap_clustering", mode: "copy", pattern: "*_s8.rds"
 
     input:
     tuple val(sample), path(seurat_rds)

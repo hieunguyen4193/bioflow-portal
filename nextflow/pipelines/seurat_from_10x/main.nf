@@ -17,6 +17,9 @@ params.max_mt_pct            = 20
 params.remove_TCR_genes      = false
 
 // ── Step skip switches (s1 always runs) ───────────────────────────────────
+params.run_downsample    = false
+params.downsample_type   = "percent"  // percent | number
+params.downsample_value  = 100
 params.run_s2 = true
 params.run_s3 = true
 params.run_s4 = true
