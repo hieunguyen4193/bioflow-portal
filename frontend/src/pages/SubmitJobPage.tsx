@@ -193,10 +193,80 @@ function PipelinesTab({ pipelines }: { pipelines: any[] }) {
   )
 }
 
+// ── File upload panels ────────────────────────────────────────────────────────
+function TenXUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: File[]) => void }) {
+  const onDrop = useCallback((accepted: File[]) => {
+    setFiles([...files, ...accepted.filter((f) => !files.some((x) => x.name === f.name))])
+  }, [files, setFiles])
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { 'application/gzip': ['.gz'], 'text/plain': ['.tsv', '.mtx'] },
+    multiple: true,
+  })
+  const missing = REQUIRED_FILES.filter((r) => !files.some((f) => f.name === r))
+  return (
+    <>
+      <p className="text-xs text-slate-500 mb-3">
+        Required: <code>barcodes.tsv.gz</code>, <code>features.tsv.gz</code>, <code>matrix.mtx.gz</code>
+      </p>
+      <div {...getRootProps()} className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${isDragActive ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'}`}>
+        <input {...getInputProps()} />
+        <p className="text-sm text-slate-500">{isDragActive ? 'Drop here…' : 'Drag & drop files, or click to browse'}</p>
+      </div>
+      {files.length > 0 && (
+        <ul className="mt-3 space-y-1">
+          {files.map((f) => (
+            <li key={f.name} className="flex items-center justify-between text-sm">
+              <span className="flex items-center gap-2">
+                <span className={REQUIRED_FILES.includes(f.name) ? 'text-green-600' : 'text-slate-500'}>
+                  {REQUIRED_FILES.includes(f.name) ? '✓' : '·'}
+                </span>
+                {f.name}
+              </span>
+              <span className="text-slate-400">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {missing.length > 0 && files.length > 0 && (
+        <p className="mt-2 text-xs text-amber-600">Still needed: {missing.join(', ')}</p>
+      )}
+    </>
+  )
+}
+
+function SamplesheetUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: File[]) => void }) {
+  const onDrop = useCallback((accepted: File[]) => {
+    if (accepted[0]) setFiles([accepted[0]])
+  }, [setFiles])
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { 'text/csv': ['.csv'], 'text/plain': ['.csv'] },
+    multiple: false,
+  })
+  return (
+    <>
+      <p className="text-xs text-slate-500 mb-3">
+        Upload a CSV with <code>SampleID</code> and <code>Path</code> columns pointing to BAM/CRAM files on the server.
+        Actual BAM/CRAM files are not uploaded — only the CSV is.
+      </p>
+      <div {...getRootProps()} className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${isDragActive ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'}`}>
+        <input {...getInputProps()} />
+        <p className="text-sm text-slate-500">{isDragActive ? 'Drop here…' : 'Drag & drop samplesheet.csv, or click to browse'}</p>
+      </div>
+      {files[0] && (
+        <p className="mt-3 text-sm text-green-700 flex items-center gap-2">
+          <span>✓</span> {files[0].name} ({(files[0].size / 1024).toFixed(1)} KB)
+        </p>
+      )}
+    </>
+  )
+}
+
 // ── Submit tab ────────────────────────────────────────────────────────────────
 function SubmitTab({ pipelines }: { pipelines: any[] }) {
   const navigate = useNavigate()
-  const [selectedPipeline, setSelectedPipeline] = useState('basic_Seurat_single_cell_pipeline')
+  const [selectedPipeline, setSelectedPipeline] = useState(pipelines[0]?.id ?? '')
   const [files, setFiles] = useState<File[]>([])
   const [params, setParams] = useState<Record<string, string>>({})
   const [uploading, setUploading] = useState(false)
@@ -206,26 +276,16 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
     setParams((prev) => ({ ...prev, [key]: val }))
   }
 
-  const onDrop = useCallback((accepted: File[]) => {
-    setFiles((prev) => {
-      const names = new Set(prev.map((f) => f.name))
-      return [...prev, ...accepted.filter((f) => !names.has(f.name))]
-    })
-  }, [])
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: { 'application/gzip': ['.gz'], 'text/plain': ['.tsv', '.mtx'] },
-    multiple: true,
-  })
-
-  const missingFiles = REQUIRED_FILES.filter((req) => !files.some((f) => f.name === req))
   const currentPipeline = pipelines.find((p: any) => p.id === selectedPipeline)
+  const isSamplesheet = currentPipeline?.input_mode === 'samplesheet'
+  const missingFiles = isSamplesheet
+    ? (files.length === 0 ? ['samplesheet.csv'] : [])
+    : REQUIRED_FILES.filter((req) => !files.some((f) => f.name === req))
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (missingFiles.length > 0) {
-      toast.error(`Missing: ${missingFiles.join(', ')}`)
+      toast.error(isSamplesheet ? 'Please upload a samplesheet CSV' : `Missing: ${missingFiles.join(', ')}`)
       return
     }
     setUploading(true)
@@ -264,7 +324,7 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
         <h3 className="font-medium mb-3">1. Select Pipeline</h3>
         <select
           value={selectedPipeline}
-          onChange={(e) => { setSelectedPipeline(e.target.value); setParams({}) }}
+          onChange={(e) => { setSelectedPipeline(e.target.value); setParams({}); setFiles([]) }}
           className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
         >
           {pipelines.map((p: any) => (
@@ -276,42 +336,13 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
         )}
       </div>
 
-      {/* 2. File upload */}
+      {/* 2. File upload — adapts to pipeline input mode */}
       <div className="bg-white rounded-xl shadow p-5">
         <h3 className="font-medium mb-3">2. Upload Input Files</h3>
-        <p className="text-xs text-slate-500 mb-3">
-          Required: <code>barcodes.tsv.gz</code>, <code>features.tsv.gz</code>, <code>matrix.mtx.gz</code>
-        </p>
-
-        <div {...getRootProps()}
-          className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
-            isDragActive ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'
-          }`}>
-          <input {...getInputProps()} />
-          <p className="text-sm text-slate-500">
-            {isDragActive ? 'Drop the files here…' : 'Drag & drop files here, or click to browse'}
-          </p>
-        </div>
-
-        {files.length > 0 && (
-          <ul className="mt-3 space-y-1">
-            {files.map((f) => (
-              <li key={f.name} className="flex items-center justify-between text-sm">
-                <span className="flex items-center gap-2">
-                  <span className={REQUIRED_FILES.includes(f.name) ? 'text-green-600' : 'text-slate-500'}>
-                    {REQUIRED_FILES.includes(f.name) ? '✓' : '·'}
-                  </span>
-                  {f.name}
-                </span>
-                <span className="text-slate-400">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {missingFiles.length > 0 && files.length > 0 && (
-          <p className="mt-2 text-xs text-amber-600">Still needed: {missingFiles.join(', ')}</p>
-        )}
+        {isSamplesheet
+          ? <SamplesheetUploadPanel files={files} setFiles={setFiles} />
+          : <TenXUploadPanel files={files} setFiles={setFiles} />
+        }
       </div>
 
       {/* 3. Pipeline steps */}

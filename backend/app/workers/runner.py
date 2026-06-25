@@ -92,7 +92,10 @@ def _build_cmd(pipeline: str, params: dict, input_files: list, job_base: str, us
     for f in input_files:
         fname    = os.path.basename(f)
         abs_path = os.path.join(settings.UPLOAD_DIR, f)
-        if "barcodes" in fname:
+        # samplesheet-mode pipelines upload a CSV; others use the 10x triplet
+        if fname.endswith(".csv") or "samplesheet" in fname.lower():
+            cmd += ["--samplesheet", abs_path]
+        elif "barcodes" in fname:
             cmd += ["--barcodes", abs_path]
         elif "features" in fname or "genes" in fname:
             cmd += ["--features", abs_path]

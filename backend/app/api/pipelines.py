@@ -11,6 +11,161 @@ PIPELINES_BASE = os.environ.get(
 )
 
 PIPELINE_REGISTRY = {
+    "fragmentomics_TF_features": {
+        "name": "Fragmentomics — TF and Enrichment Features",
+        "description": "Generates cfDNA fragmentomics features (chromosome, CNA, coverage profile, WPS/IFS/FDI, RFE) from WGS BAM or CRAM files.",
+        "readme": "fragmentomics_TF_features/README.md",
+        "input_mode": "samplesheet",   # differs from the default "files" mode
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv  (SampleID, Path columns)"},
+        ],
+        "steps": [
+            {
+                "key": "step0",
+                "label": "Step 0 — CRAM to BAM conversion",
+                "run_key": None,   # controlled by input_type param, not a toggle
+                "params": [
+                    {"key": "input_type",    "label": "Input file type",          "type": "select", "default": "bam", "options": ["bam", "cram"]},
+                    {"key": "ref_genome",    "label": "Reference genome (hg19.fa path)", "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/hg19.fa"},
+                ],
+            },
+            {
+                "key": "step01",
+                "label": "Step 01 — Preprocess BAM",
+                "run_key": "run_step01",
+                "params": [
+                    {"key": "nthreads",    "label": "samtools threads",          "type": "int",   "default": 4},
+                    {"key": "short_lower", "label": "Short frag lower bound (bp)", "type": "int", "default": 50},
+                    {"key": "short_upper", "label": "Short frag upper bound (bp)", "type": "int", "default": 150},
+                    {"key": "long_lower",  "label": "Long frag lower bound (bp)",  "type": "int", "default": 151},
+                    {"key": "long_upper",  "label": "Long frag upper bound (bp)",  "type": "int", "default": 350},
+                    {"key": "min_flen",    "label": "Min fragment length (BEDPE)", "type": "int",  "default": 50},
+                    {"key": "max_flen",    "label": "Max fragment length (BEDPE)", "type": "int",  "default": 350},
+                    {"key": "markdup",     "label": "Mark duplicates (Picard)",    "type": "bool", "default": False},
+                ],
+            },
+            {
+                "key": "step02",
+                "label": "Step 02 — Chromosome Features",
+                "run_key": "run_step02",
+                "params": [],
+            },
+            {
+                "key": "step03",
+                "label": "Step 03 — CNA Features",
+                "run_key": "run_step03",
+                "params": [],
+            },
+            {
+                "key": "step04",
+                "label": "Step 04 — Coverage Profile Features",
+                "run_key": "run_step04",
+                "params": [],
+            },
+            {
+                "key": "step05",
+                "label": "Step 05 — WPS / IFS / FDI Features",
+                "run_key": "run_step05",
+                "params": [],
+            },
+            {
+                "key": "step06",
+                "label": "Step 06 — RFE Features",
+                "run_key": "run_step06",
+                "params": [],
+            },
+            {
+                "key": "resources",
+                "label": "Resource Paths",
+                "run_key": None,
+                "params": [
+                    {"key": "tfbs_dir",      "label": "TFBS BED files dir",       "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS"},
+                    {"key": "nucleosome_ref","label": "Nucleosome reference BED", "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/rpr_map_EXP0779.bed"},
+                ],
+            },
+        ],
+    },
+    "fragmentomics_bulk_features": {
+        "name": "Fragmentomics — Bulk Features",
+        "description": "Computes bulk fragmentomics features from BAM files (mode `from_bam`) or pre-computed FLEN_EM_ND.tsv tables (mode `from_frag_file`).",
+        "readme": "fragmentomics_bulk_features/README.md",
+        "input_mode": "samplesheet",
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv  (SampleID, Path columns)"},
+        ],
+        "steps": [
+            {
+                "key": "options",
+                "label": "Options",
+                "run_key": None,
+                "params": [
+                    {"key": "mode",          "label": "Input mode",            "type": "select", "default": "from_bam", "options": ["from_bam", "from_frag_file"]},
+                    {"key": "ref_genome",    "label": "Reference genome path", "type": "str",    "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/hg19.fa"},
+                    {"key": "nucleosome_ref","label": "Nucleosome reference BED", "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/rpr_map_Budhraja_STM2023.bed"},
+                    {"key": "min_flen",      "label": "Min fragment length",   "type": "int",    "default": 50},
+                    {"key": "max_flen",      "label": "Max fragment length",   "type": "int",    "default": 350},
+                    {"key": "outdir",        "label": "Output folder",         "type": "str",    "default": "results"},
+                ],
+            },
+        ],
+    },
+    "fragmentomics_binwise_features": {
+        "name": "Fragmentomics — Binwise Features",
+        "description": "Computes per-bin read counts across short/long/full BAM files using an R script. Samplesheet must have columns SampleID, short_bam, long_bam, full_bam.",
+        "readme": "fragmentomics_binwise_features/README.md",
+        "input_mode": "samplesheet",
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv  (SampleID, short_bam, long_bam, full_bam columns)"},
+        ],
+        "steps": [
+            {
+                "key": "options",
+                "label": "Options",
+                "run_key": None,
+                "params": [
+                    {"key": "outdir", "label": "Output folder", "type": "str", "default": "results"},
+                ],
+            },
+        ],
+    },
+    "fragmentomics_enrich_features": {
+        "name": "Fragmentomics — Enrichment Filters",
+        "description": "Filters BAM files or fragment tables by BED region, fragment lengths, or nucleosome distance. Choose a mode and supply the appropriate samplesheet.",
+        "readme": "fragmentomics_enrich_features/README.md",
+        "input_mode": "samplesheet",
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv"},
+        ],
+        "steps": [
+            {
+                "key": "options",
+                "label": "Options",
+                "run_key": None,
+                "params": [
+                    {"key": "mode",    "label": "Filter mode",  "type": "select", "default": "filter_flen",
+                     "options": ["filter_flen", "filter_bed", "filter_nd"]},
+                    {"key": "outdir",  "label": "Output folder", "type": "str",   "default": "results"},
+                ],
+            },
+            {
+                "key": "filter_bed_opts",
+                "label": "BED filter options",
+                "run_key": None,
+                "params": [
+                    {"key": "bed_file", "label": "BED file path (server-side)", "type": "str", "default": ""},
+                ],
+            },
+            {
+                "key": "filter_nd_opts",
+                "label": "Nucleosome-distance filter options",
+                "run_key": None,
+                "params": [
+                    {"key": "nd_min", "label": "ND min", "type": "int", "default": 0},
+                    {"key": "nd_max", "label": "ND max", "type": "int", "default": 50},
+                ],
+            },
+        ],
+    },
     "basic_Seurat_single_cell_pipeline": {
         "name": "Seurat object from 10x CellRanger",
         "description": "Creates a Seurat object from the barcodes/features/matrix triplet produced by CellRanger. Outputs an RDS file and QC plots.",
