@@ -67,7 +67,14 @@ def _run(job_id: str):
             cmd += ["--matrix", abs_path]
 
     for k, v in params.items():
-        if v != "" and v is not None:
+        if v == "" or v is None:
+            continue
+        sv = str(v).strip().lower()
+        if sv == "true":
+            cmd += [f"--{k}", "true"]
+        elif sv == "false":
+            cmd += [f"--{k}", "false"]
+        else:
             cmd += [f"--{k}", str(v)]
 
     try:

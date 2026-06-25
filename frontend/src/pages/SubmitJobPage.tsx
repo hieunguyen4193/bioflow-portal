@@ -153,7 +153,7 @@ export default function SubmitJobPage() {
       const defaults: Record<string, string> = {}
       if (currentPipeline?.steps) {
         for (const step of currentPipeline.steps) {
-          if (step.run_key) defaults[step.run_key] = 'false'
+          if (step.run_key) defaults[step.run_key] = 'true'
           for (const p of step.params) {
             if (p.default !== undefined && p.default !== null) {
               defaults[p.key] = String(p.default)

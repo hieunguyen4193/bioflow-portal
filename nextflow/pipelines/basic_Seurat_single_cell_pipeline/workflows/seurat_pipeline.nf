@@ -25,7 +25,7 @@ workflow SEURAT_PIPELINE {
     )
 
     // ── Step 1b: Downsampling (optional) ───────────────────────────────────
-    if (params.run_downsample) {
+    if (params.run_downsample == "true") {
         DOWNSAMPLE_WF(
             QC_AND_SEURAT.out.seurat_rds,
             params.downsample_type,
@@ -37,7 +37,7 @@ workflow SEURAT_PIPELINE {
     }
 
     // ── Step 2: Ambient RNA decontamination ─────────────────────────────────
-    if (params.run_s2 && params.ambient_method != "none") {
+    if (params.run_s2 == "true" && params.ambient_method != "none") {
         AMBIENT_CORRECTION(
             ch_s2_input,
             params.ambient_method
@@ -48,7 +48,7 @@ workflow SEURAT_PIPELINE {
     }
 
     // ── Step 3: Cell filtering ──────────────────────────────────────────────
-    if (params.run_s3) {
+    if (params.run_s3 == "true") {
         FILTER_CELLS_WF(
             ch_s3_input,
             params.nFeatureRNA_floor,
@@ -70,7 +70,7 @@ workflow SEURAT_PIPELINE {
     }
 
     // ── Step 4: Doublet detection ───────────────────────────────────────────
-    if (params.run_s4) {
+    if (params.run_s4 == "true") {
         ch_doublet_csv = Channel.fromPath(params.doublet_csv)
         DOUBLET_DETECTION_WF(
             ch_s4_input,
@@ -83,7 +83,7 @@ workflow SEURAT_PIPELINE {
     }
 
     // ── Step 5: Pre-cell-cycle normalisation / PCA ──────────────────────────
-    if (params.run_s5) {
+    if (params.run_s5 == "true") {
         CELL_CYCLE_SCORING_WF(
             ch_s5_input,
             params.use_sctransform,
@@ -95,7 +95,7 @@ workflow SEURAT_PIPELINE {
     }
 
     // ── Step 6: Cell cycle scoring ──────────────────────────────────────────
-    if (params.run_s6) {
+    if (params.run_s6 == "true") {
         CELL_CYCLE_SCORING_S6_WF(
             ch_s6_input,
             params.cc_scoring_mode
