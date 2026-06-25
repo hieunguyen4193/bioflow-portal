@@ -15,7 +15,7 @@ process ENRICH_FILTER_FLEN {
     script:
     def filter_script = "${params.projectdir}/processes/enrich_features/filter_BAM_based_on_fragment_lenthgs.sh"
     """
-    export PATH=/home/dockerUser/samtools/bin:\$PATH
+    export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
     bash ${filter_script} \\
         -i ${bam} \\
         -s ${sampleID} \\

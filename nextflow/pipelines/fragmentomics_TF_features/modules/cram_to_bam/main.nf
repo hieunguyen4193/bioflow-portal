@@ -10,7 +10,7 @@ process CRAM_TO_BAM {
 
     script:
     """
-    export PATH=/home/dockerUser/samtools/bin:\$PATH
+    export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
     samtools view -b -T ${params.resource_dir}/hg19.fa -o ${sampleID}.bam ${cram_file}
     samtools index ${sampleID}.bam
     """

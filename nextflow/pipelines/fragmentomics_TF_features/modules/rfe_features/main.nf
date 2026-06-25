@@ -14,6 +14,7 @@ process RFE_FEATURES {
     def prep_id    = "${sampleID}.preprocessed"
     """
     sed 's|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS|${params.resource_dir}/TFBS|g; s|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources|${params.resource_dir}|g' ${rfe_script} > patched_06.sh
+    export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
     mkdir -p workdir
     bash patched_06.sh \\
         -i ${frag} \\

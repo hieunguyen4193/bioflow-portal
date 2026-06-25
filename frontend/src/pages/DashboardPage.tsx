@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { listJobs, stopJob, pauseJob, resumeJob, Job } from '../api/jobs'
+import { listJobs, stopJob, pauseJob, resumeJob, clearJobs, Job } from '../api/jobs'
 import toast from 'react-hot-toast'
 
 const STATUS_COLORS: Record<string, string> = {
@@ -71,9 +71,23 @@ export default function DashboardPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold">My Jobs</h2>
-        <Link to="/submit" className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
-          + Run Pipeline
-        </Link>
+        <div className="flex gap-2">
+          {jobs.length > 0 && (
+            <button
+              onClick={async () => {
+                if (!confirm('Clear all jobs? This cannot be undone.')) return
+                try { await clearJobs(); qc.invalidateQueries({ queryKey: ['jobs'] }); toast.success('All jobs cleared') }
+                catch { toast.error('Failed to clear jobs') }
+              }}
+              className="border border-red-300 text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg text-sm font-medium"
+            >
+              Clear All
+            </button>
+          )}
+          <Link to="/submit" className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+            + Run Pipeline
+          </Link>
+        </div>
       </div>
 
       {/* Filter bar */}

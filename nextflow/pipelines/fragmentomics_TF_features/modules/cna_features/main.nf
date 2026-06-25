@@ -15,6 +15,7 @@ process CNA_FEATURES {
     def cna_script = "${params.projectdir}/processes/generate_TFBS_features/03_generate_CNA_features_for_TFBS_coverage.sh"
     def prep_id    = "${sampleID}.preprocessed"
     """
+    export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
     mkdir -p workdir
     bash ${cna_script} \\
         -i ${preprocessed_bam} \\

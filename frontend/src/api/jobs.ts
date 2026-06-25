@@ -96,3 +96,7 @@ export async function getPipelineReadme(id: string): Promise<string> {
     return 'No description available.'
   }
 }
+
+export async function clearJobs(): Promise<void> {
+  await api.delete('/jobs/')
+}

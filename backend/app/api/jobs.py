@@ -2,7 +2,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import decode_token
@@ -184,3 +184,13 @@ async def download_file(
         raise HTTPException(404, "File not found")
 
     return FileResponse(full_path, filename=os.path.basename(full_path))
+
+
+@router.delete("/", status_code=204)
+async def clear_jobs(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete all jobs belonging to the current user."""
+    await db.execute(delete(Job).where(Job.user_id == current_user.id))
+    await db.commit()

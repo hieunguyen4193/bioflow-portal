@@ -12,6 +12,7 @@ process CHROMOSOME_FEATURES {
     script:
     def chrom_script = "${params.projectdir}/processes/generate_TFBS_features/02_generate_chromosome_features.sh"
     """
+    export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
     mkdir -p workdir
     bash ${chrom_script} \\
         -i ${split_chroms_dir} \\
