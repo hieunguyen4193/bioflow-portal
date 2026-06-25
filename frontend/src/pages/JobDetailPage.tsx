@@ -1,4 +1,5 @@
 import { useParams, Link } from 'react-router-dom'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getJob, listOutputFiles, downloadUrl, getPipeline, stopJob, pauseJob, resumeJob, Job, Pipeline } from '../api/jobs'
 import toast from 'react-hot-toast'
@@ -96,6 +97,20 @@ export default function JobDetailPage() {
   const imageFiles = files.filter((f) => f.name.endsWith('.png') || f.name.endsWith('.pdf'))
   const dataFiles  = files.filter((f) => !f.name.endsWith('.png'))
 
+  // Group data files by top-level directory
+  const fileGroups = dataFiles.reduce<Record<string, typeof dataFiles>>((acc, f) => {
+    const parts = f.name.split('/')
+    const group = parts.length > 1 ? parts[0] : '(root)'
+    acc[group] = acc[group] ?? []
+    acc[group].push(f)
+    return acc
+  }, {})
+  const groupNames = Object.keys(fileGroups).sort()
+  const manyFiles  = dataFiles.length > 20
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
+  const isOpen = (g: string) => openGroups[g] ?? !manyFiles
+  const toggleGroup = (g: string) => setOpenGroups(prev => ({ ...prev, [g]: !isOpen(g) }))
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
@@ -190,21 +205,47 @@ export default function JobDetailPage() {
       {/* Output files */}
       {dataFiles.length > 0 && (
         <div className="bg-white rounded-xl shadow p-5">
-          <h3 className="font-medium mb-3">Output Files</h3>
-          <ul className="divide-y text-sm">
-            {dataFiles.map((f) => (
-              <li key={f.name} className="flex items-center justify-between py-2">
-                <span className="font-mono text-xs">{f.name}</span>
-                <div className="flex items-center gap-3">
-                  <span className="text-slate-400 text-xs">{(f.size / 1024 / 1024).toFixed(2)} MB</span>
-                  <a href={downloadUrl(job.id, f.name)} download
-                    className="text-indigo-600 hover:underline text-xs font-medium">
-                    Download
-                  </a>
-                </div>
-              </li>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-medium">Output Files <span className="text-slate-400 font-normal text-sm">({dataFiles.length})</span></h3>
+            {manyFiles && (
+              <div className="flex gap-2">
+                <button onClick={() => setOpenGroups(Object.fromEntries(groupNames.map(g => [g, true])))}
+                  className="text-xs text-indigo-600 hover:underline">Expand all</button>
+                <span className="text-slate-300">|</span>
+                <button onClick={() => setOpenGroups(Object.fromEntries(groupNames.map(g => [g, false])))}
+                  className="text-xs text-indigo-600 hover:underline">Collapse all</button>
+              </div>
+            )}
+          </div>
+          <div className="space-y-1">
+            {groupNames.map(group => (
+              <div key={group} className="border rounded-lg overflow-hidden">
+                <button
+                  onClick={() => toggleGroup(group)}
+                  className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 hover:bg-slate-100 text-sm font-medium text-left"
+                >
+                  <span className="font-mono">{group} <span className="text-slate-400 font-normal">({fileGroups[group].length})</span></span>
+                  <span className="text-slate-400">{isOpen(group) ? '▲' : '▼'}</span>
+                </button>
+                {isOpen(group) && (
+                  <ul className="divide-y text-sm">
+                    {fileGroups[group].map((f) => (
+                      <li key={f.name} className="flex items-center justify-between px-3 py-2">
+                        <span className="font-mono text-xs text-slate-600">{f.name.split('/').slice(1).join('/') || f.name}</span>
+                        <div className="flex items-center gap-3 shrink-0 ml-4">
+                          <span className="text-slate-400 text-xs">{(f.size / 1024 / 1024).toFixed(2)} MB</span>
+                          <a href={downloadUrl(job.id, f.name)} download
+                            className="text-indigo-600 hover:underline text-xs font-medium">
+                            Download
+                          </a>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
       )}
 
