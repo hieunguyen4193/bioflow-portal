@@ -2,7 +2,7 @@
 // (nucleosome-free + nucleosome-bound populations), produces three BAM outputs.
 process ENRICH_FILTER_FLEN {
     tag "${sampleID}"
-    publishDir "${params.outdir}/enrich_filter_flen/${sampleID}", mode: 'copy'
+    publishDir { "${params.outdir}/enrich_filter_flen/${sampleID}" }, mode: 'copy'
 
     input:
     tuple val(sampleID), path(bam), path(bai)

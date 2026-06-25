@@ -82,7 +82,6 @@ def _build_cmd(pipeline: str, params: dict, input_files: list, job_base: str, us
     pipeline_dir = os.path.join(settings.NEXTFLOW_PIPELINES_DIR, pipeline)
     cmd = [
         settings.NEXTFLOW_BIN, "run", pipeline_dir,
-        "-profile", "docker",
         "--outdir", outdir_path,
         "-work-dir", os.path.join(job_base, "work"),
     ]

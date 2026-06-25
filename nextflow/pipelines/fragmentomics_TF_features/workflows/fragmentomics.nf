@@ -36,9 +36,6 @@ workflow FRAGMENTOMICS {
 
     // ── Step 03: CNA features ─────────────────────────────────────────────
     if (params.run_step03 == "true") {
-        // CNA process needs both the BAM and its index
-        ch_bam_with_bai = ch_prep_bam.join(ch_prep_bai, by: 0)
-            .map { sampleID, bam, bai -> tuple(tuple(sampleID, bam), tuple(sampleID, bai)) }
         CNA_FEATURES(ch_prep_bam, ch_prep_bai)
         ch_cna_100kb = CNA_FEATURES.out.cna_100kb
     }
@@ -48,15 +45,12 @@ workflow FRAGMENTOMICS {
         ch_cov_input = ch_frag
             .join(ch_cna_100kb, by: 0)
             .join(ch_genomecov, by: 0)
-            .map { sampleID, frag, cna, cov -> tuple(sampleID, frag, cna, cov) }
         COVERAGE_PROFILE(ch_cov_input)
     }
 
     // ── Step 05: WPS / IFS / FDI features ────────────────────────────────
     if (params.run_step05 == "true" && params.run_step02 == "true") {
-        ch_wps_input = ch_frag
-            .join(ch_chrom, by: 0)
-            .map { sampleID, frag, chrom -> tuple(sampleID, frag, chrom) }
+        ch_wps_input = ch_frag.join(ch_chrom, by: 0)
         WPS_IFS_FDI(ch_wps_input)
     }
 

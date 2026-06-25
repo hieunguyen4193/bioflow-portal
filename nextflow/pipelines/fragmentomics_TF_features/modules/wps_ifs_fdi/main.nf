@@ -1,7 +1,7 @@
 // Step 05 — generate WPS / IFS / FDI features
 process WPS_IFS_FDI {
     tag "${sampleID}"
-    publishDir "${params.outdir}/step05_wps_ifs_fdi/${sampleID}", mode: 'copy'
+    publishDir { "${params.outdir}/step05_wps_ifs_fdi/${sampleID}" }, mode: 'copy'
 
     input:
     tuple val(sampleID), path(frag), path(chrom_features)
@@ -13,8 +13,9 @@ process WPS_IFS_FDI {
     def wps_script = "${params.projectdir}/processes/generate_TFBS_features/05_generate_WPS_IFS_FDI_features.sh"
     def prep_id    = "${sampleID}.preprocessed"
     """
+    sed 's|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS|${params.resource_dir}/TFBS|g; s|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources|${params.resource_dir}|g' ${wps_script} > patched_05.sh
     mkdir -p workdir
-    bash ${wps_script} \\
+    bash patched_05.sh \\
         -i ${frag} \\
         -s ${prep_id} \\
         -o workdir \\

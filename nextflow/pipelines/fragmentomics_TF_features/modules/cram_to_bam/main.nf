@@ -11,7 +11,7 @@ process CRAM_TO_BAM {
     script:
     """
     export PATH=/home/dockerUser/samtools/bin:\$PATH
-    samtools view -b -T ${params.ref_genome} -o ${sampleID}.bam ${cram_file}
+    samtools view -b -T ${params.resource_dir}/hg19.fa -o ${sampleID}.bam ${cram_file}
     samtools index ${sampleID}.bam
     """
 }

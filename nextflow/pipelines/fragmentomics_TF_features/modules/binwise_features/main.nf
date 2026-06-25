@@ -2,7 +2,7 @@
 // short/long/full BAMs are typically outputs of step01 (PROCESS_BAM).
 process BINWISE_FEATURES {
     tag "${sampleID}"
-    publishDir "${params.outdir}/binwise_features/${sampleID}", mode: 'copy'
+    publishDir { "${params.outdir}/binwise_features/${sampleID}" }, mode: 'copy'
 
     input:
     tuple val(sampleID), path(short_bam), path(short_bai), path(long_bam), path(long_bai), path(full_bam), path(full_bai)

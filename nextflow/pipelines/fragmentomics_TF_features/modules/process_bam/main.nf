@@ -1,7 +1,7 @@
 // Step 01 — preprocess BAM: sort/index, split by fragment size, convert to BEDPE, genome coverage
 process PROCESS_BAM {
     tag "${sampleID}"
-    publishDir "${params.outdir}/step01_process_bam/${sampleID}", mode: 'copy'
+    publishDir { "${params.outdir}/step01_process_bam/${sampleID}" }, mode: 'copy'
 
     input:
     tuple val(sampleID), path(bam_file)
@@ -19,9 +19,12 @@ process PROCESS_BAM {
     """
     export PATH=/home/dockerUser/samtools/bin:\$PATH
 
+    # Patch hardcoded resource paths to use params.resource_dir
+    sed 's|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS|${params.resource_dir}/TFBS|g; s|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources|${params.resource_dir}|g' ${process_script} > patched_01.sh
+
     # Run the process script into a local workdir
     mkdir -p workdir
-    bash ${process_script} \\
+    bash patched_01.sh \\
         -i ${bam_file} \\
         -s ${sampleID} \\
         -o workdir \\

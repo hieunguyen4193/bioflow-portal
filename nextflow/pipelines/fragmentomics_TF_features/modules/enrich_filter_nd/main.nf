@@ -2,7 +2,7 @@
 // Requires the FLEN_EM_ND.tsv produced by the bulk_features process.
 process ENRICH_FILTER_ND {
     tag "${sampleID}"
-    publishDir "${params.outdir}/enrich_filter_nd/${sampleID}", mode: 'copy'
+    publishDir { "${params.outdir}/enrich_filter_nd/${sampleID}" }, mode: 'copy'
 
     input:
     tuple val(sampleID), path(flen_em_nd_tsv)

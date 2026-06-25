@@ -1,7 +1,7 @@
 // Step 03 — generate CNA features (bin100kb + bin1M) needed by coverage profile step
 process CNA_FEATURES {
     tag "${sampleID}"
-    publishDir "${params.outdir}/step03_cna_features/${sampleID}", mode: 'copy'
+    publishDir { "${params.outdir}/step03_cna_features/${sampleID}" }, mode: 'copy'
 
     input:
     tuple val(sampleID), path(preprocessed_bam)

@@ -2,7 +2,7 @@
 // (skips the EM/ND computation step — use when that file already exists).
 process BULK_FEATURES_FROM_FRAG {
     tag "${sampleID}"
-    publishDir "${params.outdir}/bulk_features_from_frag/${sampleID}", mode: 'copy'
+    publishDir { "${params.outdir}/bulk_features_from_frag/${sampleID}" }, mode: 'copy'
 
     input:
     tuple val(sampleID), path(flen_em_nd_tsv)

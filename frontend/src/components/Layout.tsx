@@ -25,7 +25,7 @@ export default function Layout() {
               Run Pipeline
             </NavLink>
             <NavLink to="/explore" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
-              Explore
+              Explore gene expression (Seurat)
             </NavLink>
           </nav>
         </div>

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
@@ -266,11 +266,17 @@ function SamplesheetUploadPanel({ files, setFiles }: { files: File[]; setFiles: 
 // ── Submit tab ────────────────────────────────────────────────────────────────
 function SubmitTab({ pipelines }: { pipelines: any[] }) {
   const navigate = useNavigate()
-  const [selectedPipeline, setSelectedPipeline] = useState(pipelines[0]?.id ?? '')
+  const [selectedPipeline, setSelectedPipeline] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [params, setParams] = useState<Record<string, string>>({})
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+
+  useEffect(() => {
+    if (!selectedPipeline && pipelines.length > 0) {
+      setSelectedPipeline(pipelines[0].id)
+    }
+  }, [pipelines])
 
   function setParam(key: string, val: string) {
     setParams((prev) => ({ ...prev, [key]: val }))

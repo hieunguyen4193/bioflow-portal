@@ -25,8 +25,7 @@ PIPELINE_REGISTRY = {
                 "label": "Step 0 — CRAM to BAM conversion",
                 "run_key": None,   # controlled by input_type param, not a toggle
                 "params": [
-                    {"key": "input_type",    "label": "Input file type",          "type": "select", "default": "bam", "options": ["bam", "cram"]},
-                    {"key": "ref_genome",    "label": "Reference genome (hg19.fa path)", "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/hg19.fa"},
+                    {"key": "input_type", "label": "Input file type", "type": "select", "default": "bam", "options": ["bam", "cram"]},
                 ],
             },
             {
@@ -76,11 +75,10 @@ PIPELINE_REGISTRY = {
             },
             {
                 "key": "resources",
-                "label": "Resource Paths",
+                "label": "Resource Directory",
                 "run_key": None,
                 "params": [
-                    {"key": "tfbs_dir",      "label": "TFBS BED files dir",       "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS"},
-                    {"key": "nucleosome_ref","label": "Nucleosome reference BED", "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/rpr_map_EXP0779.bed"},
+                    {"key": "resource_dir", "label": "Resource directory (contains hg19.fa, rpr_map_EXP0779.bed, TFBS/)", "type": "str", "default": "/Users/hieunguyen/storage/resources"},
                 ],
             },
         ],
@@ -99,9 +97,8 @@ PIPELINE_REGISTRY = {
                 "label": "Options",
                 "run_key": None,
                 "params": [
-                    {"key": "mode",          "label": "Input mode",            "type": "select", "default": "from_bam", "options": ["from_bam", "from_frag_file"]},
-                    {"key": "ref_genome",    "label": "Reference genome path", "type": "str",    "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/hg19.fa"},
-                    {"key": "nucleosome_ref","label": "Nucleosome reference BED", "type": "str", "default": "/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/rpr_map_Budhraja_STM2023.bed"},
+                    {"key": "mode",         "label": "Input mode",       "type": "select", "default": "from_bam", "options": ["from_bam", "from_frag_file"]},
+                    {"key": "resource_dir", "label": "Resource directory (contains hg19.fa, rpr_map_Budhraja_STM2023.bed)", "type": "str", "default": "/Users/hieunguyen/storage/resources"},
                     {"key": "min_flen",      "label": "Min fragment length",   "type": "int",    "default": 50},
                     {"key": "max_flen",      "label": "Max fragment length",   "type": "int",    "default": 350},
                     {"key": "outdir",        "label": "Output folder",         "type": "str",    "default": "results"},
