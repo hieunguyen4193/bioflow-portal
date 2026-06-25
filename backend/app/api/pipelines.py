@@ -120,7 +120,8 @@ PIPELINE_REGISTRY = {
                 "label": "Options",
                 "run_key": None,
                 "params": [
-                    {"key": "outdir", "label": "Output folder", "type": "str", "default": "results"},
+                    {"key": "outdir",        "label": "Output folder",                                                          "type": "str", "default": "results"},
+                    {"key": "split_cutoff",  "label": "Short/long split cutoff (bp, used when short_bam/long_bam not in samplesheet)", "type": "int", "default": 150},
                 ],
             },
         ],
