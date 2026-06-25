@@ -10,7 +10,7 @@ process PROCESS_BAM {
     tuple val(sampleID), path("${sampleID}.preprocessed.bam"),                                      emit: preprocessed_bam
     tuple val(sampleID), path("${sampleID}.preprocessed.bam.bai"),                                  emit: preprocessed_bai
     tuple val(sampleID), path("${sampleID}.preprocessed_splitChroms"),                              emit: split_chroms
-    tuple val(sampleID), path("${sampleID}.preprocessed_region_Full_fraglen_${params.min_flen}_${params.max_flen}.sorted.bed.gz"), emit: frag
+    tuple val(sampleID), path("${sampleID}.preprocessed_region_Full_fraglen_${params.min_flen}_${params.max_flen}.sorted.bed.gz"), path("${sampleID}.preprocessed_region_Full_fraglen_${params.min_flen}_${params.max_flen}.sorted.bed.gz.tbi"), emit: frag
     tuple val(sampleID), path("${sampleID}.avgGenomeCov.tsv"),                                       emit: genomecov
 
     script:
@@ -36,7 +36,8 @@ process PROCESS_BAM {
     cp \${OUTBASE}/${prep_id}.bam                                                         ./
     cp \${OUTBASE}/${prep_id}.bam.bai                                                     ./
     cp -r \${OUTBASE}/${prep_id}_splitChroms                                              ./
-    cp \${OUTBASE}/${prep_id}_region_Full_fraglen_${params.min_flen}_${params.max_flen}.sorted.bed.gz ./
+    cp \${OUTBASE}/${prep_id}_region_Full_fraglen_${params.min_flen}_${params.max_flen}.sorted.bed.gz     ./
+    cp \${OUTBASE}/${prep_id}_region_Full_fraglen_${params.min_flen}_${params.max_flen}.sorted.bed.gz.tbi ./
     cp \${OUTBASE}/${sampleID}.avgGenomeCov.tsv                                           ./
     """
 }

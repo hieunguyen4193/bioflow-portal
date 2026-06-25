@@ -4,7 +4,7 @@ process WPS_IFS_FDI {
     publishDir { "${params.outdir}/step05_wps_ifs_fdi/${sampleID}" }, mode: 'copy'
 
     input:
-    tuple val(sampleID), path(frag), path(chrom_features)
+    tuple val(sampleID), path(frag), path(frag_tbi), path(chrom_features)
 
     output:
     tuple val(sampleID), path("${sampleID}.preprocessed_WPS_IFS_FDI_features"), emit: wps_features

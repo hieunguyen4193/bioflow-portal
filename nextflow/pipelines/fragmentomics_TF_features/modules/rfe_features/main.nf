@@ -4,7 +4,7 @@ process RFE_FEATURES {
     publishDir { "${params.outdir}/step06_rfe_features/${sampleID}" }, mode: 'copy'
 
     input:
-    tuple val(sampleID), path(frag)
+    tuple val(sampleID), path(frag), path(frag_tbi)
 
     output:
     tuple val(sampleID), path("${sampleID}.preprocessed_RFE_features"), emit: rfe_features

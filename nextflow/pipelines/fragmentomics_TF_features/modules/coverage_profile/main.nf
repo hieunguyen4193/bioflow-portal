@@ -4,7 +4,7 @@ process COVERAGE_PROFILE {
     publishDir { "${params.outdir}/step04_coverage_profile/${sampleID}" }, mode: 'copy'
 
     input:
-    tuple val(sampleID), path(frag), path(cna_100kb), path(genomecov)
+    tuple val(sampleID), path(frag), path(frag_tbi), path(cna_100kb), path(genomecov)
 
     output:
     tuple val(sampleID), path("${sampleID}.preprocessed_coverage_profile"), emit: coverage_profile
