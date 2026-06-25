@@ -99,7 +99,7 @@ message("Step 2 done. Saved: ", out_rds)
 REOF
 
     Rscript run_ambient.R \\
-        --rds    ${seurat_rds} \\
+        --rds    "${seurat_rds}" \\
         --method "${method}" \\
         --sample "${sample}"
     """

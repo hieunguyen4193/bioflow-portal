@@ -1,7 +1,5 @@
 process DOUBLET_DETECTION {
     tag "${sample}"
-    memory { 16.GB * task.attempt }
-    maxRetries 2
     publishDir "${params.outdir}/s4_doublet",               mode: "copy"
 
     input:

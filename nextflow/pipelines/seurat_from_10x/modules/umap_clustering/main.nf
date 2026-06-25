@@ -18,10 +18,12 @@ process UMAP_CLUSTERING {
     script:
     """
     cat > run_s8.R << 'REOF'
+if (!requireNamespace("harmony", quietly = TRUE)) {
+  install.packages("harmony", repos = "https://cloud.r-project.org", quiet = TRUE)
+}
 suppressPackageStartupMessages({
   library(Seurat)
   library(harmony)
-  library(stringr)
   library(optparse)
 })
 
@@ -29,20 +31,20 @@ option_list <- list(
   make_option("--rds",                      type = "character"),
   make_option("--sample",                   type = "character", default = "sample"),
   make_option("--use_sctransform",          type = "character", default = "false"),
-  make_option("--num_PCA",                  type = "integer",   default = 50L),
-  make_option("--num_PC_used_in_UMAP",      type = "integer",   default = 30L),
-  make_option("--num_PC_used_in_Clustering",type = "integer",   default = 30L),
-  make_option("--cluster_resolution",       type = "double",    default = 0.5),
+  make_option("--num_PCA",                  type = "character", default = "50"),
+  make_option("--num_PC_used_in_UMAP",      type = "character", default = "30"),
+  make_option("--num_PC_used_in_Clustering",type = "character", default = "30"),
+  make_option("--cluster_resolution",       type = "character", default = "0.5"),
   make_option("--vars_to_regress",          type = "character", default = "percent.mt"),
   make_option("--remove_genes",             type = "character", default = "none")
 )
 opt <- parse_args(OptionParser(option_list = option_list))
 
 use.sctransform          <- tolower(opt\$use_sctransform) == "true"
-num.PCA                  <- opt\$num_PCA
-num.PC.used.in.UMAP      <- opt\$num_PC_used_in_UMAP
-num.PC.used.in.Clustering<- opt\$num_PC_used_in_Clustering
-cluster.resolution       <- opt\$cluster_resolution
+num.PCA                  <- as.integer(opt\$num_PCA)
+num.PC.used.in.UMAP      <- as.integer(opt\$num_PC_used_in_UMAP)
+num.PC.used.in.Clustering<- as.integer(opt\$num_PC_used_in_Clustering)
+cluster.resolution       <- as.numeric(opt\$cluster_resolution)
 
 vars.to.regress <- if (opt\$vars_to_regress == "none") NULL else
                    trimws(strsplit(opt\$vars_to_regress, ",")[[1]])
@@ -70,7 +72,7 @@ s8.integration.and.clustering <- function(s.obj,
   } else {
     s.obj <- NormalizeData(s.obj, normalization.method = "LogNormalize")
     s.obj <- FindVariableFeatures(s.obj, selection.method = "vst")
-    s.obj <- ScaleData(s.obj, features = rownames(s.obj), vars.to.regress = vars.to.regress)
+    s.obj <- ScaleData(s.obj, features = VariableFeatures(s.obj), vars.to.regress = vars.to.regress)
     normalization.method <- "LogNormalize"
   }
 
@@ -90,42 +92,48 @@ s8.integration.and.clustering <- function(s.obj,
                    reduction.name = "umap.unintegrated")
   message("UMAP (unintegrated) finished.")
 
-  message("Integrating with CCA ...")
-  s.obj <- IntegrateLayers(
-    object = s.obj,
-    method = CCAIntegration,
-    orig.reduction = "RNA_PCA",
-    new.reduction = "integrated.cca",
-    verbose = TRUE,
-    normalization.method = normalization.method
-  )
+  n.samples <- length(unique(s.obj\$name))
+  do.integration <- n.samples >= 2
 
-  message("Integrating with RPCA ...")
-  s.obj <- IntegrateLayers(
-    object = s.obj,
-    method = RPCAIntegration,
-    orig.reduction = "RNA_PCA",
-    new.reduction = "integrated.rpca",
-    verbose = TRUE,
-    normalization.method = normalization.method
-  )
+  if (do.integration) {
+    message("Integrating with CCA ...")
+    s.obj <- IntegrateLayers(
+      object = s.obj,
+      method = CCAIntegration,
+      orig.reduction = "RNA_PCA",
+      new.reduction = "integrated.cca",
+      verbose = TRUE,
+      normalization.method = normalization.method
+    )
 
-  message("Integrating with Harmony ...")
-  s.obj <- IntegrateLayers(
-    object = s.obj,
-    method = HarmonyIntegration,
-    orig.reduction = "RNA_PCA",
-    new.reduction = "harmony",
-    verbose = TRUE,
-    normalization.method = normalization.method
-  )
+    message("Integrating with RPCA ...")
+    s.obj <- IntegrateLayers(
+      object = s.obj,
+      method = RPCAIntegration,
+      orig.reduction = "RNA_PCA",
+      new.reduction = "integrated.rpca",
+      verbose = TRUE,
+      normalization.method = normalization.method
+    )
 
-  message("All integrations finished.")
+    message("Integrating with Harmony ...")
+    s.obj <- IntegrateLayers(
+      object = s.obj,
+      method = HarmonyIntegration,
+      orig.reduction = "RNA_PCA",
+      new.reduction = "harmony",
+      verbose = TRUE,
+      normalization.method = normalization.method
+    )
+    message("All integrations finished.")
+  } else {
+    message("Single sample — skipping CCA/RPCA/Harmony integration.")
+  }
 
-  all.reductions <- c("integrated.cca", "integrated.rpca", "harmony")
+  all.reductions <- if (do.integration) c("integrated.cca", "integrated.rpca", "harmony") else c("RNA_PCA")
 
   for (selected.reduction in all.reductions) {
-    new.reduction.name <- str_replace(selected.reduction, "integrated\\.", "")
+    new.reduction.name <- gsub("[^a-zA-Z0-9]", "_", selected.reduction)
     s.obj <- FindNeighbors(s.obj,
                            dims = 1:num.PC.used.in.Clustering,
                            reduction = selected.reduction)

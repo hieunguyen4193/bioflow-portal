@@ -133,7 +133,7 @@ message("Step 3 done.")
 REOF
 
     Rscript run_filter.R \\
-        --rds    ${seurat_rds} \\
+        --rds    "${seurat_rds}" \\
         --sample "${sample}" \\
         ${args}
     """

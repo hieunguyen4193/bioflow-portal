@@ -24,13 +24,14 @@ suppressPackageStartupMessages({
 option_list <- list(
   make_option("--rds",             type = "character"),
   make_option("--sample",          type = "character", default = "sample"),
-  make_option("--use_sctransform", type = "logical",   default = FALSE),
+  make_option("--use_sctransform", type = "character", default = "false"),
   make_option("--vars_to_regress", type = "character", default = "percent.mt")
 )
 opt <- parse_args(OptionParser(option_list = option_list))
 
 s.obj <- readRDS(opt\$rds)
-vars.to.regress <- trimws(strsplit(opt\$vars_to_regress, ",")[[1]])
+use.sctransform  <- tolower(opt\$use_sctransform) == "true"
+vars.to.regress  <- trimws(strsplit(opt\$vars_to_regress, ",")[[1]])
 
 # ── Preprocessing + cell cycle scoring function ───────────────────────────
 s5.preprocess.before.cellCycle.scoring <- function(s.obj,
@@ -78,17 +79,13 @@ s5.preprocess.before.cellCycle.scoring <- function(s.obj,
 
 s.obj <- s5.preprocess.before.cellCycle.scoring(
   s.obj,
-  use.sctransform = opt\$use_sctransform,
+  use.sctransform = use.sctransform,
   vars.to.regress = vars.to.regress,
   PROJECT         = opt\$sample
 )
 
-# ── Plots ──────────────────────────────────────────────────────────────────
-# PCA coloured by phase (requires PCA to be run first)
-s.obj <- RunPCA(s.obj, features = c(
-  rownames(s.obj)[grepl("^S\\\\.", rownames(s.obj))],  # fallback
-  rownames(s.obj)[grepl("^G2M\\\\.", rownames(s.obj))]
-), verbose = FALSE)
+# ── PCA on variable features for plotting ──────────────────────────────────
+s.obj <- RunPCA(s.obj, features = VariableFeatures(s.obj), verbose = FALSE)
 
 p_phase <- DimPlot(s.obj, group.by = "Phase") +
   ggtitle(sprintf("%s — Cell cycle phase (PCA)", opt\$sample))
@@ -108,9 +105,9 @@ message("Step 5 done.")
 REOF
 
     Rscript run_cell_cycle.R \\
-        --rds             ${seurat_rds} \\
+        --rds    "${seurat_rds}" \\
         --sample          "${sample}" \\
-        --use_sctransform ${use_sctransform} \\
+        --use_sctransform "${use_sctransform}" \\
         --vars_to_regress "${vars_to_regress}"
     """
 }

@@ -28,7 +28,7 @@ option_list <- list(
 opt <- parse_args(OptionParser(option_list = option_list))
 
 # helper operator
-\`%ni%\` <- Negate(\`%in%\`)
+`%ni%` <- function(x, y) !x %in% y
 
 s.obj <- readRDS(opt\$rds)
 
@@ -133,7 +133,7 @@ message("Step 6 done.")
 REOF
 
     Rscript run_cell_cycle_s6.R \\
-        --rds    ${seurat_rds} \\
+        --rds    "${seurat_rds}" \\
         --sample "${sample}" \\
         --mode   "${mode}"
     """
