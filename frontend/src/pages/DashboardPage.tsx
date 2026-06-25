@@ -1,3 +1,4 @@
+import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { listJobs, Job } from '../api/jobs'
@@ -9,8 +10,44 @@ const STATUS_COLORS: Record<Job['status'], string> = {
   failed:  'bg-red-100 text-red-800',
 }
 
+const ALL_STATUSES: Array<Job['status'] | 'all'> = ['all', 'queued', 'running', 'done', 'failed']
+
 export default function DashboardPage() {
   const { data: jobs = [], isLoading } = useQuery({ queryKey: ['jobs'], queryFn: listJobs, refetchInterval: 5000 })
+
+  const [search, setSearch]   = useState('')
+  const [status, setStatus]   = useState<Job['status'] | 'all'>('all')
+  const [sortBy, setSortBy]   = useState<'created_at' | 'updated_at' | 'pipeline'>('created_at')
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc')
+
+  const pipelines = useMemo(() => [...new Set(jobs.map(j => j.pipeline))].sort(), [jobs])
+
+  const filtered = useMemo(() => {
+    let result = jobs.filter(job => {
+      const matchStatus   = status === 'all' || job.status === status
+      const matchSearch   = search === '' ||
+        job.pipeline.toLowerCase().includes(search.toLowerCase()) ||
+        job.id.toLowerCase().includes(search.toLowerCase())
+      return matchStatus && matchSearch
+    })
+    result = [...result].sort((a, b) => {
+      let cmp = 0
+      if (sortBy === 'pipeline') cmp = a.pipeline.localeCompare(b.pipeline)
+      else cmp = new Date(a[sortBy]).getTime() - new Date(b[sortBy]).getTime()
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+    return result
+  }, [jobs, search, status, sortBy, sortDir])
+
+  function toggleSort(col: typeof sortBy) {
+    if (sortBy === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortBy(col); setSortDir('desc') }
+  }
+
+  const SortIcon = ({ col }: { col: typeof sortBy }) =>
+    sortBy === col
+      ? <span className="ml-1 text-indigo-600">{sortDir === 'asc' ? '↑' : '↓'}</span>
+      : <span className="ml-1 text-slate-300">↕</span>
 
   return (
     <div>
@@ -21,6 +58,42 @@ export default function DashboardPage() {
         </Link>
       </div>
 
+      {/* Filter bar */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <input
+          type="text"
+          placeholder="Search by pipeline or job ID…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        />
+
+        <div className="flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+          {ALL_STATUSES.map(s => (
+            <button
+              key={s}
+              onClick={() => setStatus(s)}
+              className={`px-3 py-1.5 capitalize transition-colors ${
+                status === s
+                  ? 'bg-indigo-600 text-white font-medium'
+                  : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {s === 'all' ? `All (${jobs.length})` : `${s} (${jobs.filter(j => j.status === s).length})`}
+            </button>
+          ))}
+        </div>
+
+        {(search || status !== 'all') && (
+          <button
+            onClick={() => { setSearch(''); setStatus('all') }}
+            className="text-sm text-slate-400 hover:text-slate-600 px-2"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
       {isLoading && <p className="text-slate-500">Loading…</p>}
 
       {!isLoading && jobs.length === 0 && (
@@ -29,20 +102,32 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {jobs.length > 0 && (
+      {!isLoading && jobs.length > 0 && filtered.length === 0 && (
+        <div className="text-center py-12 text-slate-400">
+          No jobs match the current filters.
+        </div>
+      )}
+
+      {filtered.length > 0 && (
         <div className="bg-white rounded-xl shadow overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b">
               <tr>
-                <th className="text-left px-4 py-3 font-medium">Pipeline</th>
+                <th className="text-left px-4 py-3 font-medium cursor-pointer select-none hover:text-indigo-600" onClick={() => toggleSort('pipeline')}>
+                  Pipeline <SortIcon col="pipeline" />
+                </th>
                 <th className="text-left px-4 py-3 font-medium">Status</th>
-                <th className="text-left px-4 py-3 font-medium">Submitted</th>
-                <th className="text-left px-4 py-3 font-medium">Updated</th>
+                <th className="text-left px-4 py-3 font-medium cursor-pointer select-none hover:text-indigo-600" onClick={() => toggleSort('created_at')}>
+                  Submitted <SortIcon col="created_at" />
+                </th>
+                <th className="text-left px-4 py-3 font-medium cursor-pointer select-none hover:text-indigo-600" onClick={() => toggleSort('updated_at')}>
+                  Updated <SortIcon col="updated_at" />
+                </th>
                 <th />
               </tr>
             </thead>
             <tbody className="divide-y">
-              {jobs.map((job) => (
+              {filtered.map((job) => (
                 <tr key={job.id} className="hover:bg-slate-50">
                   <td className="px-4 py-3 font-mono text-xs">{job.pipeline}</td>
                   <td className="px-4 py-3">
@@ -59,6 +144,9 @@ export default function DashboardPage() {
               ))}
             </tbody>
           </table>
+          <div className="px-4 py-2 border-t text-xs text-slate-400">
+            Showing {filtered.length} of {jobs.length} jobs
+          </div>
         </div>
       )}
     </div>

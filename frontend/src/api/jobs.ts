@@ -52,3 +52,32 @@ export async function listPipelines() {
   const { data } = await api.get('/pipelines/')
   return data
 }
+
+export interface PipelineParam {
+  key: string
+  label: string
+  type: string
+  default: unknown
+  options?: string[]
+}
+
+export interface PipelineStep {
+  key: string
+  label: string
+  run_key: string | null
+  params: PipelineParam[]
+}
+
+export interface Pipeline {
+  label: string
+  steps: PipelineStep[]
+}
+
+export async function getPipeline(id: string): Promise<Pipeline | null> {
+  try {
+    const { data } = await api.get<Pipeline>(`/pipelines/${id}`)
+    return data
+  } catch {
+    return null
+  }
+}

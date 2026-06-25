@@ -4,7 +4,7 @@ from fastapi import APIRouter
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
 PIPELINE_REGISTRY = {
-    "seurat_from_10x": {
+    "basic_Seurat_single_cell_pipeline": {
         "name": "Seurat object from 10x CellRanger",
         "description": "Creates a Seurat object from the barcodes/features/matrix triplet produced by CellRanger. Outputs an RDS file and QC plots.",
         "input_files": [
@@ -125,9 +125,14 @@ async def list_pipelines():
     return [{"id": k, **v} for k, v in PIPELINE_REGISTRY.items()]
 
 
+PIPELINE_ALIASES = {
+    "seurat_from_10x": "basic_Seurat_single_cell_pipeline",
+}
+
 @router.get("/{pipeline_id}")
 async def get_pipeline(pipeline_id: str):
-    if pipeline_id not in PIPELINE_REGISTRY:
+    resolved = PIPELINE_ALIASES.get(pipeline_id, pipeline_id)
+    if resolved not in PIPELINE_REGISTRY:
         from fastapi import HTTPException
         raise HTTPException(404, "Pipeline not found")
-    return {"id": pipeline_id, **PIPELINE_REGISTRY[pipeline_id]}
+    return {"id": resolved, **PIPELINE_REGISTRY[resolved]}

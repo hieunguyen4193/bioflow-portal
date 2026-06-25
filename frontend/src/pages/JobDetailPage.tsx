@@ -1,6 +1,44 @@
 import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { getJob, listOutputFiles, downloadUrl } from '../api/jobs'
+import { getJob, listOutputFiles, downloadUrl, getPipeline, Job, Pipeline } from '../api/jobs'
+
+function buildParamIndex(pipeline: Pipeline | undefined) {
+  const index: Record<string, { stepLabel: string; paramLabel: string }> = {}
+  if (!pipeline) return index
+  for (const step of pipeline.steps) {
+    for (const p of step.params) {
+      index[p.key] = { stepLabel: step.label, paramLabel: p.label }
+    }
+    if (step.run_key) index[step.run_key] = { stepLabel: step.label, paramLabel: 'Run this step' }
+  }
+  return index
+}
+
+function downloadParamsCSV(job: Job, pipeline: Pipeline | undefined) {
+  const index = buildParamIndex(pipeline)
+  const metaRows = [
+    ['', 'Job metadata', 'job_id',    'Job ID',    job.id],
+    ['', 'Job metadata', 'pipeline',  'Pipeline',  job.pipeline],
+    ['', 'Job metadata', 'status',    'Status',    job.status],
+    ['', 'Job metadata', 'submitted', 'Submitted', new Date(job.created_at + 'Z').toISOString()],
+    ['', 'Job metadata', 'updated',   'Updated',   new Date(job.updated_at + 'Z').toISOString()],
+  ]
+  const paramRows = Object.entries(job.params).map(([k, v]) => {
+    const info = index[k]
+    return [info?.stepLabel ?? '', info?.stepLabel ?? 'General', k, info?.paramLabel ?? k, String(v)]
+  })
+  const header = 'step,step_label,parameter_key,parameter_label,value'
+  const rows   = [...metaRows, ...paramRows]
+    .map(cols => cols.map(c => JSON.stringify(c)).join(','))
+    .join('\n')
+  const blob = new Blob([`${header}\n${rows}`], { type: 'text/csv' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
+  a.download = `params_${job.id}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 const STATUS_COLORS: Record<string, string> = {
   queued:  'bg-yellow-100 text-yellow-800',
@@ -19,6 +57,12 @@ export default function JobDetailPage() {
       const status = query.state.data?.status
       return status === 'queued' || status === 'running' ? 3000 : false
     },
+  })
+
+  const { data: pipeline } = useQuery({
+    queryKey: ['pipeline', job?.pipeline],
+    queryFn: () => getPipeline(job!.pipeline),
+    enabled: !!job?.pipeline,
   })
 
   const { data: files = [] } = useQuery({
@@ -40,6 +84,14 @@ export default function JobDetailPage() {
         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[job.status]}`}>
           {job.status}
         </span>
+        <div className="ml-auto">
+          <button
+            onClick={() => downloadParamsCSV(job, pipeline)}
+            className="flex items-center gap-1.5 text-sm border border-slate-300 hover:border-indigo-400 hover:text-indigo-600 px-3 py-1.5 rounded-lg transition-colors"
+          >
+            ⬇ Download Parameters
+          </button>
+        </div>
       </div>
 
       {/* Meta */}
@@ -47,10 +99,37 @@ export default function JobDetailPage() {
         <div><span className="text-slate-500">Job ID</span><br /><code className="text-xs">{job.id}</code></div>
         <div><span className="text-slate-500">Submitted</span><br />{new Date(job.created_at + 'Z').toLocaleString()}</div>
         <div><span className="text-slate-500">Updated</span><br />{new Date(job.updated_at + 'Z').toLocaleString()}</div>
-        <div><span className="text-slate-500">Parameters</span><br />
-          {Object.entries(job.params).map(([k, v]) => (
-            <span key={k} className="inline-block mr-2 text-xs bg-slate-100 px-1 rounded">{k}={String(v)}</span>
-          ))}
+        <div className="col-span-2">
+          <span className="text-slate-500">Parameters</span>
+          <div className="mt-2 rounded-lg border border-slate-200 overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 border-b">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium text-slate-600">Step</th>
+                  <th className="text-left px-3 py-2 font-medium text-slate-600">Parameter</th>
+                  <th className="text-left px-3 py-2 font-medium text-slate-600">Value</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(() => {
+                  const index = buildParamIndex(pipeline)
+                  return Object.entries(job.params).map(([k, v]) => {
+                    const info = index[k]
+                    return (
+                      <tr key={k} className="hover:bg-slate-50">
+                        <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">{info?.stepLabel ?? '—'}</td>
+                        <td className="px-3 py-1.5 text-slate-700">
+                          <span className="font-medium">{info?.paramLabel ?? k}</span>
+                          <span className="ml-1.5 text-slate-400 font-mono">({k})</span>
+                        </td>
+                        <td className="px-3 py-1.5 font-mono text-slate-500 break-all">{String(v)}</td>
+                      </tr>
+                    )
+                  })
+                })()}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 

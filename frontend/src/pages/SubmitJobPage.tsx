@@ -113,7 +113,7 @@ function StepPanel({
 export default function SubmitJobPage() {
   const navigate = useNavigate()
   const { data: pipelines = [] } = useQuery({ queryKey: ['pipelines'], queryFn: listPipelines })
-  const [selectedPipeline, setSelectedPipeline] = useState('seurat_from_10x')
+  const [selectedPipeline, setSelectedPipeline] = useState('basic_Seurat_single_cell_pipeline')
   const [files, setFiles] = useState<File[]>([])
   const [params, setParams] = useState<Record<string, string>>({})
   const [uploading, setUploading] = useState(false)
@@ -149,7 +149,20 @@ export default function SubmitJobPage() {
       setUploadProgress(20)
       const { batch_id } = await uploadFiles(files)
       setUploadProgress(70)
-      const job = await submitJob(selectedPipeline, batch_id, params)
+      // Merge pipeline defaults so all step params are always stored, even if user didn't touch them
+      const defaults: Record<string, string> = {}
+      if (currentPipeline?.steps) {
+        for (const step of currentPipeline.steps) {
+          if (step.run_key) defaults[step.run_key] = 'false'
+          for (const p of step.params) {
+            if (p.default !== undefined && p.default !== null) {
+              defaults[p.key] = String(p.default)
+            }
+          }
+        }
+      }
+      const fullParams = { ...defaults, ...params }
+      const job = await submitJob(selectedPipeline, batch_id, fullParams)
       setUploadProgress(100)
       toast.success('Job submitted!')
       navigate(`/jobs/${job.id}`)

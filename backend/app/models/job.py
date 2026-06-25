@@ -10,7 +10,7 @@ class Job(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"))
-    pipeline: Mapped[str] = mapped_column(String)           # e.g. "seurat_from_10x"
+    pipeline: Mapped[str] = mapped_column(String)           # e.g. "basic_Seurat_single_cell_pipeline"
     status: Mapped[str] = mapped_column(String, default="queued")  # queued|running|done|failed
     params: Mapped[dict] = mapped_column(JSON, default=dict)
     input_files: Mapped[list] = mapped_column(JSON, default=list)  # relative paths under UPLOAD_DIR
