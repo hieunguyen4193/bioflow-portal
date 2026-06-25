@@ -1,19 +1,37 @@
 import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { listJobs, Job } from '../api/jobs'
+import { listJobs, stopJob, pauseJob, resumeJob, Job } from '../api/jobs'
+import toast from 'react-hot-toast'
 
-const STATUS_COLORS: Record<Job['status'], string> = {
-  queued:  'bg-yellow-100 text-yellow-800',
-  running: 'bg-blue-100 text-blue-800',
-  done:    'bg-green-100 text-green-800',
-  failed:  'bg-red-100 text-red-800',
+const STATUS_COLORS: Record<string, string> = {
+  queued:    'bg-yellow-100 text-yellow-800',
+  running:   'bg-blue-100 text-blue-800',
+  done:      'bg-green-100 text-green-800',
+  failed:    'bg-red-100 text-red-800',
+  cancelled: 'bg-slate-100 text-slate-600',
+  paused:    'bg-orange-100 text-orange-700',
 }
 
-const ALL_STATUSES: Array<Job['status'] | 'all'> = ['all', 'queued', 'running', 'done', 'failed']
+const ALL_STATUSES: Array<Job['status'] | 'all'> = ['all', 'queued', 'running', 'paused', 'done', 'failed', 'cancelled']
 
 export default function DashboardPage() {
   const { data: jobs = [], isLoading } = useQuery({ queryKey: ['jobs'], queryFn: listJobs, refetchInterval: 5000 })
+  const qc = useQueryClient()
+
+  async function handleStop(id: string) {
+    if (!confirm('Stop this pipeline? It cannot be resumed.')) return
+    try { await stopJob(id); qc.invalidateQueries({ queryKey: ['jobs'] }); toast.success('Pipeline stopped') }
+    catch { toast.error('Failed to stop') }
+  }
+  async function handlePause(id: string) {
+    try { await pauseJob(id); qc.invalidateQueries({ queryKey: ['jobs'] }); toast.success('Pipeline paused') }
+    catch { toast.error('Failed to pause') }
+  }
+  async function handleResume(id: string) {
+    try { await resumeJob(id); qc.invalidateQueries({ queryKey: ['jobs'] }); toast.success('Pipeline resumed') }
+    catch { toast.error('Failed to resume') }
+  }
 
   const [search, setSearch]   = useState('')
   const [status, setStatus]   = useState<Job['status'] | 'all'>('all')
@@ -138,7 +156,27 @@ export default function DashboardPage() {
                   <td className="px-4 py-3 text-slate-500">{new Date(job.created_at + 'Z').toLocaleString()}</td>
                   <td className="px-4 py-3 text-slate-500">{new Date(job.updated_at + 'Z').toLocaleString()}</td>
                   <td className="px-4 py-3">
-                    <Link to={`/jobs/${job.id}`} className="text-indigo-600 hover:underline">Details</Link>
+                    <div className="flex items-center gap-2">
+                      <Link to={`/jobs/${job.id}`} className="text-indigo-600 hover:underline text-sm">Details</Link>
+                      {job.status === 'running' && (
+                        <>
+                          <button onClick={() => handlePause(job.id)}
+                            className="text-xs border border-orange-300 text-orange-600 hover:bg-orange-50 px-2 py-0.5 rounded transition-colors">
+                            ⏸
+                          </button>
+                          <button onClick={() => handleStop(job.id)}
+                            className="text-xs border border-red-300 text-red-600 hover:bg-red-50 px-2 py-0.5 rounded transition-colors">
+                            ⏹
+                          </button>
+                        </>
+                      )}
+                      {job.status === 'paused' && (
+                        <button onClick={() => handleResume(job.id)}
+                          className="text-xs border border-green-300 text-green-600 hover:bg-green-50 px-2 py-0.5 rounded transition-colors">
+                          ▶
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -43,6 +43,10 @@ export async function listOutputFiles(id: string): Promise<OutputFile[]> {
   return data
 }
 
+export async function stopJob(id: string)   { await api.post(`/jobs/${id}/stop`) }
+export async function pauseJob(id: string)  { await api.post(`/jobs/${id}/pause`) }
+export async function resumeJob(id: string) { await api.post(`/jobs/${id}/resume`) }
+
 export function downloadUrl(jobId: string, filePath: string) {
   const token = localStorage.getItem('token') ?? ''
   return `/api/jobs/${jobId}/download/${filePath}?token=${encodeURIComponent(token)}`

@@ -102,6 +102,59 @@ async def list_output_files(
     return files
 
 
+@router.post("/{job_id}/stop")
+async def stop_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.workers.runner import stop_job as _stop
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status != "running":
+        raise HTTPException(400, f"Job is not running (status: {job.status})")
+    _stop(job_id)
+    return {"status": "cancelled"}
+
+
+@router.post("/{job_id}/pause")
+async def pause_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.workers.runner import pause_job as _pause
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status != "running":
+        raise HTTPException(400, f"Job is not running (status: {job.status})")
+    _pause(job_id)
+    return {"status": "paused"}
+
+
+@router.post("/{job_id}/resume")
+async def resume_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.workers.runner import resume_job as _resume
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status != "paused":
+        raise HTTPException(400, f"Job is not paused (status: {job.status})")
+    ok = _resume(job_id)
+    if not ok:
+        raise HTTPException(500, "Failed to resume job")
+    return {"status": "running"}
+
+
 @router.get("/{job_id}/download/{file_path:path}")
 async def download_file(
     job_id: str,

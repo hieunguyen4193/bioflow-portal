@@ -1,6 +1,7 @@
 import { useParams, Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { getJob, listOutputFiles, downloadUrl, getPipeline, Job, Pipeline } from '../api/jobs'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getJob, listOutputFiles, downloadUrl, getPipeline, stopJob, pauseJob, resumeJob, Job, Pipeline } from '../api/jobs'
+import toast from 'react-hot-toast'
 
 function buildParamIndex(pipeline: Pipeline | undefined) {
   const index: Record<string, { stepLabel: string; paramLabel: string }> = {}
@@ -41,23 +42,42 @@ function downloadParamsCSV(job: Job, pipeline: Pipeline | undefined) {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  queued:  'bg-yellow-100 text-yellow-800',
-  running: 'bg-blue-100 text-blue-800',
-  done:    'bg-green-100 text-green-800',
-  failed:  'bg-red-100 text-red-800',
+  queued:    'bg-yellow-100 text-yellow-800',
+  running:   'bg-blue-100 text-blue-800',
+  done:      'bg-green-100 text-green-800',
+  failed:    'bg-red-100 text-red-800',
+  cancelled: 'bg-slate-100 text-slate-600',
+  paused:    'bg-orange-100 text-orange-700',
 }
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const qc = useQueryClient()
 
   const { data: job } = useQuery({
     queryKey: ['job', id],
     queryFn: () => getJob(id!),
     refetchInterval: (query) => {
       const status = query.state.data?.status
-      return status === 'queued' || status === 'running' ? 3000 : false
+      return status === 'queued' || status === 'running' || status === 'paused' ? 3000 : false
     },
   })
+
+  async function handleStop() {
+    if (!confirm('Stop this pipeline? It cannot be resumed.')) return
+    try { await stopJob(id!); qc.invalidateQueries({ queryKey: ['job', id] }); toast.success('Pipeline stopped') }
+    catch { toast.error('Failed to stop') }
+  }
+
+  async function handlePause() {
+    try { await pauseJob(id!); qc.invalidateQueries({ queryKey: ['job', id] }); toast.success('Pipeline paused — can be resumed later') }
+    catch { toast.error('Failed to pause') }
+  }
+
+  async function handleResume() {
+    try { await resumeJob(id!); qc.invalidateQueries({ queryKey: ['job', id] }); toast.success('Pipeline resumed') }
+    catch { toast.error('Failed to resume') }
+  }
 
   const { data: pipeline } = useQuery({
     queryKey: ['pipeline', job?.pipeline],
@@ -84,7 +104,25 @@ export default function JobDetailPage() {
         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[job.status]}`}>
           {job.status}
         </span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {job.status === 'running' && (
+            <>
+              <button onClick={handlePause}
+                className="text-sm border border-orange-300 text-orange-600 hover:bg-orange-50 px-3 py-1.5 rounded-lg transition-colors">
+                ⏸ Pause
+              </button>
+              <button onClick={handleStop}
+                className="text-sm border border-red-300 text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors">
+                ⏹ Stop
+              </button>
+            </>
+          )}
+          {job.status === 'paused' && (
+            <button onClick={handleResume}
+              className="text-sm border border-green-300 text-green-600 hover:bg-green-50 px-3 py-1.5 rounded-lg transition-colors">
+              ▶ Resume
+            </button>
+          )}
           <button
             onClick={() => downloadParamsCSV(job, pipeline)}
             className="flex items-center gap-1.5 text-sm border border-slate-300 hover:border-indigo-400 hover:text-indigo-600 px-3 py-1.5 rounded-lg transition-colors"
