@@ -1,7 +1,7 @@
 // Step 01 — preprocess BAM: sort/index, split by fragment size, convert to BEDPE, genome coverage
 process PROCESS_BAM {
     tag "${sampleID}"
-    publishDir { "${params.outdir}/step01_process_bam/${sampleID}" }, mode: 'copy'
+    publishDir { "${params.outdir}/step01_process_bam/${sampleID}" }, mode: 'copy', enabled: { params.publish_intermediates != false && params.publish_intermediates != "false" }
 
     input:
     tuple val(sampleID), path(bam_file)
