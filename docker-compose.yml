@@ -24,6 +24,8 @@ services:
       - ./backend:/app
       - /Users/hieunguyen/src/bioflow-portal/data/uploads:/Users/hieunguyen/src/bioflow-portal/data/uploads
       - /Users/hieunguyen/src/bioflow-portal/data/results:/Users/hieunguyen/src/bioflow-portal/data/results
+      - /Users/hieunguyen/src/bioflow-portal/data/explore:/Users/hieunguyen/src/bioflow-portal/data/explore
+      - /Users/hieunguyen/src/bioflow-portal/backend/app/r_scripts:/Users/hieunguyen/src/bioflow-portal/backend/app/r_scripts
       - /Users/hieunguyen/src/bioflow-portal/nextflow:/Users/hieunguyen/src/bioflow-portal/nextflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
@@ -44,6 +46,12 @@ services:
       - /app/node_modules
     environment:
       - VITE_API_URL=http://localhost:8000
+
+  shiny:
+    build: ./shiny
+    ports:
+      - "3838:3838"
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -1,9 +1,11 @@
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 
 export default function Layout() {
   const { user, logout } = useAuthStore()
-  const navigate = useNavigate()
+  const navigate  = useNavigate()
+  const location  = useLocation()
+  const isExplore = location.pathname === '/explore'
 
   function handleLogout() {
     logout()
@@ -11,7 +13,7 @@ export default function Layout() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       <header className="bg-indigo-700 text-white px-6 py-3 flex items-center justify-between shadow">
         <div className="flex items-center gap-6">
           <span className="font-bold text-lg tracking-tight">BioFlow Portal</span>
@@ -22,6 +24,9 @@ export default function Layout() {
             <NavLink to="/submit" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
               Run Pipeline
             </NavLink>
+            <NavLink to="/explore" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
+              Explore
+            </NavLink>
           </nav>
         </div>
         <div className="flex items-center gap-3 text-sm">
@@ -31,7 +36,7 @@ export default function Layout() {
           </button>
         </div>
       </header>
-      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-8">
+      <main className={isExplore ? 'flex-1 overflow-hidden' : 'flex-1 overflow-y-auto max-w-5xl mx-auto w-full px-4 py-8'}>
         <Outlet />
       </main>
     </div>

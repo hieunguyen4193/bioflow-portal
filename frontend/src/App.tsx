@@ -7,6 +7,7 @@ import RegisterPage from './pages/RegisterPage'
 import DashboardPage from './pages/DashboardPage'
 import SubmitJobPage from './pages/SubmitJobPage'
 import JobDetailPage from './pages/JobDetailPage'
+import ExplorePage from './pages/ExplorePage'
 import Layout from './components/Layout'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -28,8 +29,9 @@ export default function App() {
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
         <Route index element={<DashboardPage />} />
-        <Route path="submit" element={<SubmitJobPage />} />
+        <Route path="submit"  element={<SubmitJobPage />} />
         <Route path="jobs/:id" element={<JobDetailPage />} />
+        <Route path="explore" element={<ExplorePage />} />
       </Route>
     </Routes>
   )

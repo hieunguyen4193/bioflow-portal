@@ -81,3 +81,14 @@ export async function getPipeline(id: string): Promise<Pipeline | null> {
     return null
   }
 }
+
+export async function getPipelineReadme(id: string): Promise<string> {
+  try {
+    const { data } = await api.get<string>(`/pipelines/${id}/readme`, {
+      responseType: 'text',
+    })
+    return data
+  } catch {
+    return 'No description available.'
+  }
+}

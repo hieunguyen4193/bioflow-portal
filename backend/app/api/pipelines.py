@@ -1,12 +1,20 @@
 """Static registry of available pipelines."""
-from fastapi import APIRouter
+import os
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
+
+PIPELINES_BASE = os.environ.get(
+    "PIPELINES_BASE",
+    "/Users/hieunguyen/src/bioflow-portal/nextflow/pipelines",
+)
 
 PIPELINE_REGISTRY = {
     "basic_Seurat_single_cell_pipeline": {
         "name": "Seurat object from 10x CellRanger",
         "description": "Creates a Seurat object from the barcodes/features/matrix triplet produced by CellRanger. Outputs an RDS file and QC plots.",
+        "readme": "basic_Seurat_single_cell_pipeline/README.md",
         "input_files": [
             {"key": "barcodes", "label": "barcodes.tsv.gz"},
             {"key": "features", "label": "features.tsv.gz"},
@@ -129,10 +137,24 @@ PIPELINE_ALIASES = {
     "seurat_from_10x": "basic_Seurat_single_cell_pipeline",
 }
 
+@router.get("/{pipeline_id}/readme", response_class=PlainTextResponse)
+async def get_pipeline_readme(pipeline_id: str):
+    resolved = PIPELINE_ALIASES.get(pipeline_id, pipeline_id)
+    entry = PIPELINE_REGISTRY.get(resolved)
+    if not entry:
+        raise HTTPException(404, "Pipeline not found")
+    rel = entry.get("readme")
+    if not rel:
+        return PlainTextResponse("No description available.")
+    path = os.path.join(PIPELINES_BASE, rel)
+    if not os.path.exists(path):
+        return PlainTextResponse("Description file not found.")
+    return PlainTextResponse(open(path).read())
+
+
 @router.get("/{pipeline_id}")
 async def get_pipeline(pipeline_id: str):
     resolved = PIPELINE_ALIASES.get(pipeline_id, pipeline_id)
     if resolved not in PIPELINE_REGISTRY:
-        from fastapi import HTTPException
         raise HTTPException(404, "Pipeline not found")
     return {"id": resolved, **PIPELINE_REGISTRY[resolved]}
