@@ -13,10 +13,10 @@ process COVERAGE_PROFILE {
     def cov_script = "${params.projectdir}/processes/generate_TFBS_features/04_generate_coverage_profile_features.sh"
     def prep_id    = "${sampleID}.preprocessed"
     """
-    sed 's|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS|${params.resource_dir}/TFBS|g; s|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources|${params.resource_dir}|g' ${cov_script} > patched_04.sh
     export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
+    export RESOURCE_DIR="${params.resource_dir}"
     mkdir -p workdir
-    bash patched_04.sh \\
+    bash ${cov_script} \\
         -i ${frag} \\
         -s ${prep_id} \\
         -o workdir \\

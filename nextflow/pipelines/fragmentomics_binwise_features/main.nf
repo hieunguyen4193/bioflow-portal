@@ -12,10 +12,11 @@ workflow {
         .fromPath(params.samplesheet)
         .splitCsv(header: true)
         .map { row ->
-            def id        = row.find { it.key.toLowerCase() == 'sampleid' }?.value
-            def short_bam = row.find { it.key.toLowerCase() == 'short_bam' }?.value
-            def long_bam  = row.find { it.key.toLowerCase() == 'long_bam' }?.value
-            def full_bam  = row.find { it.key.toLowerCase() == 'full_bam' }?.value
+            def norm      = row.collectEntries { k, v -> [k.trim().toLowerCase(), v?.trim()] }
+            def id        = norm['sampleid']
+            def short_bam = norm['short_bam']
+            def long_bam  = norm['long_bam']
+            def full_bam  = norm['full_bam']
             tuple(
                 id,
                 file(short_bam), file("${short_bam}.bai"),

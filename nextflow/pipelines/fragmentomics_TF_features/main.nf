@@ -5,7 +5,6 @@ include { FRAGMENTOMICS } from './workflows/fragmentomics'
 
 workflow {
     if (!params.samplesheet) error "Provide --samplesheet <path/to/samplesheet.csv>"
-    if (!params.projectdir)  error "params.projectdir must be set (check nextflow.config)"
 
     ch_samples = Channel
         .fromPath(params.samplesheet)

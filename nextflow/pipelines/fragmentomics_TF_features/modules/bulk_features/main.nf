@@ -15,9 +15,9 @@ process BULK_FEATURES {
     def bulk_script = "${params.projectdir}/processes/generate_bulk_features.sh"
     """
     export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
-    sed 's|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS|${params.resource_dir}/TFBS|g; s|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources|${params.resource_dir}|g' ${bulk_script} > patched_bulk.sh
+    export RESOURCE_DIR="${params.resource_dir}"
     mkdir -p workdir
-    bash patched_bulk.sh \\
+    bash ${bulk_script} \\
         -i ${frag} \\
         -s ${sampleID} \\
         -o workdir \\

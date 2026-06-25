@@ -13,10 +13,10 @@ process WPS_IFS_FDI {
     def wps_script = "${params.projectdir}/processes/generate_TFBS_features/05_generate_WPS_IFS_FDI_features.sh"
     def prep_id    = "${sampleID}.preprocessed"
     """
-    sed 's|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources/preprocessed_resources/TFBS|${params.resource_dir}/TFBS|g; s|/mnt/NFS_190T/DATA_HIEUNGUYEN/resources|${params.resource_dir}|g' ${wps_script} > patched_05.sh
     export PATH=/home/dockerUser/samtools/bin:/home/dockerUser/miniconda3/bin:/home/dockerUser/miniconda3/condabin:/home/dockerUser/bedtools2/bin:\$PATH
+    export RESOURCE_DIR="${params.resource_dir}"
     mkdir -p workdir
-    bash patched_05.sh \\
+    bash ${wps_script} \\
         -i ${frag} \\
         -s ${prep_id} \\
         -o workdir \\
