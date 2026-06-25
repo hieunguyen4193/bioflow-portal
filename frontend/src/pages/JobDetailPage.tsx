@@ -92,6 +92,8 @@ export default function JobDetailPage() {
     enabled: job?.status === 'done',
   })
 
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
+
   if (!job) return <p className="text-slate-500">Loading…</p>
 
   const imageFiles = files.filter((f) => f.name.endsWith('.png') || f.name.endsWith('.pdf'))
@@ -107,7 +109,6 @@ export default function JobDetailPage() {
   }, {})
   const groupNames = Object.keys(fileGroups).sort()
   const manyFiles  = dataFiles.length > 20
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
   const isOpen = (g: string) => openGroups[g] ?? !manyFiles
   const toggleGroup = (g: string) => setOpenGroups(prev => ({ ...prev, [g]: !isOpen(g) }))
 

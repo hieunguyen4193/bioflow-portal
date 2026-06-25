@@ -5,7 +5,7 @@ process BULK_FEATURES {
     publishDir { "${params.outdir}/bulk_features/${sampleID}" }, mode: 'copy'
 
     input:
-    tuple val(sampleID), path(frag), path(frag_tbi)
+    tuple val(sampleID), path(frag)
 
     output:
     tuple val(sampleID), path("${sampleID}_bulk_features"),   emit: bulk_features
