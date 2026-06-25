@@ -17,16 +17,16 @@ params.max_mt_pct            = 20
 params.remove_TCR_genes      = false
 
 // ── Step skip switches (s1 always runs) ───────────────────────────────────
-params.run_downsample    = false
+params.run_downsample    = "false"
 params.downsample_type   = "percent"  // percent | number
 params.downsample_value  = 100
-params.run_s2 = true
-params.run_s3 = true
-params.run_s4 = true
-params.run_s5 = true
-params.run_s6 = true
-params.run_s7 = true
-params.run_s8 = true
+params.run_s2 = "true"
+params.run_s3 = "true"
+params.run_s4 = "true"
+params.run_s5 = "true"
+params.run_s6 = "true"
+params.run_s7 = "true"
+params.run_s8 = "true"
 
 // ── Step 2: Ambient RNA ────────────────────────────────────────────────────
 params.ambient_method        = "decontX"   // decontX | SoupX | none

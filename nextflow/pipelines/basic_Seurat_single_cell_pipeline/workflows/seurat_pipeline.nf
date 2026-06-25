@@ -106,7 +106,7 @@ workflow SEURAT_PIPELINE {
     }
 
     // ── Step 7: Regress out ─────────────────────────────────────────────────
-    if (params.run_s7) {
+    if (params.run_s7 == "true") {
         REGRESS_OUT_WF(
             ch_s7_input,
             params.features_to_regressOut,
@@ -118,7 +118,7 @@ workflow SEURAT_PIPELINE {
     }
 
     // ── Step 8: UMAP + clustering ───────────────────────────────────────────
-    if (params.run_s8) {
+    if (params.run_s8 == "true") {
         UMAP_CLUSTERING_WF(
             ch_s8_input,
             params.use_sctransform,
