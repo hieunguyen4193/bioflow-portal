@@ -46,6 +46,13 @@ workflow {
 
     SPLIT_BAM(ch_autosplit_input)
 
-    ch_all = ch_presplit.mix(SPLIT_BAM.out.split_bams)
+    // Re-join split outputs with the original full_bam by sampleID
+    ch_from_split = SPLIT_BAM.out.split_bams
+        .join(ch_autosplit_input)
+        .map { id, short_bam, short_bai, long_bam, long_bai, full_bam, full_bai ->
+            tuple(id, short_bam, short_bai, long_bam, long_bai, full_bam, full_bai)
+        }
+
+    ch_all = ch_presplit.mix(ch_from_split)
     BINWISE_FEATURES(ch_all)
 }

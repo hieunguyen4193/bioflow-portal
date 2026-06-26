@@ -10,7 +10,6 @@ process SPLIT_BAM {
     tuple val(sampleID),
         path("${sampleID}.short.bam"), path("${sampleID}.short.bam.bai"),
         path("${sampleID}.long.bam"),  path("${sampleID}.long.bam.bai"),
-        path(full_bam),                path(full_bai),
         emit: split_bams
 
     script:
