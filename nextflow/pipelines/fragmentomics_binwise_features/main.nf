@@ -35,10 +35,12 @@ workflow {
         )
     }
 
-    // Auto-split path: only full_bam provided — run SPLIT_BAM first
+    // Auto-split path: only full_bam (or path) provided — run SPLIT_BAM first
     ch_autosplit_input = ch_has_split.autosplit.map { norm ->
         def id       = norm['sampleid']
-        def full_bam = norm['full_bam']
+        def full_bam = norm['full_bam'] ?: norm['path']
+        if (!id)       error "Samplesheet row missing 'SampleID' column: ${norm}"
+        if (!full_bam) error "Samplesheet row for '${id}' is missing both 'short_bam'/'long_bam' and 'full_bam'/'path' — provide either all three BAM columns or at least 'full_bam' (or 'path')"
         tuple(id, file(full_bam), file("${full_bam}.bai"))
     }
 

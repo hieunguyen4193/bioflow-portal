@@ -164,12 +164,12 @@ SampleID,short_bam,long_bam,full_bam
 sample01,/path/to/short.bam,/path/to/long.bam,/path/to/full.bam
 ```
 
-**Samplesheet (auto-split from full BAM):**
+**Samplesheet (auto-split from full BAM)** — `full_bam` or `path` column accepted:
 ```csv
-SampleID,full_bam
+SampleID,Path
 sample01,/path/to/full.bam
 ```
-When `short_bam` / `long_bam` columns are absent the pipeline splits `full_bam` at `split_cutoff` bp (default 150) into short (≤ cutoff) and long (> cutoff) sub-BAMs before computing features.
+When `short_bam` / `long_bam` columns are absent the pipeline splits the full BAM at `split_cutoff` bp (default 150) into short (≤ cutoff) and long (> cutoff) sub-BAMs before computing features.
 
 Each BAM file must have a `.bai` index alongside it.
 
