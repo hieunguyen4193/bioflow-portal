@@ -182,6 +182,8 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
     finally { setLoading(false) }
   }
 
+  function clearResults() { setExprData(null); setCells([]); setGeneInput('') }
+
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center gap-3">
@@ -193,6 +195,12 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
           className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50">
           {loading ? 'Loading…' : 'Plot'}
         </button>
+        {exprData && (
+          <button onClick={clearResults}
+            className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded-lg transition-colors">
+            Clear
+          </button>
+        )}
       </div>
 
       {exprData && red && (
@@ -207,7 +215,8 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
               y: red.cells.map((c: string) => red.y[red.cells.indexOf(c)]),
               marker: {
                 color: red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0),
-                colorscale: 'Viridis', size: 6, opacity: 0.85,
+                colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
+                size: 6, opacity: 0.85,
                 showscale: true, colorbar: { thickness: 12, len: 0.6 },
               },
               text: red.cells.map((c: string, i: number) =>
@@ -257,6 +266,8 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
     finally { setLoading(false) }
   }
 
+  function clearResults() { setExprData(null); setCells([]); setGeneInput('') }
+
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center gap-3">
@@ -268,6 +279,12 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
           className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50">
           {loading ? 'Loading…' : 'Plot'}
         </button>
+        {exprData && (
+          <button onClick={clearResults}
+            className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded-lg transition-colors">
+            Clear
+          </button>
+        )}
       </div>
 
       {exprData && (
@@ -413,6 +430,12 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
             {loading ? 'Running…' : mode === 'clusters' ? 'FindAllMarkers' : 'FindMarkers'}
           </button>
+          {dgeResult && (
+            <button onClick={() => { setDgeResult(null); setLog('') }}
+              className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded transition-colors">
+              Clear
+            </button>
+          )}
         </div>
         {log && <p className="text-xs text-slate-500 font-mono">{log}</p>}
       </div>
@@ -786,30 +809,32 @@ export default function ExplorePage() {
           </div>
         </div>
 
-        {/* Tab content */}
+        {/* Tab content — all tabs stay mounted to preserve state; inactive ones are hidden */}
         <div className="flex-1 overflow-auto bg-slate-50">
-          {tab === 'UMAP' && (
+          <div className={tab === 'UMAP' ? '' : 'hidden'}>
             <UMAPTab meta={meta} reduction={reduction} colorBy={colorBy}
               splitBy={splitBy} selectedClusters={selectedClusters} />
-          )}
-          {tab === 'Feature Plot' && (
+          </div>
+          <div className={tab === 'Feature Plot' ? '' : 'hidden'}>
             <FeaturePlotTab meta={meta} reduction={reduction}
               assay={assay} slot={slot} selectedClusters={selectedClusters}
               colorBy={colorBy} sessionId={meta.session_id} />
-          )}
-          {tab === 'Violin Plot' && (
+          </div>
+          <div className={tab === 'Violin Plot' ? '' : 'hidden'}>
             <ViolinTab meta={meta} assay={assay} slot={slot}
               selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} />
-          )}
-          {tab === 'DGE — Clusters' && (
+          </div>
+          <div className={tab === 'DGE — Clusters' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
               sessionId={meta.session_id} mode="clusters" />
-          )}
-          {tab === 'DGE — Conditions' && (
+          </div>
+          <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
               sessionId={meta.session_id} mode="conditions" />
-          )}
-          {tab === 'Metadata' && <MetadataTab meta={meta} />}
+          </div>
+          <div className={tab === 'Metadata' ? '' : 'hidden'}>
+            <MetadataTab meta={meta} />
+          </div>
         </div>
       </div>
     </div>
