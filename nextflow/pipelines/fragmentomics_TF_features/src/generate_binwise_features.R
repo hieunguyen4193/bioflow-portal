@@ -2,6 +2,16 @@ gc()
 rm(list = ls())
 start_time <- Sys.time()
 
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+bioc_pkgs <- c("QDNAseq", "QDNAseq.hg19", "Biobase", "GenomicRanges", "BSgenome.Hsapiens.UCSC.hg19", "Rsamtools")
+for (pkg in bioc_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) BiocManager::install(pkg, ask = FALSE, update = FALSE)
+}
+cran_pkgs <- c("dplyr", "tidyverse", "hash", "argparse", "testit", "comprehenr")
+for (pkg in cran_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg, repos = "https://cloud.r-project.org")
+}
+
 library(QDNAseq)
 library(Biobase)
 library(dplyr)

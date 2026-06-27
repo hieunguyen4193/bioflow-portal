@@ -46,6 +46,12 @@
 gc()
 rm(list = ls())
 
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+bioc_pkgs <- c("QDNAseq", "QDNAseq.hg19", "Biobase", "GenomicRanges", "BSgenome.Hsapiens.UCSC.hg19", "Rsamtools")
+for (pkg in bioc_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) BiocManager::install(pkg, ask = FALSE, update = FALSE)
+}
+
 library(QDNAseq)
 library(Biobase)
 library(dplyr)
