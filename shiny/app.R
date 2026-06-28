@@ -368,7 +368,7 @@ server <- function(input, output, session) {
         plotOutput(paste0("dge_fp_", cl), height = "600px"),
         downloadButton(paste0("dl_dge_fp_", cl), "PDF"))
     })
-    h4("Top 9 marker genes per cluster"), do.call(tabsetPanel, tabs)
+    tagList(h4("Top 9 marker genes per cluster"), do.call(tabsetPanel, tabs))
   })
 
   observe({

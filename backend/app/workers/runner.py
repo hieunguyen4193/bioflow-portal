@@ -90,6 +90,7 @@ def _build_cmd(pipeline: str, params: dict, input_files: list, job_base: str, us
         settings.NEXTFLOW_BIN, "run", pipeline_dir,
         "--outdir", outdir_path,
         "-work-dir", os.path.join(job_base, "work"),
+        "-profile", "docker",
     ]
     if resume:
         cmd.append("-resume")

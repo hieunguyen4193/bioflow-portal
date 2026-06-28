@@ -39,6 +39,7 @@ services:
 
   frontend:
     build: ./frontend
+    command: sh -c "npm install && npm run dev"
     ports:
       - "5173:5173"
     volumes:
@@ -47,11 +48,6 @@ services:
     environment:
       - VITE_API_URL=http://localhost:8000
 
-  shiny:
-    build: ./shiny
-    ports:
-      - "3838:3838"
-    restart: unless-stopped
 
 volumes:
   pgdata:
