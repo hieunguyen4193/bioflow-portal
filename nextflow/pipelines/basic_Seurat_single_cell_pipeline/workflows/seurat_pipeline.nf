@@ -137,7 +137,12 @@ workflow SEURAT_PIPELINE {
 
     // ── Step 8a: Render HTML report ─────────────────────────────────────────
     if (params.run_s8a == "true") {
-        RENDER_REPORT(ch_final)
+        RENDER_REPORT(
+            ch_final,
+            file("${projectDir}/rmd/preliminary_analysis.Rmd"),
+            file("${projectDir}/src/helper_functions.R"),
+            file("${projectDir}/src/import_libraries.R")
+        )
     }
 
     emit:
