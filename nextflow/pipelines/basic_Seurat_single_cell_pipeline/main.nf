@@ -26,7 +26,8 @@ params.run_s4 = "true"
 params.run_s5 = "true"
 params.run_s6 = "true"
 params.run_s7 = "true"
-params.run_s8 = "true"
+params.run_s8  = "true"
+params.run_s8a = "true"
 
 // ── Step 2: Ambient RNA ────────────────────────────────────────────────────
 params.ambient_method        = "decontX"   // decontX | SoupX | none

@@ -56,6 +56,18 @@ path.to.input.s.obj <- params$inputSeurat
 dir.create(path.to.save.output, showWarnings = FALSE, recursive = TRUE)
 s.obj <- readRDS(path.to.input.s.obj)
 
+# Tableau 20 palette (10 bold + 10 medium pairs, visually distinct)
+tableau20 <- c(
+  "#4E79A7", "#A0CBE8", "#F28E2B", "#FFBE7D", "#59A14F",
+  "#8CD17D", "#B6992D", "#F1CE63", "#499894", "#86BCB6",
+  "#E15759", "#FF9D9A", "#79706E", "#BAB0AC", "#D37295",
+  "#FABFD2", "#B07AA1", "#D4A6C8", "#9D7660", "#D7B5A6"
+)
+
+cluster_colors <- function(n) {
+  rep_len(tableau20, n)
+}
+
 ```
 
 # Preprocessing and QC
@@ -186,10 +198,15 @@ DimPlot(s.obj, reduction = "CELLCYCLED_PCA", group.by = "Phase", pt.size = 1)
 # Dimension reduction with UMAP
 ## UMAP: all clusters in the sample
 ```{r echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=20, fig.height=12}
-DimPlot(object = s.obj, reduction = "RNA_UMAP", label = TRUE, label.box = TRUE, label.size = 10, repel = TRUE) + 
+# set cluster identity and compute palette size once
+cluster.col <- grep("\\.cluster\\.", colnames(s.obj@meta.data), value = TRUE)[1]
+if (!is.na(cluster.col)) Idents(s.obj) <- cluster.col
+n.clusters <- length(unique(Idents(s.obj)))
+DimPlot(object = s.obj, reduction = "RNA_UMAP", label = TRUE, label.box = TRUE, label.size = 10, repel = TRUE) +
+  scale_color_manual(values = cluster_colors(n.clusters)) +
   ggtitle(sprintf("UMAP Sample %s: All clusters", sample.id)) +
   theme(axis.text = element_text(size=20, face = "bold"),
-        axis.title = element_text(size=20, face = "bold"), 
+        axis.title = element_text(size=20, face = "bold"),
         title = element_text(size = 20, face = "bold"))
 ```
 
@@ -248,7 +265,8 @@ for (cluster.id in sort(unique(cluster.markers$cluster))){
   DefaultAssay(s.obj) <- "SCT"
   cat(sprintf("### Cluster %s \n", cluster.id))
   tmp.cluster.markers <- subset(cluster.markers, cluster.markers$cluster == cluster.id) %>% arrange(desc(avg_log2FC))
-  p <- VlnPlot(object = s.obj, features = head(tmp.cluster.markers, 9)$gene, slot = "data")  
+  p <- VlnPlot(object = s.obj, features = head(tmp.cluster.markers, 9)$gene, slot = "data") &
+    scale_fill_manual(values = cluster_colors(n.clusters))
   print(p)
   cat("\n \n")
 }

@@ -89,7 +89,7 @@ s8.integration.and.clustering <- function(s.obj,
   s.obj <- RunUMAP(s.obj,
                    dims = 1:num.PC.used.in.UMAP,
                    reduction = "RNA_PCA",
-                   reduction.name = "umap.unintegrated")
+                   reduction.name = "RNA_UMAP")
   message("UMAP (unintegrated) finished.")
 
   n.samples <- length(unique(s.obj\$name))

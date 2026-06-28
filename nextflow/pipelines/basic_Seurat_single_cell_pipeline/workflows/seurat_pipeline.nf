@@ -7,6 +7,7 @@ include { CELL_CYCLE_SCORING_WF    } from '../subworkflows/cell_cycle_scoring'
 include { CELL_CYCLE_SCORING_S6_WF } from '../subworkflows/cell_cycle_scoring_s6'
 include { REGRESS_OUT_WF           } from '../subworkflows/regress_out'
 include { UMAP_CLUSTERING_WF       } from '../subworkflows/umap_clustering'
+include { RENDER_REPORT            } from '../modules/render_report/main'
 
 workflow SEURAT_PIPELINE {
     take:
@@ -132,6 +133,11 @@ workflow SEURAT_PIPELINE {
         ch_final = UMAP_CLUSTERING_WF.out.seurat_rds
     } else {
         ch_final = ch_s8_input
+    }
+
+    // ── Step 8a: Render HTML report ─────────────────────────────────────────
+    if (params.run_s8a == "true") {
+        RENDER_REPORT(ch_final)
     }
 
     emit:

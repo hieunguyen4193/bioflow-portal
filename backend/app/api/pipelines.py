@@ -276,6 +276,12 @@ PIPELINE_REGISTRY = {
                     {"key": "s8_remove_genes",           "label": "Genes to exclude from PCA (CSV)",    "type": "str",   "default": ""},
                 ],
             },
+            {
+                "key": "s8a",
+                "label": "S8a — Render HTML Report",
+                "run_key": "run_s8a",
+                "params": [],
+            },
         ],
     },
 }
