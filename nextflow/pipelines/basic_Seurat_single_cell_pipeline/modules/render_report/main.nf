@@ -13,19 +13,20 @@ process RENDER_REPORT {
 
     script:
     """
-    mkdir -p src rmd
+    mkdir -p src
     cp ${helper_functions} src/helper_functions.R
     cp ${import_libraries} src/import_libraries.R
-    cp ${rmd_file} rmd/preliminary_analysis.Rmd
+    cp ${rmd_file} preliminary_analysis.Rmd
 
     Rscript - << 'REOF'
 suppressPackageStartupMessages(library(rmarkdown))
 wd <- getwd()
 rmarkdown::render(
-  input       = file.path(wd, "rmd", "preliminary_analysis.Rmd"),
-  output_file = "${sample}_preliminary_analysis.html",
-  output_dir  = wd,
-  params      = list(
+  input        = file.path(wd, "preliminary_analysis.Rmd"),
+  output_file  = "${sample}_preliminary_analysis.html",
+  output_dir   = wd,
+  knit_root_dir = wd,
+  params       = list(
     inputSeurat = file.path(wd, "${seurat_rds}"),
     outputdir   = wd
   ),
