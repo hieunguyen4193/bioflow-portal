@@ -362,6 +362,10 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
   // auto-select first tab when results arrive
   useMemo(() => { if (clusters.length > 0) setActiveTab(String(clusters[0])) }, [clusters])
 
+  const logfcNote = mode === 'clusters'
+    ? 'avg_log2FC > 0: higher in this cluster vs all others. avg_log2FC < 0: lower in this cluster.'
+    : 'avg_log2FC > 0: higher in Group 1 vs Group 2. avg_log2FC < 0: lower in Group 1.'
+
   const DGE_COLS = ['gene','p_val','p_val_adj','avg_log2FC','pct.1','pct.2']
 
   function downloadCSV(rows: any[], filename: string) {
@@ -438,6 +442,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
           )}
         </div>
         {log && <p className="text-xs text-slate-500 font-mono">{log}</p>}
+        <p className="text-xs text-slate-400 italic">ℹ {logfcNote}</p>
       </div>
 
       {/* Tabset results */}
