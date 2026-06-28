@@ -43,6 +43,17 @@ export async function listOutputFiles(id: string): Promise<OutputFile[]> {
   return data
 }
 
+export async function downloadOutputPaths(id: string): Promise<void> {
+  const { data } = await api.get<string>(`/jobs/${id}/files/paths`, { responseType: 'text' })
+  const blob = new Blob([data], { type: 'text/plain' })
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: `output_paths_${id}.txt`,
+  })
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
 export async function stopJob(id: string)   { await api.post(`/jobs/${id}/stop`) }
 export async function pauseJob(id: string)  { await api.post(`/jobs/${id}/pause`) }
 export async function resumeJob(id: string) { await api.post(`/jobs/${id}/resume`) }

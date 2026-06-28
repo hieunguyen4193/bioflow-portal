@@ -1,7 +1,7 @@
 import { useParams, Link } from 'react-router-dom'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getJob, listOutputFiles, downloadUrl, getPipeline, stopJob, pauseJob, resumeJob, Job, Pipeline } from '../api/jobs'
+import { getJob, listOutputFiles, downloadUrl, downloadOutputPaths, getPipeline, stopJob, pauseJob, resumeJob, Job, Pipeline } from '../api/jobs'
 import toast from 'react-hot-toast'
 
 function buildParamIndex(pipeline: Pipeline | undefined) {
@@ -208,15 +208,23 @@ export default function JobDetailPage() {
         <div className="bg-white rounded-xl shadow p-5">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-medium">Output Files <span className="text-slate-400 font-normal text-sm">({dataFiles.length})</span></h3>
-            {manyFiles && (
-              <div className="flex gap-2">
-                <button onClick={() => setOpenGroups(Object.fromEntries(groupNames.map(g => [g, true])))}
-                  className="text-xs text-indigo-600 hover:underline">Expand all</button>
-                <span className="text-slate-300">|</span>
-                <button onClick={() => setOpenGroups(Object.fromEntries(groupNames.map(g => [g, false])))}
-                  className="text-xs text-indigo-600 hover:underline">Collapse all</button>
-              </div>
-            )}
+            <div className="flex items-center gap-3">
+              {manyFiles && (
+                <div className="flex gap-2">
+                  <button onClick={() => setOpenGroups(Object.fromEntries(groupNames.map(g => [g, true])))}
+                    className="text-xs text-indigo-600 hover:underline">Expand all</button>
+                  <span className="text-slate-300">|</span>
+                  <button onClick={() => setOpenGroups(Object.fromEntries(groupNames.map(g => [g, false])))}
+                    className="text-xs text-indigo-600 hover:underline">Collapse all</button>
+                </div>
+              )}
+              <button
+                onClick={() => downloadOutputPaths(job.id)}
+                className="flex items-center gap-1.5 text-xs border border-slate-300 hover:border-indigo-400 hover:text-indigo-600 px-2.5 py-1 rounded-lg transition-colors"
+              >
+                ⬇ Download path list
+              </button>
+            </div>
           </div>
           <div className="space-y-1">
             {groupNames.map(group => (

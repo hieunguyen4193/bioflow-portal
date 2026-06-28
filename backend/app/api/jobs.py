@@ -102,6 +102,35 @@ async def list_output_files(
     return files
 
 
+@router.get("/{job_id}/files/paths")
+async def list_output_file_paths(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return absolute server-side paths for all output files as plain text (one per line)."""
+    from fastapi.responses import PlainTextResponse
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    job = result.scalar_one_or_none()
+    if not job or not job.output_dir:
+        raise HTTPException(404, "No outputs yet")
+
+    output_path = os.path.join(settings.RESULTS_DIR, job.output_dir)
+    if not os.path.isdir(output_path):
+        return PlainTextResponse("")
+
+    paths = []
+    for root, dirs, filenames in os.walk(output_path):
+        dirs[:] = [d for d in dirs if d not in ("work", ".nextflow")]
+        for fname in filenames:
+            if fname.startswith("."):
+                continue
+            paths.append(os.path.join(root, fname))
+
+    paths.sort()
+    return PlainTextResponse("\n".join(paths))
+
+
 @router.post("/{job_id}/stop")
 async def stop_job(
     job_id: str,
