@@ -1,5 +1,6 @@
 process RENDER_REPORT {
     tag "${sample}"
+    container 'tronghieunguyen/single_cell_pipeline'
     publishDir "${params.outdir}/s8a_report", mode: "copy"
 
     input:
