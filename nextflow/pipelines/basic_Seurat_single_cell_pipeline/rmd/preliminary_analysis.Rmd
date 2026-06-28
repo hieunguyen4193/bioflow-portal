@@ -16,6 +16,7 @@ output:
 params:
     outputdir: NA
     inputSeurat: NA
+    input.assay: NA
 ---
 
 ```{css zoom-lib-src, echo = FALSE}
@@ -52,6 +53,7 @@ source("src/import_libraries.R")
 
 path.to.save.output <- params$outputdir
 path.to.input.s.obj <- params$inputSeurat
+input.assay <- params$input.assay
 
 dir.create(path.to.save.output, showWarnings = FALSE, recursive = TRUE)
 s.obj <- readRDS(path.to.input.s.obj)
@@ -225,9 +227,9 @@ Identify differentially expressed genes in each cluster.
 ```{r echo=FALSE, warning=FALSE, message=FALSE, results='hide', fig.height=10, fig.width=18}
 Idents(s.obj) <- "RNA_PCA.cluster.0.5"
 if (file.exists(file.path(path.to.save.output, "DE_cluster_marker_genes.rds")) == FALSE){
-  DefaultAssay(s.obj) <- "SCT"
+  DefaultAssay(s.obj) <- input.assay
   s.obj <- PrepSCTFindMarkers(s.obj)
-  cluster.markers <- FindAllMarkers(object = s.obj, assay = "SCT", test.use = "wilcox", slot = "data", min.pct = 0.5)
+  cluster.markers <- FindAllMarkers(object = s.obj, assay = input.assay, test.use = "wilcox", slot = "data", min.pct = 0.5)
   cluster.markers <- subset(cluster.markers, cluster.markers$p_val_adj < 0.05 & cluster.markers$avg_log2FC > 0)
   saveRDS(cluster.markers, file.path(path.to.save.output, "DE_cluster_marker_genes.rds"))
 } else {
@@ -238,7 +240,7 @@ if (file.exists(file.path(path.to.save.output, "DE_cluster_marker_genes.rds")) =
 ## Feature plot {.tabset}
 ```{r echo=FALSE, fig.height=12, fig.width=20, message=FALSE, warning=FALSE, results='asis'}
 for (cluster.id in sort(unique(cluster.markers$cluster))){
-  DefaultAssay(s.obj) <- "SCT"
+  DefaultAssay(s.obj) <- input.assay
   cat(sprintf("### Cluster %s \n", cluster.id))
   tmp.cluster.markers <- subset(cluster.markers, cluster.markers$cluster == cluster.id) %>% arrange(desc(avg_log2FC))
   p <- FeaturePlot(object = s.obj, reduction = "RNA_UMAP", features = head(tmp.cluster.markers, 9)$gene, ncol = 3, label = TRUE, pt.size = 0.5, label.size = 5, label.color = "red", slot = "data")  
@@ -250,7 +252,7 @@ for (cluster.id in sort(unique(cluster.markers$cluster))){
 ## Dot plot{.tabset}
 ```{r echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=20, fig.height=12}
 for (cluster.id in sort(unique(cluster.markers$cluster))){
-  DefaultAssay(s.obj) <- "SCT"
+  DefaultAssay(s.obj) <- input.assay
   cat(sprintf("### Cluster %s \n", cluster.id))
   tmp.cluster.markers <- subset(cluster.markers, cluster.markers$cluster == cluster.id) %>% arrange(desc(avg_log2FC))
   p <- DotPlot(object = s.obj, features = head(tmp.cluster.markers, 9)$gene)  
@@ -262,7 +264,7 @@ for (cluster.id in sort(unique(cluster.markers$cluster))){
 ## Violin plot{.tabset}
 ```{r echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=20, fig.height=12}
 for (cluster.id in sort(unique(cluster.markers$cluster))){
-  DefaultAssay(s.obj) <- "SCT"
+  DefaultAssay(s.obj) <- input.assay
   cat(sprintf("### Cluster %s \n", cluster.id))
   tmp.cluster.markers <- subset(cluster.markers, cluster.markers$cluster == cluster.id) %>% arrange(desc(avg_log2FC))
   p <- VlnPlot(object = s.obj, features = head(tmp.cluster.markers, 9)$gene, slot = "data") &

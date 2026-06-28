@@ -20,14 +20,16 @@ process RENDER_REPORT {
     Rscript - << 'REOF'
 suppressPackageStartupMessages(library(rmarkdown))
 wd <- getwd()
+input_assay <- if (tolower("${params.use_sctransform}") == "true") "SCT" else "RNA"
 rmarkdown::render(
-  input        = file.path(wd, "preliminary_analysis.Rmd"),
-  output_file  = "${sample}_preliminary_analysis.html",
-  output_dir   = wd,
+  input         = file.path(wd, "preliminary_analysis.Rmd"),
+  output_file   = "${sample}_preliminary_analysis.html",
+  output_dir    = wd,
   knit_root_dir = wd,
-  params       = list(
+  params        = list(
     inputSeurat = file.path(wd, "${seurat_rds}"),
-    outputdir   = wd
+    outputdir   = wd,
+    input.assay = input_assay
   ),
   envir = new.env(parent = globalenv())
 )
