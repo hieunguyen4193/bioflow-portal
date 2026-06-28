@@ -47,8 +47,8 @@ script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
 # trnguyen@ukaachen.de
 #
 #####----------------------------------------------------------------------#####
-source("../src/helper_functions.R)
-source("../src/import_libraries.R)
+source("src/helper_functions.R")
+source("src/import_libraries.R")
 
 path.to.save.output <- params$outputdir
 path.to.input.s.obj <- params$inputSeurat

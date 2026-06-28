@@ -13,28 +13,24 @@ process RENDER_REPORT {
 
     script:
     """
-    mkdir -p src
+    mkdir -p src rmd
     cp ${helper_functions} src/helper_functions.R
     cp ${import_libraries} src/import_libraries.R
-    mkdir -p rmd
     cp ${rmd_file} rmd/preliminary_analysis.Rmd
 
-    cat > render_report.R << 'REOF'
-suppressPackageStartupMessages({
-  library(rmarkdown)
-})
-
+    Rscript - << 'REOF'
+suppressPackageStartupMessages(library(rmarkdown))
+wd <- getwd()
 rmarkdown::render(
-  input       = "rmd/preliminary_analysis.Rmd",
+  input       = file.path(wd, "rmd", "preliminary_analysis.Rmd"),
   output_file = "${sample}_preliminary_analysis.html",
-  output_dir  = getwd(),
+  output_dir  = wd,
   params      = list(
-    inputSeurat = normalizePath("${seurat_rds}"),
-    outputdir   = getwd()
+    inputSeurat = file.path(wd, "${seurat_rds}"),
+    outputdir   = wd
   ),
   envir = new.env(parent = globalenv())
 )
 REOF
-    Rscript render_report.R
     """
 }
