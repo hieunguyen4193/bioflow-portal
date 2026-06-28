@@ -204,7 +204,7 @@ if (!is.na(cluster.col)) Idents(s.obj) <- cluster.col
 n.clusters <- length(unique(Idents(s.obj)))
 DimPlot(object = s.obj, reduction = "RNA_UMAP", label = TRUE, label.box = TRUE, label.size = 10, repel = TRUE) +
   scale_color_manual(values = cluster_colors(n.clusters)) +
-  ggtitle(sprintf("UMAP Sample %s: All clusters", sample.id)) +
+  ggtitle(sprintf("UMAP - All clusters")) +
   theme(axis.text = element_text(size=20, face = "bold"),
         axis.title = element_text(size=20, face = "bold"),
         title = element_text(size = 20, face = "bold"))
