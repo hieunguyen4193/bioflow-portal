@@ -1,8 +1,14 @@
 """Run Nextflow pipelines in a background thread — no queue needed."""
 import os
+import re
 import signal
 import subprocess
 import threading
+
+_ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x1b[()][AB012]|\x1b[=>]')
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE.sub('', text)
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from app.core.config import settings
@@ -158,10 +164,10 @@ def _run(job_id: str, resume: bool = False):
             if job and job.status == "running":
                 status = "done" if proc.returncode == 0 else "failed"
                 job.status = status
-                job.log = stdout
+                job.log = _strip_ansi(stdout)
                 db.commit()
             elif job:
-                job.log = (job.log or "") + "\n" + stdout
+                job.log = _strip_ansi((job.log or "") + "\n" + stdout)
                 db.commit()
 
     except Exception as exc:
