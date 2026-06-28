@@ -16,7 +16,6 @@ process RENDER_REPORT {
     mkdir -p src
     cp ${helper_functions} src/helper_functions.R
     cp ${import_libraries} src/import_libraries.R
-    cp ${rmd_file} preliminary_analysis.Rmd
 
     Rscript - << 'REOF'
 suppressPackageStartupMessages(library(rmarkdown))
