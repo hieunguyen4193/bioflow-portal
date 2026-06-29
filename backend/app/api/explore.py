@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -13,21 +14,36 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/explore", tags=["explore"])
 
 _sessions: dict[str, str] = {}   # session_id → absolute rds path (host path)
+_pathway_tasks: dict[str, dict] = {}  # task_id → {status, results, error}
 
-EXPLORE_DIR  = "/Users/hieunguyen/src/bioflow-portal/data/explore"
-PRESETS_DIR  = os.path.join(EXPLORE_DIR, "presets")
-R_SCRIPTS   = "/Users/hieunguyen/src/bioflow-portal/backend/app/r_scripts"
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
+
+# HOST_DATA_DIR is always the host-machine absolute path (set in docker-compose).
+# We use it both to derive the container-internal explore path and for docker run -v mounts.
+_host_data   = os.environ.get("HOST_DATA_DIR", "").rstrip("/")
+HOST_EXPLORE = f"{_host_data}/explore" if _host_data else "/data/explore"
+HOST_SCRIPTS = os.environ.get("HOST_R_SCRIPTS", "")
+
+# Container-internal paths (for file I/O inside the backend container).
+# If EXPLORE_DIR is explicitly set use it; otherwise derive from HOST_DATA_DIR so the
+# path works even before the container is recreated with the new volume layout.
+EXPLORE_DIR  = os.environ.get("EXPLORE_DIR") or HOST_EXPLORE
+PRESETS_DIR  = os.path.join(EXPLORE_DIR, "presets")
+R_SCRIPTS    = os.environ.get("R_SCRIPTS_DIR", "/app/app/r_scripts")
+
+# Fall back HOST_SCRIPTS to R_SCRIPTS if not overridden (works when host path == container path)
+if not HOST_SCRIPTS:
+    HOST_SCRIPTS = R_SCRIPTS
 
 
 def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list:
-    script_path = os.path.join(R_SCRIPTS, script_name)
+    container_script = os.path.join(R_SCRIPTS, script_name)   # path inside the spawned R container
     cmd = [
         "docker", "run", "--rm",
-        "-v", f"{EXPLORE_DIR}:{EXPLORE_DIR}",
-        "-v", f"{R_SCRIPTS}:{R_SCRIPTS}",
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
         DOCKER_IMAGE,
-        "Rscript", "--vanilla", script_path, *args,
+        "Rscript", "--vanilla", container_script, *args,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
@@ -148,3 +164,74 @@ async def run_dge(req: DGERequest):
         "excluded_bcr": result.get("excluded_bcr", []),
         "species":      result.get("species", "unknown"),
     })
+
+
+# ── Pathway Analysis ─────────────────────────────────────────────────────────
+class PathwayRequest(BaseModel):
+    session_id:  str
+    csv_data:    str        # JSON-encoded list of row dicts (the DGE markers table)
+    species:     str = "hsa"
+    pval_cutoff: float = 0.05
+
+
+def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: float, species: str):
+    container_script = os.path.join(R_SCRIPTS, "run_pathway_analysis.R")
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
+        DOCKER_IMAGE,
+        "Rscript", "--vanilla", container_script,
+        csv_path, outdir, str(pval), species,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        if result.returncode != 0:
+            _pathway_tasks[task_id] = {"status": "error", "error": result.stderr[-3000:]}
+            return
+        parsed = json.loads(result.stdout)
+        _pathway_tasks[task_id] = {"status": "done", "results": parsed}
+    except subprocess.TimeoutExpired:
+        _pathway_tasks[task_id] = {"status": "error", "error": "Pathway analysis timed out (30 min)"}
+    except Exception as exc:
+        _pathway_tasks[task_id] = {"status": "error", "error": str(exc)}
+
+
+@router.post("/pathway")
+async def start_pathway_analysis(req: PathwayRequest):
+    if req.session_id not in _sessions:
+        raise HTTPException(404, "Session not found")
+    if req.species not in ("hsa", "mmu"):
+        raise HTTPException(400, "species must be 'hsa' or 'mmu'")
+
+    task_id = str(uuid.uuid4())
+    task_dir = os.path.join(EXPLORE_DIR, f"pathway_{task_id}")
+    os.makedirs(task_dir, exist_ok=True)
+
+    # Write the DGE CSV passed from the frontend
+    csv_path = os.path.join(task_dir, "input_genes.csv")
+    rows = json.loads(req.csv_data)
+    if not rows:
+        raise HTTPException(400, "Gene list is empty")
+    import csv as _csv
+    with open(csv_path, "w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    _pathway_tasks[task_id] = {"status": "running"}
+    thread = threading.Thread(
+        target=_run_pathway_background,
+        args=(task_id, csv_path, task_dir, req.pval_cutoff, req.species),
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse({"task_id": task_id})
+
+
+@router.get("/pathway/{task_id}")
+async def get_pathway_result(task_id: str):
+    task = _pathway_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    return JSONResponse(task)

@@ -22,17 +22,19 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend:/app
-      - /Users/hieunguyen/src/bioflow-portal/data/uploads:/Users/hieunguyen/src/bioflow-portal/data/uploads
-      - /Users/hieunguyen/src/bioflow-portal/data/results:/Users/hieunguyen/src/bioflow-portal/data/results
-      - /Users/hieunguyen/src/bioflow-portal/data/explore:/Users/hieunguyen/src/bioflow-portal/data/explore
-      - /Users/hieunguyen/src/bioflow-portal/backend/app/r_scripts:/Users/hieunguyen/src/bioflow-portal/backend/app/r_scripts
-      - /Users/hieunguyen/src/bioflow-portal/nextflow:/Users/hieunguyen/src/bioflow-portal/nextflow
+      - ./data/uploads:/data/uploads
+      - ./data/results:/data/results
+      - ./data/explore:/data/explore
+      - ./nextflow:/nextflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
     env_file: ./backend/.env
     environment:
-      HOST_DATA_DIR: /Users/hieunguyen/src/bioflow-portal/data
+      HOST_DATA_DIR: ${BIOFLOW_DATA_DIR}
+      HOST_R_SCRIPTS: ${BIOFLOW_R_SCRIPTS}
+      EXPLORE_DIR: /data/explore
+      R_SCRIPTS_DIR: /app/app/r_scripts
     depends_on:
       db:
         condition: service_healthy

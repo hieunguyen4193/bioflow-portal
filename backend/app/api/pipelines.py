@@ -7,7 +7,7 @@ router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
 PIPELINES_BASE = os.environ.get(
     "PIPELINES_BASE",
-    "/Users/hieunguyen/src/bioflow-portal/nextflow/pipelines",
+    "/nextflow/pipelines",
 )
 
 PIPELINE_REGISTRY = {
@@ -78,7 +78,7 @@ PIPELINE_REGISTRY = {
                 "label": "Resource Directory",
                 "run_key": None,
                 "params": [
-                    {"key": "resource_dir", "label": "Resource directory (contains hg19.fa, rpr_map_EXP0779.bed, TFBS/)", "type": "str", "default": "/Users/hieunguyen/storage/resources"},
+                    {"key": "resource_dir", "label": "Resource directory (contains hg19.fa, rpr_map_EXP0779.bed, TFBS/)", "type": "str", "default": "/data/resources"},
                 ],
             },
         ],
@@ -98,7 +98,7 @@ PIPELINE_REGISTRY = {
                 "run_key": None,
                 "params": [
                     {"key": "mode",         "label": "Input mode",       "type": "select", "default": "from_bam", "options": ["from_bam", "from_frag_file"]},
-                    {"key": "resource_dir", "label": "Resource directory (contains hg19.fa, rpr_map_Budhraja_STM2023.bed)", "type": "str", "default": "/Users/hieunguyen/storage/resources"},
+                    {"key": "resource_dir", "label": "Resource directory (contains hg19.fa, rpr_map_Budhraja_STM2023.bed)", "type": "str", "default": "/data/resources"},
                     {"key": "min_flen",      "label": "Min fragment length",   "type": "int",    "default": 50},
                     {"key": "max_flen",      "label": "Max fragment length",   "type": "int",    "default": 350},
                     {"key": "outdir",        "label": "Output folder",         "type": "str",    "default": "results"},

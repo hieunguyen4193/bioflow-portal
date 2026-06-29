@@ -71,3 +71,22 @@ export async function runDGE(params: {
   const { data } = await api.post<DGEResult>('/explore/dge', params, { timeout: 600000 })
   return data
 }
+
+export async function startPathwayAnalysis(params: {
+  session_id: string
+  csv_data: string   // JSON-stringified array of marker rows
+  species: 'hsa' | 'mmu'
+  pval_cutoff: number
+}): Promise<{ task_id: string }> {
+  const { data } = await api.post('/explore/pathway', params)
+  return data
+}
+
+export async function getPathwayResult(task_id: string): Promise<{
+  status: 'running' | 'done' | 'error'
+  results?: Record<string, Record<string, unknown>[]>
+  error?: string
+}> {
+  const { data } = await api.get(`/explore/pathway/${task_id}`)
+  return data
+}

@@ -1,9 +1,9 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -765,6 +765,303 @@ function MetadataTab({ meta }: { meta: SeuratMeta }) {
   )
 }
 
+// ── Pathway Analysis tab ───────────────────────────────────────────────────────
+const PATHWAY_LABEL: Record<string, string> = {
+  'ORA.FULL.GO': 'ORA — GO (all sig.)',
+  'ORA.UP.GO':   'ORA — GO (up)',
+  'ORA.DOWN.GO': 'ORA — GO (down)',
+  'ORA.FULL.KEGG': 'ORA — KEGG (all)',
+  'ORA.UP.KEGG':   'ORA — KEGG (up)',
+  'ORA.DOWN.KEGG': 'ORA — KEGG (down)',
+  'ORA.FULL.WP': 'ORA — WikiPathways (all)',
+  'ORA.UP.WP':   'ORA — WikiPathways (up)',
+  'ORA.DOWN.WP': 'ORA — WikiPathways (down)',
+  'GSEA.GO':     'GSEA — GO',
+  'GSEA.KEGG':   'GSEA — KEGG',
+  'GSEA.WP':     'GSEA — WikiPathways',
+  'ORA.FULL.MSigDB.H':  'ORA — MSigDB Hallmark',
+  'GSEA.MSigDB.H':      'GSEA — MSigDB Hallmark',
+  'ORA.FULL.MSigDB.C2': 'ORA — MSigDB C2 (Curated)',
+  'GSEA.MSigDB.C2':     'GSEA — MSigDB C2 (Curated)',
+  'ORA.FULL.MSigDB.C5': 'ORA — MSigDB C5 (Ontology)',
+  'GSEA.MSigDB.C5':     'GSEA — MSigDB C5 (Ontology)',
+}
+
+function PathwayResultTable({ rows }: { rows: Record<string, unknown>[] }) {
+  const [search, setSearch] = useState('')
+  const [sortCol, setSortCol] = useState('')
+  const [sortDir, setSortDir] = useState<1 | -1>(-1)
+
+  if (!rows || rows.length === 0) return <p className="text-xs text-slate-400 p-4">No results.</p>
+  if ('status' in rows[0]) return <p className="text-xs text-slate-400 p-4">{String(rows[0].status)}</p>
+
+  const cols = Object.keys(rows[0]).filter(c => c !== 'geneID' && c !== 'idx')
+  const allCols = [...cols, 'geneID']
+
+  function toggleSort(col: string) {
+    if (sortCol === col) setSortDir(d => (d === 1 ? -1 : 1) as 1 | -1)
+    else { setSortCol(col); setSortDir(-1) }
+  }
+
+  const visible = rows
+    .filter(r => !search || Object.values(r).some(v => String(v ?? '').toLowerCase().includes(search.toLowerCase())))
+    .sort((a, b) => {
+      if (!sortCol) return 0
+      const av = a[sortCol]; const bv = b[sortCol]
+      const an = Number(av); const bn = Number(bv)
+      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortDir
+      return String(av ?? '').localeCompare(String(bv ?? '')) * sortDir
+    })
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-3">
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search…"
+          className="border border-slate-300 rounded px-3 py-1.5 text-sm w-64 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+        {search && <button onClick={() => setSearch('')} className="text-xs text-slate-400 hover:text-red-500">✕ Clear</button>}
+        <span className="text-xs text-slate-400 ml-auto">
+          Showing {Math.min(visible.length, 200)} of {visible.length} pathways
+        </span>
+      </div>
+      <div className="overflow-auto rounded-lg border border-slate-200 max-h-[55vh]">
+        <table className="text-xs w-full">
+          <thead className="bg-slate-50 border-b sticky top-0">
+            <tr>
+              {allCols.map(c => (
+                <th key={c} onClick={() => c !== 'geneID' && toggleSort(c)}
+                  className={`text-left px-3 py-2 font-medium whitespace-nowrap select-none ${c !== 'geneID' ? 'cursor-pointer hover:bg-slate-100' : ''}`}>
+                  {c}
+                  {c !== 'geneID' && (
+                    <span className="ml-1 text-slate-400">
+                      {sortCol === c ? (sortDir === 1 ? '▲' : '▼') : '⇅'}
+                    </span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {visible.slice(0, 200).map((row, i) => (
+              <tr key={i} className="hover:bg-slate-50">
+                {allCols.map(c => (
+                  <td key={c} className="px-3 py-1.5 text-slate-600 max-w-xs truncate whitespace-nowrap"
+                    title={String(row[c] ?? '')}>
+                    {String(row[c] ?? '')}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function PathwayDotplot({ rows }: { rows: Record<string, unknown>[] }) {
+  if (!rows || rows.length === 0 || 'status' in rows[0]) return null
+  const col = 'p.adjust' in rows[0] ? 'p.adjust' : 'pvalue'
+  const top = [...rows]
+    .sort((a, b) => Number(a[col] ?? 1) - Number(b[col] ?? 1))
+    .slice(0, 20)
+
+  const labels = top.map(r => String(r.Description ?? r.ID ?? ''))
+  const x = top.map(r => Number(r.Count ?? r.setSize ?? 0))
+  const color = top.map(r => Number(r[col] ?? 1))
+
+  return (
+    <Plot
+      data={[{
+        type: 'bar', orientation: 'h',
+        x, y: labels,
+        marker: {
+          color,
+          colorscale: [['0', '#dc2626'], ['1', '#dbeafe']],
+          colorbar: { title: col, thickness: 12 },
+        },
+        text: top.map(r => `p.adj: ${Number(r[col] ?? 1).toExponential(2)}`),
+        hoverinfo: 'text+x+y',
+      }]}
+      layout={{
+        margin: { l: 280, r: 40, t: 20, b: 40 },
+        height: Math.max(300, top.length * 22 + 60),
+        width: 700,
+        xaxis: { title: 'Count' },
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+      }}
+      config={{ displayModeBar: false }}
+    />
+  )
+}
+
+function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }) {
+  const [species,     setSpecies]     = useState<'hsa' | 'mmu'>('hsa')
+  const [pvalCutoff,  setPvalCutoff]  = useState(0.05)
+  const [csvInput,    setCsvInput]    = useState<'upload' | 'paste'>('paste')
+  const [pastedGenes, setPastedGenes] = useState('')
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null)
+  const [taskId,      setTaskId]      = useState<string | null>(null)
+  const [status,      setStatus]      = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [results,     setResults]     = useState<Record<string, Record<string, unknown>[]> | null>(null)
+  const [error,       setError]       = useState<string | null>(null)
+  const [activeMethod, setActiveMethod] = useState<string>('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (!taskId || status !== 'running') return
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await getPathwayResult(taskId)
+        if (res.status === 'done') {
+          clearInterval(pollRef.current!)
+          setStatus('done')
+          const r = res.results ?? {}
+          setResults(r)
+          setActiveMethod(Object.keys(r)[0] ?? '')
+        } else if (res.status === 'error') {
+          clearInterval(pollRef.current!)
+          setStatus('error')
+          setError(res.error ?? 'Unknown error')
+        }
+      } catch {}
+    }, 5000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [taskId, status])
+
+  async function handleRun() {
+    let csvData = ''
+    if (csvInput === 'paste') {
+      if (!pastedGenes.trim()) { toast.error('Paste a gene list first'); return }
+      const lines = pastedGenes.trim().split('\n')
+      const hasHeader = isNaN(Number(lines[0].split(',')[1]))
+      const header = hasHeader ? lines[0].split(',') : ['gene', 'pval', 'logFC', 'padj', 'absLogFC']
+      const rows = (hasHeader ? lines.slice(1) : lines).map(l => {
+        const parts = l.split(',')
+        return Object.fromEntries(header.map((h, i) => [h.trim(), parts[i]?.trim() ?? '']))
+      })
+      csvData = JSON.stringify(rows)
+    } else {
+      if (!uploadedFile) { toast.error('Upload a CSV file first'); return }
+      const text = await uploadedFile.text()
+      const lines = text.trim().split('\n')
+      const header = lines[0].split(',').map(s => s.trim().replace(/^"|"$/g, ''))
+      const rows = lines.slice(1).map(l => {
+        const parts = l.split(',')
+        return Object.fromEntries(header.map((h, i) => [h, parts[i]?.trim().replace(/^"|"$/g, '') ?? '']))
+      })
+      csvData = JSON.stringify(rows)
+    }
+
+    setStatus('running')
+    setResults(null)
+    setError(null)
+    try {
+      const { task_id } = await startPathwayAnalysis({ session_id: sessionId, csv_data: csvData, species, pval_cutoff: pvalCutoff })
+      setTaskId(task_id)
+      toast.success('Pathway analysis started — this may take 5–15 minutes')
+    } catch (e: any) {
+      setStatus('error')
+      setError(e.response?.data?.detail ?? String(e))
+    }
+  }
+
+  const methods = results ? Object.keys(results) : []
+
+  return (
+    <div className="p-4 space-y-4">
+      {/* Controls */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+        <h3 className="font-semibold text-slate-700">Pathway Analysis</h3>
+        <p className="text-xs text-slate-400">
+          Runs ORA and GSEA against GO, KEGG, WikiPathways, and MSigDB (H, C2, C5) using clusterProfiler.
+          Provide a ranked gene list from a DGE result (columns: gene, pval / p_val, logFC / avg_log2FC, padj / p_val_adj).
+        </p>
+
+        <div className="flex flex-wrap gap-4 items-end">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Species</label>
+            <select value={species} onChange={e => setSpecies(e.target.value as 'hsa' | 'mmu')}
+              className="border border-slate-300 rounded px-3 py-1.5 text-sm">
+              <option value="hsa">Human (hsa)</option>
+              <option value="mmu">Mouse (mmu)</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">p-value cutoff</label>
+            <input type="number" step="0.01" min="0.001" max="0.2"
+              value={pvalCutoff} onChange={e => setPvalCutoff(Number(e.target.value))}
+              className="border border-slate-300 rounded px-3 py-1.5 text-sm w-24" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Gene list source</label>
+            <div className="flex rounded overflow-hidden border border-slate-300 text-sm">
+              {(['paste', 'upload'] as const).map(m => (
+                <button key={m} onClick={() => setCsvInput(m)}
+                  className={`px-3 py-1.5 ${csvInput === m ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                  {m === 'paste' ? 'Paste CSV' : 'Upload CSV'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {csvInput === 'paste' ? (
+          <textarea value={pastedGenes} onChange={e => setPastedGenes(e.target.value)}
+            rows={6} placeholder={"gene,pval,logFC,padj\nCD3E,0.001,2.1,0.01\nFOXP3,0.005,-1.3,0.04"}
+            className="w-full border border-slate-300 rounded px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+        ) : (
+          <div>
+            <input type="file" accept=".csv,.txt" onChange={e => setUploadedFile(e.target.files?.[0] ?? null)}
+              className="text-sm text-slate-600" />
+            {uploadedFile && <span className="text-xs text-slate-400 ml-2">{uploadedFile.name}</span>}
+          </div>
+        )}
+
+        <button onClick={handleRun} disabled={status === 'running'}
+          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+          {status === 'running' ? 'Running… (polling every 5 s)' : 'Run Pathway Analysis'}
+        </button>
+
+        {status === 'running' && (
+          <p className="text-xs text-amber-600 animate-pulse">
+            Analysis running in background — ORA + GSEA across GO, KEGG, WikiPathways, MSigDB. Please wait…
+          </p>
+        )}
+        {status === 'error' && (
+          <p className="text-xs text-red-600 bg-red-50 rounded p-2 font-mono whitespace-pre-wrap">{error}</p>
+        )}
+      </div>
+
+      {/* Results */}
+      {status === 'done' && results && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+          <h3 className="font-semibold text-slate-700">Results</h3>
+
+          {/* Method selector */}
+          <div className="flex flex-wrap gap-1">
+            {methods.map(m => (
+              <button key={m} onClick={() => setActiveMethod(m)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
+                  ${activeMethod === m ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                {PATHWAY_LABEL[m] ?? m}
+              </button>
+            ))}
+          </div>
+
+          {activeMethod && results[activeMethod] && (
+            <div className="space-y-4">
+              <PathwayDotplot rows={results[activeMethod]} />
+              <PathwayResultTable rows={results[activeMethod]} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Upload screen ──────────────────────────────────────────────────────────────
 function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
   const [loading, setLoading] = useState(false)
@@ -898,7 +1195,7 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'DGE — Clusters', 'DGE — Conditions', 'Metadata']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'Metadata']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -979,6 +1276,9 @@ export default function ExplorePage() {
           <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
               sessionId={meta.session_id} mode="conditions" />
+          </div>
+          <div className={tab === 'Pathway' ? '' : 'hidden'}>
+            <PathwayTab meta={meta} sessionId={meta.session_id} />
           </div>
           <div className={tab === 'Metadata' ? '' : 'hidden'}>
             <MetadataTab meta={meta} />
