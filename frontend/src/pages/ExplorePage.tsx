@@ -506,6 +506,84 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
         </div>
       )}
 
+      {results.length > 0 && mode === 'conditions' && (() => {
+        const allRows = results.filter((r: any) => r.avg_log2FC != null && r.p_val != null)
+
+        // use p_val_adj; fall back to p_val when p_val_adj === 0
+        const negLog10 = (r: any) => {
+          const p = (Number(r.p_val_adj) === 0 || r.p_val_adj == null)
+            ? Number(r.p_val)
+            : Number(r.p_val_adj)
+          return -Math.log10(p || 1e-300)
+        }
+
+        const sorted    = [...allRows].sort((a: any, b: any) => Number(b.avg_log2FC) - Number(a.avg_log2FC))
+        const top10up   = sorted.slice(0, 10)
+        const top10down = [...sorted].reverse().slice(0, 10)
+
+        const x      = allRows.map((r: any) => Number(r.avg_log2FC))
+        const y      = allRows.map(negLog10)
+        const colors = allRows.map((r: any) => Number(r.avg_log2FC) > 0 ? '#e15759' : '#4e79a7')
+        const hover  = allRows.map((r: any) =>
+          `<b>${r.gene}</b><br>log2FC: ${Number(r.avg_log2FC).toFixed(3)}<br>-log10(p): ${negLog10(r).toFixed(2)}<extra></extra>`)
+
+        // build annotations with staggered offsets (repel-like)
+        const makeAnnotations = (genes: any[], side: 'right' | 'left') => {
+          const xSign = side === 'right' ? 1 : -1
+          return genes.map((r: any, i: number) => ({
+            x: Number(r.avg_log2FC),
+            y: negLog10(r),
+            text: `<b>${r.gene}</b>`,
+            showarrow: true,
+            arrowhead: 2,
+            arrowsize: 0.8,
+            arrowwidth: 1,
+            arrowcolor: '#999',
+            ax: xSign * (38 + (i % 3) * 14),
+            ay: -20 - (i % 5) * 12,
+            font: { size: 10, color: side === 'right' ? '#c0392b' : '#2c6fad' },
+            bgcolor: 'rgba(255,255,255,0.85)',
+            borderpad: 2,
+            xanchor: side,
+          }))
+        }
+
+        const annotations = [
+          ...makeAnnotations(top10up, 'right'),
+          ...makeAnnotations(top10down, 'left'),
+        ]
+
+        return (
+          <div className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col items-center">
+            <h4 className="text-sm font-medium text-slate-700 mb-2">Volcano Plot</h4>
+            <Plot
+              data={[{
+                type: 'scatter', mode: 'markers',
+                x, y,
+                marker: { color: colors, size: 6, opacity: 0.7 },
+                hovertemplate: hover,
+              }]}
+              layout={{
+                height: 750,
+                width: 560,
+                margin: { t: 20, r: 100, b: 50, l: 70 },
+                xaxis: { title: { text: 'avg_log2FC' }, zeroline: true, zerolinecolor: '#aaa', zerolinewidth: 1 },
+                yaxis: { title: { text: '-log10(p)' } },
+                annotations,
+                shapes: [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, xref: 'x', yref: 'paper', line: { color: '#aaa', width: 1, dash: 'dash' } }],
+                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+                font: { size: 11 },
+                showlegend: false,
+              }}
+              config={{ displayModeBar: false }}
+            />
+            <p className="text-xs text-slate-400 mt-1">
+              Red = up in Group 1 · Blue = down · Labels: top 10 up + top 10 down by log2FC · y-axis uses p_val when p_val_adj = 0
+            </p>
+          </div>
+        )
+      })()}
+
       {results.length > 0 && (
         <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
           {/* Tab strip */}

@@ -63,13 +63,21 @@ if (assay_name == "SCT") {
   tryCatch(s.obj <- PrepSCTFindMarkers(s.obj), error = function(e) NULL)
 }
 
+# DESeq2 requires raw counts and the package loaded
+effective_slot <- if (test_use == "DESeq2") "counts" else slot_name
+if (test_use == "DESeq2") {
+  if (!requireNamespace("DESeq2", quietly = TRUE))
+    BiocManager::install("DESeq2", ask = FALSE, update = FALSE)
+  suppressPackageStartupMessages(library(DESeq2))
+}
+
 if (mode == "clusters") {
   markers <- FindAllMarkers(s.obj, assay = assay_name, group.by = group_by,
-                            test.use = test_use, slot = slot_name,
+                            test.use = test_use, slot = effective_slot,
                             features = features, verbose = FALSE)
 } else {
   markers <- FindMarkers(s.obj, ident.1 = ident1, ident.2 = if (nchar(ident2) > 0) ident2 else NULL,
-                         assay = assay_name, test.use = test_use, slot = slot_name,
+                         assay = assay_name, test.use = test_use, slot = effective_slot,
                          features = features, verbose = FALSE) %>%
     tibble::rownames_to_column("gene") %>%
     mutate(cluster = paste(ident1, "vs", ident2))
