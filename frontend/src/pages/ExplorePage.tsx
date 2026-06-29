@@ -917,7 +917,9 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
   const [status,      setStatus]      = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [results,     setResults]     = useState<Record<string, Record<string, unknown>[]> | null>(null)
   const [error,       setError]       = useState<string | null>(null)
+  const [log,         setLog]         = useState<string>('')
   const [activeMethod, setActiveMethod] = useState<string>('')
+  const logRef = useRef<HTMLPreElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Auto-switch to session tab and select newest result when DGE results arrive
@@ -935,6 +937,10 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
     pollRef.current = setInterval(async () => {
       try {
         const res = await getPathwayResult(taskId)
+        if (res.log) {
+          setLog(res.log)
+          setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, 50)
+        }
         if (res.status === 'done') {
           clearInterval(pollRef.current!)
           setStatus('done')
@@ -993,6 +999,7 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
     setStatus('running')
     setResults(null)
     setError(null)
+    setLog('')
     try {
       const { task_id } = await startPathwayAnalysis({ session_id: sessionId, csv_data: csvData, species, pval_cutoff: pvalCutoff })
       setTaskId(task_id)
@@ -1085,12 +1092,23 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
           {status === 'running' ? 'Running… (polling every 5 s)' : 'Run Pathway Analysis'}
         </button>
 
-        {status === 'running' && (
-          <p className="text-xs text-amber-600 animate-pulse">
-            Analysis running in background — ORA + GSEA across GO, KEGG, WikiPathways, MSigDB. Please wait…
-          </p>
+        {(status === 'running' || status === 'done' || (status === 'error' && log)) && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-600">R log</span>
+              {status === 'running' && (
+                <span className="text-xs text-amber-600 animate-pulse">● running…</span>
+              )}
+              {status === 'done' && <span className="text-xs text-green-600">✓ done</span>}
+              {status === 'error' && <span className="text-xs text-red-600">✗ error</span>}
+            </div>
+            <pre ref={logRef}
+              className="text-xs font-mono bg-slate-900 text-slate-100 rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap leading-relaxed">
+              {log || '(waiting for output…)'}
+            </pre>
+          </div>
         )}
-        {status === 'error' && (
+        {status === 'error' && error && !log && (
           <p className="text-xs text-red-600 bg-red-50 rounded p-2 font-mono whitespace-pre-wrap">{error}</p>
         )}
       </div>

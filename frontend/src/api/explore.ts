@@ -105,6 +105,7 @@ export async function getCellChatStatus(task_id: string): Promise<{
 
 export async function getPathwayResult(task_id: string): Promise<{
   status: 'running' | 'done' | 'error'
+  log?: string
   results?: Record<string, Record<string, unknown>[]>
   error?: string
 }> {

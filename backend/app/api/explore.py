@@ -176,6 +176,7 @@ class PathwayRequest(BaseModel):
 
 def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: float, species: str):
     container_script = os.path.join(R_SCRIPTS, "run_pathway_analysis.R")
+    log_path = os.path.join(outdir, "run.log")
     cmd = [
         "docker", "run", "--rm",
         "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
@@ -185,16 +186,31 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
         csv_path, outdir, str(pval), species,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        if result.returncode != 0:
-            _pathway_tasks[task_id] = {"status": "error", "error": result.stderr[-3000:]}
+        with open(log_path, "w") as log_f:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            stdout_chunks = []
+            for line in proc.stdout:
+                log_f.write(line)
+                log_f.flush()
+                stdout_chunks.append(line)
+                _pathway_tasks[task_id]["log"] = "".join(stdout_chunks)
+            proc.wait(timeout=1800)
+
+        full_output = "".join(stdout_chunks)
+        # stdout from Rscript --vanilla: R messages go to stderr which we merged;
+        # the JSON is the last line printed via cat()
+        json_line = next((l for l in reversed(full_output.splitlines()) if l.strip().startswith("{")), None)
+
+        if proc.returncode != 0 or not json_line:
+            _pathway_tasks[task_id].update({"status": "error", "error": full_output[-4000:]})
             return
-        parsed = json.loads(result.stdout)
-        _pathway_tasks[task_id] = {"status": "done", "results": parsed}
+        parsed = json.loads(json_line)
+        _pathway_tasks[task_id].update({"status": "done", "results": parsed})
     except subprocess.TimeoutExpired:
-        _pathway_tasks[task_id] = {"status": "error", "error": "Pathway analysis timed out (30 min)"}
+        proc.kill()
+        _pathway_tasks[task_id].update({"status": "error", "error": "Pathway analysis timed out (30 min)"})
     except Exception as exc:
-        _pathway_tasks[task_id] = {"status": "error", "error": str(exc)}
+        _pathway_tasks[task_id].update({"status": "error", "error": str(exc)})
 
 
 @router.post("/pathway")
@@ -234,7 +250,13 @@ async def get_pathway_result(task_id: str):
     task = _pathway_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
-    return JSONResponse(task)
+    # Always return log; only include full results when done (they can be large)
+    response = {"status": task.get("status"), "log": task.get("log", "")}
+    if task.get("status") == "done":
+        response["results"] = task.get("results")
+    if task.get("status") == "error":
+        response["error"] = task.get("error")
+    return JSONResponse(response)
 
 
 # ── CellChat Analysis ─────────────────────────────────────────────────────────
