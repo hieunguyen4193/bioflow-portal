@@ -1,5 +1,6 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
+import ExplorePage from '../pages/ExplorePage'
 
 export default function Layout() {
   const { user, logout } = useAuthStore()
@@ -36,7 +37,13 @@ export default function Layout() {
           </button>
         </div>
       </header>
-      <main className={isExplore ? 'flex-1 overflow-hidden' : 'flex-1 overflow-y-auto max-w-5xl mx-auto w-full px-4 py-8'}>
+
+      {/* ExplorePage is always mounted to preserve running analyses; shown/hidden via CSS */}
+      <div className={`flex-1 overflow-hidden ${isExplore ? '' : 'hidden'}`}>
+        <ExplorePage />
+      </div>
+
+      <main className={`flex-1 overflow-y-auto max-w-5xl mx-auto w-full px-4 py-8 ${isExplore ? 'hidden' : ''}`}>
         <Outlet />
       </main>
     </div>

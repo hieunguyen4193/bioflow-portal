@@ -170,14 +170,21 @@ output[["GSEA.WP"]] <- safe_df(tryCatch(
         maxGSSize = 500, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
   error = function(e) NULL), convert_entrez = TRUE)
 
-# ── MSigDB — Hallmark (H) and Curated (C2) ───────────────────────────────────
-for (cat in c("H", "C2", "C5")) {
+# ── MSigDB — all available collections for the detected species ───────────────
+# Human: H, C1–C9   Mouse: H, M1–M8
+msigdb_cats <- if (species == "hsa") {
+  c("H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9")
+} else {
+  c("H", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8")
+}
+
+for (cat in msigdb_cats) {
   message(sprintf("ORA MSigDB %s (full)...", cat))
   m_t2g <- tryCatch(
     msigdbr(species = species_full[[species]], category = cat) %>%
       dplyr::select(gs_name, entrez_gene),
-    error = function(e) NULL)
-  if (!is.null(m_t2g)) {
+    error = function(e) { message(sprintf("  skipping %s: %s", cat, conditionMessage(e))); NULL })
+  if (!is.null(m_t2g) && nrow(m_t2g) > 0) {
     output[[paste0("ORA.FULL.MSigDB.", cat)]] <- safe_df(tryCatch(
       enricher(sig_all_ez, TERM2GENE = m_t2g, pvalueCutoff = pval_cutoff),
       error = function(e) NULL), convert_entrez = TRUE)

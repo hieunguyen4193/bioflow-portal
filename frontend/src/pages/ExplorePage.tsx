@@ -1416,8 +1416,146 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
   )
 }
 
+// ── Guide Tab ─────────────────────────────────────────────────────────────────
+function GuideTab() {
+  const sections = [
+    {
+      tab: 'UMAP',
+      icon: '🔵',
+      summary: 'Visualise all cells in 2-D reduced space, coloured by any metadata column.',
+      details: [
+        { label: 'Reduction', text: 'Choose the dimensionality reduction to display (UMAP, tSNE, PCA, …) from the sidebar.' },
+        { label: 'Colour by', text: 'Select any metadata column — cluster identity, sample, cell type, etc. — to colour cells.' },
+        { label: 'Split by', text: 'Optionally split the plot into one panel per category of a second metadata column.' },
+        { label: 'Subset clusters', text: 'Check/uncheck cluster labels in the sidebar to focus the plot on specific populations.' },
+      ],
+    },
+    {
+      tab: 'Feature Plot',
+      icon: '🧬',
+      summary: 'Overlay gene expression onto the UMAP — one panel per gene, coloured by expression level.',
+      details: [
+        { label: 'Genes', text: 'Type one or more comma-separated gene names (e.g. CD3E, CD8A). Expression is fetched from the selected assay and slot.' },
+        { label: 'Assay / slot', text: 'Set in the sidebar. "data" (log-normalised) is the default; "counts" gives raw counts.' },
+        { label: 'Subset', text: 'Only cells in the selected cluster subset are shown.' },
+      ],
+    },
+    {
+      tab: 'Violin Plot',
+      icon: '🎻',
+      summary: 'Show the distribution of gene expression across clusters as violin/jitter plots.',
+      details: [
+        { label: 'Genes', text: 'Comma-separated gene names — one violin group per gene per cluster.' },
+        { label: 'Colour by', text: 'Controls which metadata column defines the x-axis grouping.' },
+        { label: 'Subset', text: 'Restricts which clusters appear on the x-axis.' },
+      ],
+    },
+    {
+      tab: 'DGE — Clusters',
+      icon: '📊',
+      summary: 'Run FindAllMarkers to find marker genes for every cluster versus all other clusters.',
+      details: [
+        { label: 'Group by', text: 'The metadata column that defines clusters (usually seurat_clusters).' },
+        { label: 'Statistical test', text: 'wilcox (default), t, LR, or negbinom — each with different assumptions.' },
+        { label: 'p-val / logFC thresholds', text: 'Filter results shown in the table; the underlying test uses all genes.' },
+        { label: 'Remove TCR/BCR genes', text: 'Strips TRAV/TRBV/IGHV/IGLV gene families to avoid V(D)J noise.' },
+        { label: 'Save results', text: 'Click "Save to session" to pass the marker table directly to the Pathway tab.' },
+      ],
+    },
+    {
+      tab: 'DGE — Conditions',
+      icon: '⚖️',
+      summary: 'Run FindMarkers between two user-defined groups within a metadata column.',
+      details: [
+        { label: 'Group by', text: 'Metadata column that separates conditions (e.g. sample, treatment).' },
+        { label: 'Group 1 / Group 2', text: 'Comma-separated values for each side of the comparison (e.g. "ctrl,ctrl2" vs "treated"). Commas within a field are handled correctly.' },
+        { label: 'Volcano plot', text: 'After the run, a volcano plot shows –log10(p-adj) vs log2FC; click points to highlight genes.' },
+        { label: 'Save results', text: 'Results can be passed to the Pathway tab.' },
+      ],
+    },
+    {
+      tab: 'Pathway',
+      icon: '🛣️',
+      summary: 'Run Over-Representation Analysis (ORA) and Gene Set Enrichment Analysis (GSEA) across GO, KEGG, WikiPathways, and MSigDB.',
+      details: [
+        { label: 'Gene list source', text: 'Three modes — "From DGE session" auto-populates from a saved DGE run; "Paste" accepts a raw gene list; "Upload CSV" accepts a file with gene, logFC, pval, padj columns.' },
+        { label: 'Species', text: 'Auto-detected from gene name capitalisation (>50 % uppercase → human / hsa). Override to hsa or mmu if needed.' },
+        { label: 'p-value cutoff', text: 'Applied to all ORA and GSEA results (default 0.05).' },
+        { label: 'Methods run', text: 'GO BP/MF/CC (up/down/all), KEGG, WikiPathways, MSigDB Hallmark, C2 (curated), C5 (ontology) — both ORA and GSEA where applicable.' },
+        { label: 'Live log', text: 'A terminal panel shows R output in real time so you can track progress.' },
+        { label: 'Results', text: 'Each method appears as a collapsible section with a paginated table of enriched terms.' },
+      ],
+    },
+    {
+      tab: 'CellChat',
+      icon: '💬',
+      summary: 'Infer cell-cell communication networks and render an interactive HTML report.',
+      details: [
+        { label: 'Sample', text: '"ALL" uses every cell; enter a value from the "label" metadata column to analyse a subset.' },
+        { label: 'Cell filter', text: '"Filter10" removes cell populations with fewer than 10 cells before inference.' },
+        { label: 'Reduction / Cluster column', text: 'Must match the reduction and cluster metadata column actually present in the object.' },
+        { label: 'Species', text: 'Human or Mouse — selects the matching CellChat ligand-receptor database.' },
+        { label: 'Caching', text: 'The CellChat object is saved as an .rds file; re-running with the same parameters reloads it instantly.' },
+        { label: 'Report', text: 'The rendered HTML report opens inside an iframe. It contains UMAP overviews, interaction count/weight matrices, circle plots, heatmaps, and per-pathway signal views.' },
+      ],
+    },
+    {
+      tab: 'Metadata',
+      icon: '📋',
+      summary: 'Browse and filter the full per-cell metadata table from the Seurat object.',
+      details: [
+        { label: 'Filter', text: 'Type in any column header search box to filter rows by value.' },
+        { label: 'Sort', text: 'Click any column header to sort ascending (▲) or descending (▼).' },
+        { label: 'Rows shown', text: 'Up to 500 cells are displayed for performance; apply filters to narrow the view.' },
+      ],
+    },
+  ]
+
+  return (
+    <div className="p-6 max-w-3xl mx-auto space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-slate-800 mb-1">Explore — user guide</h2>
+        <p className="text-sm text-slate-500">
+          Load a Seurat <code className="bg-slate-100 px-1 rounded">.rds</code> file from the upload screen to unlock all tabs below.
+          The sidebar controls (reduction, colour-by, assay, slot, split-by, cluster subset) apply globally to the visualisation tabs.
+        </p>
+      </div>
+
+      {sections.map(({ tab, icon, summary, details }) => (
+        <div key={tab} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+            <span className="text-base">{icon}</span>
+            <span className="font-medium text-slate-800 text-sm">{tab}</span>
+          </div>
+          <div className="px-4 py-3 space-y-3">
+            <p className="text-sm text-slate-600">{summary}</p>
+            <dl className="space-y-1.5">
+              {details.map(({ label, text }) => (
+                <div key={label} className="flex gap-2 text-sm">
+                  <dt className="font-medium text-slate-700 shrink-0 w-40">{label}</dt>
+                  <dd className="text-slate-500">{text}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </div>
+      ))}
+
+      <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 text-sm text-indigo-700 space-y-1">
+        <p className="font-medium">Tips</p>
+        <ul className="list-disc list-inside space-y-0.5 text-indigo-600">
+          <li>DGE results are automatically offered to the Pathway tab — no copy-paste needed.</li>
+          <li>Pathway analysis and CellChat run as background jobs; you can switch tabs while they compute.</li>
+          <li>CellChat caches its output — re-running with the same settings is instant.</li>
+          <li>Species is auto-detected from gene name case; override it if auto-detection picks the wrong organism.</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'CellChat', 'Metadata']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'CellChat', 'Metadata', 'Guide']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -1515,6 +1653,9 @@ export default function ExplorePage() {
           </div>
           <div className={tab === 'Metadata' ? '' : 'hidden'}>
             <MetadataTab meta={meta} />
+          </div>
+          <div className={tab === 'Guide' ? '' : 'hidden'}>
+            <GuideTab />
           </div>
         </div>
       </div>
