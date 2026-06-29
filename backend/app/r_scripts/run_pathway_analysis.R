@@ -171,20 +171,33 @@ output[["GSEA.WP"]] <- safe_df(tryCatch(
   error = function(e) NULL), convert_entrez = TRUE)
 
 # ── MSigDB — all available collections for the detected species ───────────────
-# Human: H, C1–C9   Mouse: H, M1–M8
-msigdb_cats <- if (species == "hsa") {
+message(sprintf("msigdbr version: %s", as.character(packageVersion("msigdbr"))))
+
+# Discover which categories are actually bundled in this msigdbr installation
+available_cats <- tryCatch({
+  cols <- msigdbr_collections()
+  unique(cols$gs_cat)
+}, error = function(e) {
+  # msigdbr < 7.4 lacks msigdbr_collections(); probe directly
+  message("msigdbr_collections() not available, probing categories directly")
+  all_cats_human <- c("H","C1","C2","C3","C4","C5","C6","C7","C8","C9")
+  all_cats_mouse <- c("H","M1","M2","M3","M4","M5","M6","M7","M8")
+  probe_cats <- if (species == "hsa") all_cats_human else all_cats_mouse
+  Filter(function(cat) {
+    tryCatch(nrow(msigdbr(species = species_full[[species]], category = cat)) > 0, error = function(e) FALSE)
+  }, probe_cats)
+})
+message(sprintf("msigdbr available categories for %s: %s",
+                species_full[[species]], paste(sort(available_cats), collapse = ", ")))
+
+# Use only what's available; keep our preferred order
+desired_cats <- if (species == "hsa") {
   c("H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9")
 } else {
   c("H", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8")
 }
-
-# List all categories actually available in the installed msigdbr for this species
-available_cats <- tryCatch({
-  all_sets <- msigdbr_collections()
-  unique(all_sets$gs_cat)
-}, error = function(e) character(0))
-message(sprintf("msigdbr available categories for %s: %s",
-                species_full[[species]], paste(sort(available_cats), collapse = ", ")))
+msigdb_cats <- intersect(desired_cats, available_cats)
+message(sprintf("Will run MSigDB for: %s", paste(msigdb_cats, collapse = ", ")))
 
 for (cat in msigdb_cats) {
   message(sprintf("MSigDB %s: fetching gene sets...", cat))
@@ -193,7 +206,7 @@ for (cat in msigdb_cats) {
     message(sprintf("  %s: %d rows, %d gene sets", cat, nrow(raw), length(unique(raw$gs_name))))
     raw %>% dplyr::select(gs_name, entrez_gene) %>%
       dplyr::mutate(entrez_gene = as.character(entrez_gene)) %>%
-      dplyr::filter(!is.na(entrez_gene))
+      dplyr::filter(!is.na(entrez_gene) & entrez_gene != "0" & entrez_gene != "NA")
   }, error = function(e) {
     message(sprintf("  %s: FAILED — %s", cat, conditionMessage(e)))
     NULL

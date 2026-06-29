@@ -298,13 +298,10 @@ class CellChatRequest(BaseModel):
 
 
 def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict):
-    host_rds    = rds_path.replace(EXPLORE_DIR, HOST_EXPLORE, 1)
-    host_out    = outdir.replace(EXPLORE_DIR, HOST_EXPLORE, 1)
     container_script = os.path.join(R_SCRIPTS, "run_cellchat.R")
+    log_path = os.path.join(outdir, "run.log")
 
-    # Rmd is mounted via the nextflow volume: host nextflow dir → /nextflow
     host_base = os.environ.get("HOST_DATA_DIR", "").rstrip("/").replace("/data", "")
-    host_rmd  = os.path.join(host_base, "nextflow/pipelines/cellchat/rmd/CellChat_single_analysis.Rmd")
 
     cmd = [
         "docker", "run", "--rm",
@@ -319,17 +316,29 @@ def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict
         req["input_spec"], CELLCHAT_RMD,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-        if result.returncode != 0:
-            _cellchat_tasks[task_id] = {"status": "error", "error": result.stderr[-4000:]}
+        with open(log_path, "w") as log_f:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            chunks = []
+            for line in proc.stdout:
+                log_f.write(line)
+                log_f.flush()
+                chunks.append(line)
+                _cellchat_tasks[task_id]["log"] = "".join(chunks)
+            proc.wait(timeout=3600)
+
+        full_output = "".join(chunks)
+        json_line = next((l for l in reversed(full_output.splitlines()) if l.strip().startswith("{")), None)
+
+        if proc.returncode != 0 or not json_line:
+            _cellchat_tasks[task_id].update({"status": "error", "error": full_output[-4000:]})
             return
-        import json as _json
-        parsed = _json.loads(result.stdout)
-        _cellchat_tasks[task_id] = {"status": "done", "html": parsed.get("html", "")}
+        parsed = json.loads(json_line)
+        _cellchat_tasks[task_id].update({"status": "done", "html": parsed.get("html", "")})
     except subprocess.TimeoutExpired:
-        _cellchat_tasks[task_id] = {"status": "error", "error": "CellChat timed out (60 min)"}
+        proc.kill()
+        _cellchat_tasks[task_id].update({"status": "error", "error": "CellChat timed out (60 min)"})
     except Exception as exc:
-        _cellchat_tasks[task_id] = {"status": "error", "error": str(exc)}
+        _cellchat_tasks[task_id].update({"status": "error", "error": str(exc)})
 
 
 @router.post("/cellchat")
@@ -357,7 +366,9 @@ async def get_cellchat_status(task_id: str):
     task = _cellchat_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
-    result = dict(task)
-    if result.get("status") == "done":
+    result = {"status": task.get("status"), "log": task.get("log", "")}
+    if task.get("status") == "done":
         result["report_url"] = f"/explore/cellchat/html/{task_id}"
+    if task.get("status") == "error":
+        result["error"] = task.get("error")
     return JSONResponse(result)

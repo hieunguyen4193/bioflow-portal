@@ -822,7 +822,20 @@ function pathwayLabel(key: string): string {
   return key
 }
 
-function PathwayResultTable({ rows }: { rows: Record<string, unknown>[] }) {
+function downloadCSVData(rows: Record<string, unknown>[], filename: string) {
+  if (!rows.length) return
+  const cols = Object.keys(rows[0])
+  const escape = (v: unknown) => {
+    const s = String(v ?? '')
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const csv = [cols.join(','), ...rows.map(r => cols.map(c => escape(r[c])).join(','))].join('\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
+  URL.revokeObjectURL(url)
+}
+
+function PathwayResultTable({ rows, label }: { rows: Record<string, unknown>[]; label: string }) {
   const [search, setSearch] = useState('')
   const [sortCol, setSortCol] = useState('')
   const [sortDir, setSortDir] = useState<1 | -1>(-1)
@@ -848,6 +861,8 @@ function PathwayResultTable({ rows }: { rows: Record<string, unknown>[] }) {
       return String(av ?? '').localeCompare(String(bv ?? '')) * sortDir
     })
 
+  const safeFilename = label.replace(/[^a-zA-Z0-9_-]/g, '_') + '.csv'
+
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-3">
@@ -855,9 +870,13 @@ function PathwayResultTable({ rows }: { rows: Record<string, unknown>[] }) {
           placeholder="Search…"
           className="border border-slate-300 rounded px-3 py-1.5 text-sm w-64 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
         {search && <button onClick={() => setSearch('')} className="text-xs text-slate-400 hover:text-red-500">✕ Clear</button>}
-        <span className="text-xs text-slate-400 ml-auto">
+        <span className="text-xs text-slate-400">
           Showing {Math.min(visible.length, 200)} of {visible.length} pathways
         </span>
+        <button onClick={() => downloadCSVData(rows, safeFilename)}
+          className="ml-auto px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-50 text-slate-600 flex items-center gap-1">
+          ↓ Download CSV
+        </button>
       </div>
       <div className="overflow-auto rounded-lg border border-slate-200 max-h-[55vh]">
         <table className="text-xs w-full">
@@ -1160,7 +1179,7 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
           {activeMethod && results[activeMethod] && (
             <div className="space-y-4">
               <PathwayDotplot rows={results[activeMethod]} />
-              <PathwayResultTable rows={results[activeMethod]} />
+              <PathwayResultTable rows={results[activeMethod]} label={pathwayLabel(activeMethod)} />
             </div>
           )}
         </div>
@@ -1183,13 +1202,20 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
   const [status,         setStatus]         = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [reportUrl,      setReportUrl]      = useState<string | null>(null)
   const [error,          setError]          = useState<string | null>(null)
+  const [log,            setLog]            = useState('')
+  const logRef = useRef<HTMLPreElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [log])
 
   useEffect(() => {
     if (!taskId || status !== 'running') return
     pollRef.current = setInterval(async () => {
       try {
         const res = await getCellChatStatus(taskId)
+        if (res.log) setLog(res.log)
         if (res.status === 'done') {
           clearInterval(pollRef.current!)
           setStatus('done')
@@ -1208,6 +1234,7 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
     setStatus('running')
     setReportUrl(null)
     setError(null)
+    setLog('')
     try {
       const { task_id } = await startCellChat({
         session_id: sessionId,
@@ -1282,13 +1309,23 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
           {status === 'running' ? 'Running… (polling every 8 s)' : 'Run CellChat Analysis'}
         </button>
 
-        {status === 'running' && (
-          <p className="text-xs text-amber-600 animate-pulse">
-            CellChat is running in the background. First run computes the communication network (~15–60 min).
-            Subsequent runs with the same parameters use cached results.
-          </p>
+        {(status === 'running' || status === 'done' || (status === 'error' && log)) && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-600">R log</span>
+              {status === 'running' && (
+                <span className="text-xs text-amber-600 animate-pulse">● running</span>
+              )}
+              {status === 'done' && <span className="text-xs text-green-600">✓ done</span>}
+              {status === 'error' && <span className="text-xs text-red-600">✗ error</span>}
+            </div>
+            <pre ref={logRef}
+              className="bg-slate-900 text-green-300 text-xs rounded-lg p-3 overflow-auto max-h-64 font-mono whitespace-pre-wrap">
+              {log || '(waiting for output…)'}
+            </pre>
+          </div>
         )}
-        {status === 'error' && (
+        {status === 'error' && error && !log && (
           <p className="text-xs text-red-600 bg-red-50 rounded p-2 font-mono whitespace-pre-wrap">{error}</p>
         )}
       </div>

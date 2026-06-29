@@ -96,6 +96,7 @@ export async function startCellChat(params: {
 
 export async function getCellChatStatus(task_id: string): Promise<{
   status: 'running' | 'done' | 'error'
+  log?: string
   report_url?: string
   error?: string
 }> {
