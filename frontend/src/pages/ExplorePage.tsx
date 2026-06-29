@@ -912,39 +912,103 @@ function PathwayResultTable({ rows, label }: { rows: Record<string, unknown>[]; 
   )
 }
 
+function parseGeneRatio(val: unknown): number {
+  if (typeof val === 'number') return val
+  const s = String(val ?? '')
+  const [a, b] = s.split('/').map(Number)
+  return (b > 0) ? a / b : 0
+}
+
 function PathwayDotplot({ rows }: { rows: Record<string, unknown>[] }) {
   if (!rows || rows.length === 0 || 'status' in rows[0]) return null
-  const col = 'p.adjust' in rows[0] ? 'p.adjust' : 'pvalue'
+  const adjCol = 'p.adjust' in rows[0] ? 'p.adjust' : 'pvalue'
+  const isGSEA = 'NES' in rows[0]
+
+  // Sort by GeneRatio (ORA) or |NES| (GSEA) descending; take top 20
+  // Reverse at the end so the highest ratio appears at the top of the y-axis
+  const sortKey = isGSEA
+    ? (r: Record<string, unknown>) => Math.abs(Number(r.NES ?? 0))
+    : (r: Record<string, unknown>) => parseGeneRatio(r.GeneRatio ?? r.generatio ?? 0)
   const top = [...rows]
-    .sort((a, b) => Number(a[col] ?? 1) - Number(b[col] ?? 1))
+    .sort((a, b) => sortKey(b) - sortKey(a))
     .slice(0, 20)
+    .reverse()
 
   const labels = top.map(r => String(r.Description ?? r.ID ?? ''))
-  const x = top.map(r => Number(r.Count ?? r.setSize ?? 0))
-  const color = top.map(r => Number(r[col] ?? 1))
+  const padj   = top.map(r => Number(r[adjCol] ?? 1))
+  const pMin   = Math.min(...padj)
+  const pMax   = Math.max(...padj)
+
+  // x: GeneRatio (ORA) or NES (GSEA, can be negative = down-regulated)
+  const x      = isGSEA
+    ? top.map(r => Number(r.NES ?? 0))
+    : top.map(r => parseGeneRatio(r.GeneRatio ?? r.generatio ?? 0))
+  const xLabel = isGSEA ? 'NES' : 'GeneRatio'
+
+  // Dot size proportional to Count (ORA) or setSize (GSEA)
+  const counts    = top.map(r => Number(r.Count ?? r.setSize ?? 10))
+  const countMax  = Math.max(...counts, 1)
+  const dotSizes  = counts.map(c => 8 + (c / countMax) * 22)
+  const sizeLabel = isGSEA ? 'setSize' : 'Count'
+
+  const hoverText = top.map((r, i) => [
+    `<b>${labels[i]}</b>`,
+    isGSEA
+      ? `NES: ${Number(r.NES ?? 0).toFixed(3)}`
+      : `GeneRatio: ${x[i].toFixed(4)} (${r.GeneRatio ?? ''})`,
+    `${sizeLabel}: ${counts[i]}`,
+    `p.adjust: ${padj[i].toExponential(2)}`,
+  ].join('<br>'))
 
   return (
     <Plot
       data={[{
-        type: 'bar', orientation: 'h',
-        x, y: labels,
+        type: 'scatter',
+        mode: 'markers',
+        x,
+        y: labels,
         marker: {
-          color,
-          colorscale: [['0', '#dc2626'], ['1', '#dbeafe']],
-          colorbar: { title: col, thickness: 12 },
+          size: dotSizes,
+          color: padj,
+          colorscale: [['0', '#dc2626'], ['0.5', '#f97316'], ['1', '#3b82f6']],
+          cmin: 0,
+          cmax: 1,
+          reversescale: false,
+          colorbar: {
+            title: { text: 'p.adjust', side: 'right' },
+            thickness: 14,
+            len: 0.6,
+          },
+          line: { color: '#94a3b8', width: 0.5 },
         },
-        text: top.map(r => `p.adj: ${Number(r[col] ?? 1).toExponential(2)}`),
-        hoverinfo: 'text+x+y',
+        text: hoverText,
+        hoverinfo: 'text',
       }]}
       layout={{
-        margin: { l: 280, r: 40, t: 20, b: 40 },
-        height: Math.max(300, top.length * 22 + 60),
-        width: 700,
-        xaxis: { title: 'Count' },
+        margin: { l: 320, r: 160, t: 30, b: 70 },
+        height: Math.max(400, top.length * 48 + 100),
+        width: Math.max(960, top.length * 24 + 560),
+        xaxis: {
+          title: xLabel,
+          zeroline: isGSEA,
+          zerolinecolor: '#94a3b8',
+        },
+        yaxis: { automargin: true, tickfont: { size: 11 } },
         paper_bgcolor: 'transparent',
         plot_bgcolor: 'transparent',
+        // Invisible legend-like annotation for dot size
+        annotations: [
+          { x: 1.18, y: 1.05, xref: 'paper', yref: 'paper',
+            text: `<b>${sizeLabel}</b>`, showarrow: false,
+            font: { size: 11, color: '#64748b' }, xanchor: 'center' },
+          ...[0.25, 0.5, 1.0].map((frac, i) => ({
+            x: 1.18, y: 0.85 - i * 0.15, xref: 'paper' as const, yref: 'paper' as const,
+            text: `${Math.round(frac * countMax)}`,
+            showarrow: false, font: { size: 10, color: '#64748b' }, xanchor: 'center' as const,
+          })),
+        ],
       }}
-      config={{ displayModeBar: false }}
+      config={{ displayModeBar: false, responsive: false }}
     />
   )
 }
@@ -1065,8 +1129,8 @@ function PathwayMethodExplanation({ methodKey, rows }: {
               <p className="text-slate-500 leading-relaxed">
                 Top 20 terms by adjusted p-value.
                 {isGSEA
-                  ? ' Bar length = gene set size in your ranked list. Colour = adjusted p-value (red = most significant).'
-                  : ' Bar length = number of your significant genes in the term (Count). Colour = adjusted p-value (red = most significant).'}
+                  ? ' X = NES (positive = up-regulated pathway, negative = down-regulated). Dot size = setSize (genes in your ranked list matching the set). Dot colour = p.adjust (red = most significant, blue = least significant).'
+                  : ' X = GeneRatio (k/n, fraction of your significant genes in the term). Dot size = Count (number of overlapping genes). Dot colour = p.adjust (red = most significant, blue = least significant).'}
               </p>
             </div>
           )}
