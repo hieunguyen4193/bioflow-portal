@@ -996,27 +996,34 @@ function PathwayDotplot({ rows, label }: { rows: Record<string, unknown>[]; labe
     try {
       const PlotlyLib = (window as any).Plotly
       if (!PlotlyLib) { toast.error('Plotly not ready — try again in a moment'); return }
-      const scale   = 3  // 96 dpi × 3 ≈ 288 dpi (effective 300 dpi)
-      const dataUrl: string = await PlotlyLib.toImage(graphDivRef.current, { format: 'png', scale })
 
-      const img = new Image()
-      img.src = dataUrl
-      await new Promise(res => { img.onload = res })
+      // Get SVG string from Plotly (vector, Illustrator-compatible)
+      const svgStr: string = await PlotlyLib.toImage(graphDivRef.current, { format: 'svg' })
+      const svgText = decodeURIComponent(svgStr.replace(/^data:image\/svg\+xml,/, ''))
 
-      // Size the PDF page to match the plot in points (1 pt = 1/72 inch)
-      const ptW = Math.round(img.naturalWidth  * 72 / (96 * scale))
-      const ptH = Math.round(img.naturalHeight * 72 / (96 * scale))
+      // Parse dimensions from SVG viewBox / width / height
+      const parser = new DOMParser()
+      const svgDoc = parser.parseFromString(svgText, 'image/svg+xml')
+      const svgEl  = svgDoc.querySelector('svg')!
+      const svgW   = parseFloat(svgEl.getAttribute('width')  ?? '800')
+      const svgH   = parseFloat(svgEl.getAttribute('height') ?? '600')
 
-      const printWin = window.open('', '_blank', 'width=1,height=1')
-      if (!printWin) { toast.error('Allow pop-ups to download the PDF'); return }
-      printWin.document.write(`<!DOCTYPE html><html><head><style>
-        @page { size: ${ptW}pt ${ptH}pt; margin: 0; }
-        body  { margin: 0; padding: 0; }
-        img   { width: 100%; display: block; }
-      </style></head><body><img src="${dataUrl}"/></body></html>`)
-      printWin.document.close()
-      printWin.focus()
-      setTimeout(() => { printWin.print(); printWin.close() }, 500)
+      // jsPDF uses mm; 1px = 0.2646 mm at 96 dpi
+      const mmW = svgW * 0.2646
+      const mmH = svgH * 0.2646
+
+      const { jsPDF } = await import('jspdf')
+      const { svg2pdf } = await import('svg2pdf.js')
+
+      const doc = new jsPDF({
+        orientation: mmW > mmH ? 'landscape' : 'portrait',
+        unit: 'mm',
+        format: [mmW, mmH],
+      })
+
+      await svg2pdf(svgEl, doc, { x: 0, y: 0, width: mmW, height: mmH })
+
+      doc.save(`${label.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`)
     } catch (e) {
       toast.error('Download failed: ' + String(e))
     }
