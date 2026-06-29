@@ -919,7 +919,40 @@ function parseGeneRatio(val: unknown): number {
   return (b > 0) ? a / b : 0
 }
 
-function PathwayDotplot({ rows }: { rows: Record<string, unknown>[] }) {
+function PathwayDotplot({ rows, label }: { rows: Record<string, unknown>[]; label: string }) {
+  const graphDivRef = useRef<any>(null)
+
+  async function handleDownloadPdf() {
+    if (!graphDivRef.current) return
+    try {
+      // Dynamic import avoids top-level bundle issues with plotly.js v3
+      const Plotly = await import('plotly.js')
+      const scale  = 3  // 96 dpi × 3 ≈ 288 dpi (effective 300 dpi)
+      const dataUrl: string = await (Plotly as any).toImage(graphDivRef.current, { format: 'png', scale })
+
+      const img = new Image()
+      img.src = dataUrl
+      await new Promise(res => { img.onload = res })
+
+      // Size the PDF page to match the plot in points (1 pt = 1/72 inch)
+      const ptW = Math.round(img.naturalWidth  * 72 / (96 * scale))
+      const ptH = Math.round(img.naturalHeight * 72 / (96 * scale))
+
+      const printWin = window.open('', '_blank', 'width=1,height=1')
+      if (!printWin) { toast.error('Allow pop-ups to download the PDF'); return }
+      printWin.document.write(`<!DOCTYPE html><html><head><style>
+        @page { size: ${ptW}pt ${ptH}pt; margin: 0; }
+        body  { margin: 0; padding: 0; }
+        img   { width: 100%; display: block; }
+      </style></head><body><img src="${dataUrl}"/></body></html>`)
+      printWin.document.close()
+      printWin.focus()
+      setTimeout(() => { printWin.print(); printWin.close() }, 500)
+    } catch (e) {
+      toast.error('Download failed: ' + String(e))
+    }
+  }
+
   if (!rows || rows.length === 0 || 'status' in rows[0]) return null
   const adjCol = 'p.adjust' in rows[0] ? 'p.adjust' : 'pvalue'
   const isGSEA = 'NES' in rows[0]
@@ -960,8 +993,19 @@ function PathwayDotplot({ rows }: { rows: Record<string, unknown>[] }) {
     `p.adjust: ${padj[i].toExponential(2)}`,
   ].join('<br>'))
 
+  const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, '_')
+
   return (
+    <div>
+      <div className="flex justify-end mb-1">
+        <button onClick={handleDownloadPdf}
+          className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-50 text-slate-600 flex items-center gap-1">
+          ↓ Download PDF (300 dpi)
+        </button>
+      </div>
     <Plot
+      onInitialized={(_, gd) => { graphDivRef.current = gd }}
+      onUpdate={(_, gd)      => { graphDivRef.current = gd }}
       data={[{
         type: 'scatter',
         mode: 'markers',
@@ -1010,6 +1054,7 @@ function PathwayDotplot({ rows }: { rows: Record<string, unknown>[] }) {
       }}
       config={{ displayModeBar: false, responsive: false }}
     />
+    </div>
   )
 }
 
@@ -1393,7 +1438,7 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
           {activeMethod && results[activeMethod] && (
             <div className="space-y-4">
               <PathwayMethodExplanation methodKey={activeMethod} rows={results[activeMethod]} />
-              <PathwayDotplot rows={results[activeMethod]} />
+              <PathwayDotplot rows={results[activeMethod]} label={pathwayLabel(activeMethod)} />
               <PathwayResultTable rows={results[activeMethod]} label={pathwayLabel(activeMethod)} />
             </div>
           )}
