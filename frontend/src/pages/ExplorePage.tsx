@@ -953,7 +953,7 @@ function PathwayResultTable({ rows, label }: { rows: Record<string, unknown>[]; 
               {allCols.map(c => (
                 <th key={c} onClick={() => c !== 'geneID' && toggleSort(c)}
                   className={`text-left px-3 py-2 font-medium whitespace-nowrap select-none ${c !== 'geneID' ? 'cursor-pointer hover:bg-slate-100' : ''}`}>
-                  {c}
+                  {c === '_row' ? 'ID' : c}
                   {c !== 'geneID' && (
                     <span className="ml-1 text-slate-400">
                       {sortCol === c ? (sortDir === 1 ? '▲' : '▼') : '⇅'}

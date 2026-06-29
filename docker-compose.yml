@@ -33,6 +33,7 @@ services:
     environment:
       HOST_DATA_DIR: ${BIOFLOW_DATA_DIR}
       HOST_R_SCRIPTS: ${BIOFLOW_R_SCRIPTS}
+      PIPELINE_IMAGE: ${PIPELINE_IMAGE:-pipeline-portal/r-pipeline:latest}
       EXPLORE_DIR: /data/explore
       R_SCRIPTS_DIR: /app/app/r_scripts
     depends_on:

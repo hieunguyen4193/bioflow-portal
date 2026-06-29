@@ -46,18 +46,6 @@ script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
 ```{r setup, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
 options(stringsAsFactors = FALSE)
 
-for (pkg in c("CellChat", "Seurat", "dplyr", "stringr", "ggplot2", "patchwork", "DT", "tibble", "hash")) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    if (pkg == "CellChat") {
-      if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-      BiocManager::install(c("BiocNeighbors", "ComplexHeatmap"), ask = FALSE, update = FALSE)
-      devtools::install_github("jinworks/CellChat", upgrade = "never")
-    } else {
-      install.packages(pkg, repos = "https://cloud.r-project.org")
-    }
-  }
-}
-
 suppressPackageStartupMessages({
   library(CellChat)
   library(Seurat)
@@ -139,9 +127,17 @@ if (typeof(check.type) %in% c("double", "integer")) {
 }
 meta.data <- meta.data %>% column_to_rownames("barcode")
 
+# Drop unused factor levels so cluster count matrix dimensions stay consistent
+meta.data$cluster <- droplevels(meta.data$cluster,
+  exclude = setdiff(levels(meta.data$cluster), unique(meta.data$cluster)))
+
 cellchat <- createCellChat(object = data.input, meta = meta.data, group.by = "cluster")
 cellchat <- addMeta(cellchat, meta = meta.data)
 cellchat <- setIdent(cellchat, ident.use = "cluster")
+
+# Drop unused levels from idents after setIdent (required by computeCommunProb)
+cellchat@idents <- droplevels(cellchat@idents,
+  exclude = setdiff(levels(cellchat@idents), unique(cellchat@idents)))
 groupSize <- as.data.frame(table(cellchat@idents))
 create_dt(groupSize)
 ```
