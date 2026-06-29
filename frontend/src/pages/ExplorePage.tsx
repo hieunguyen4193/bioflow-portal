@@ -1708,24 +1708,16 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
       </div>
 
       {status === 'done' && reportUrl && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-200">
-            <span className="text-sm font-medium text-slate-700">CellChat Report</span>
-            <div className="flex items-center gap-3">
-              <a href={reportUrl} download="CellChat_report.html"
-                className="text-xs text-slate-600 border border-slate-300 rounded px-2 py-1 hover:bg-slate-100">
-                ↓ Download HTML
-              </a>
-              <a href={reportUrl} target="_blank" rel="noopener noreferrer"
-                className="text-xs text-indigo-600 hover:underline">Open in new tab ↗</a>
-            </div>
-          </div>
-          <iframe
-            src={reportUrl}
-            className="w-full"
-            style={{ height: '80vh', border: 'none' }}
-            title="CellChat Report"
-          />
+        <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-200 rounded-xl">
+          <span className="text-sm text-green-700 font-medium">✓ CellChat report ready</span>
+          <a href={reportUrl} download="CellChat_report.html"
+            className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-100 text-slate-600">
+            ↓ Download HTML
+          </a>
+          <a href={reportUrl} target="_blank" rel="noopener noreferrer"
+            className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded">
+            Open in new tab ↗
+          </a>
         </div>
       )}
     </div>

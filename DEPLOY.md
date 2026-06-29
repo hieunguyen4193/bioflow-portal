@@ -34,7 +34,7 @@ mkdir -p data/uploads data/results data/explore
 
 ## 3 — Configure environment
 
-### Root `.env` (docker-compose variable substitution)
+### Root `.env`
 
 ```bash
 cp .env.example .env
@@ -44,7 +44,12 @@ Edit `.env`:
 ```dotenv
 # Absolute host path to the data directory — must match your machine
 BIOFLOW_DATA_DIR=/absolute/path/to/bioflow-portal/data
+
+# Absolute host path to the R scripts directory
 BIOFLOW_R_SCRIPTS=/absolute/path/to/bioflow-portal/backend/app/r_scripts
+
+# Docker image used for all R analysis jobs (pathway analysis, CellChat)
+PIPELINE_IMAGE=pipeline-portal/r-pipeline:latest
 ```
 
 > **Why host paths?** The backend calls `docker run` via the Docker socket.
@@ -83,15 +88,17 @@ EMAILS_FROM=noreply@bioflow.local
 
 ## 4 — Build the R pipeline image
 
-All required R packages (CellChat, clusterProfiler, msigdbr, org.Hs.eg.db, org.Mm.eg.db, etc.) are baked into a custom Docker image so they never need to be installed at runtime.
+All required R packages are baked into a custom Docker image so they never need to be installed at runtime:
 
 ```bash
 docker build -t pipeline-portal/r-pipeline:latest ./pipeline-image/
 ```
 
-This takes ~2–5 minutes on first build (compiles CellChat from source). Subsequent builds use the Docker layer cache and finish in seconds.
+Packages included: `CellChat`, `clusterProfiler`, `org.Hs.eg.db`, `org.Mm.eg.db`, `msigdbr`, `clusterProfiler`, `ComplexHeatmap`, `BiocNeighbors`, `ggplot2`, `rmarkdown`, and more.
 
-**Optional — push to a registry so other machines can pull instead of building:**
+Build time: ~2–5 minutes on first build (compiles CellChat from source). Subsequent builds use the Docker layer cache and finish in seconds.
+
+**To share across machines — push to a registry:**
 ```bash
 docker tag pipeline-portal/r-pipeline:latest yourrepo/r-pipeline:latest
 docker push yourrepo/r-pipeline:latest
@@ -100,6 +107,15 @@ docker push yourrepo/r-pipeline:latest
 Then on the target machine set in `.env`:
 ```dotenv
 PIPELINE_IMAGE=yourrepo/r-pipeline:latest
+```
+And pull before starting:
+```bash
+docker pull yourrepo/r-pipeline:latest
+```
+
+**To add a new R package**, edit `pipeline-image/install_packages.R` and rebuild:
+```bash
+docker build -t pipeline-portal/r-pipeline:latest ./pipeline-image/
 ```
 
 ---
@@ -151,7 +167,7 @@ git pull
 docker compose up --build -d
 ```
 
-If R package dependencies changed (e.g. new package added to `pipeline-image/install_packages.R`), rebuild the pipeline image first:
+If R package dependencies changed (new package added to `pipeline-image/install_packages.R`):
 ```bash
 docker build -t pipeline-portal/r-pipeline:latest ./pipeline-image/
 docker compose up --build -d
@@ -159,39 +175,53 @@ docker compose up --build -d
 
 ---
 
-## Directory structure after setup
+## Directory structure
 
 ```
 bioflow-portal/
 ├── backend/
-│   ├── .env                   ← secret key, SMTP config
-│   └── app/r_scripts/         ← R scripts mounted into pipeline containers
+│   ├── .env                      ← secret key, SMTP config
+│   └── app/r_scripts/            ← R scripts mounted into pipeline containers at runtime
 ├── data/
-│   ├── uploads/               ← uploaded input files
-│   ├── results/               ← Nextflow pipeline outputs
-│   └── explore/               ← Explore page session data and analysis results
+│   ├── uploads/                  ← uploaded input files
+│   ├── results/                  ← Nextflow pipeline outputs
+│   └── explore/                  ← Explore page session data and analysis results
 ├── frontend/
-├── nextflow/pipelines/        ← Nextflow pipeline definitions and Rmd reports
+├── nextflow/
+│   └── pipelines/                ← Nextflow pipeline definitions and Rmd reports
 ├── pipeline-image/
-│   ├── Dockerfile             ← extends base image with all R packages baked in
-│   └── install_packages.R     ← package list (edit here to add new packages)
-├── .env                       ← BIOFLOW_DATA_DIR, BIOFLOW_R_SCRIPTS
+│   ├── Dockerfile                ← extends base image with all R packages baked in
+│   └── install_packages.R        ← package list (edit here to add new packages)
+├── .env                          ← BIOFLOW_DATA_DIR, BIOFLOW_R_SCRIPTS, PIPELINE_IMAGE
+├── .env.example                  ← template for the above
 └── docker-compose.yml
 ```
+
+---
+
+## New machine checklist
+
+- [ ] Install Docker (24+) and Docker Compose v2
+- [ ] `git clone` the repository
+- [ ] `mkdir -p data/uploads data/results data/explore`
+- [ ] Copy and edit `.env` (set `BIOFLOW_DATA_DIR`, `BIOFLOW_R_SCRIPTS`, `PIPELINE_IMAGE`)
+- [ ] Copy and edit `backend/.env` (set `SECRET_KEY`)
+- [ ] Build or pull the R pipeline image
+- [ ] `docker compose up --build -d`
 
 ---
 
 ## Troubleshooting
 
 ### Port already in use
-Change the host port in `docker-compose.yml` (left side of `HOST:CONTAINER`):
+Change the host port in `docker-compose.yml`:
 ```yaml
 ports:
   - "8080:8000"   # use 8080 instead of 8000
 ```
 
 ### Backend can't connect to database
-The `db` healthcheck must pass before the backend starts. Check with:
+The `db` healthcheck must pass before the backend starts. Check status:
 ```bash
 docker compose ps
 ```
@@ -202,8 +232,11 @@ The package is missing from the image. Add it to `pipeline-image/install_package
 docker build -t pipeline-portal/r-pipeline:latest ./pipeline-image/
 ```
 
+### CellChat report shows nothing / "Open in new tab" is blank
+Make sure the Vite dev server is running (frontend container). The `/explore` route is proxied through Vite to the backend — if you access the frontend directly on port 8000 it will not work.
+
 ### Nextflow pipeline fails with "Docker not found"
-The backend container needs access to the host Docker socket. Confirm this volume is in `docker-compose.yml`:
+Confirm this volume is present in `docker-compose.yml`:
 ```yaml
 - /var/run/docker.sock:/var/run/docker.sock
 ```
