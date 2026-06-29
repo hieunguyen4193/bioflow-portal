@@ -67,13 +67,13 @@ sig_all  <- subset(fulldf, padj <= pval_cutoff)$gene
 sig_up   <- subset(fulldf, padj <= pval_cutoff & logFC > 0)$gene
 sig_down <- subset(fulldf, padj <= pval_cutoff & logFC < 0)$gene
 
-sig_all_ez  <- subset(fulldf, padj <= pval_cutoff)$ENTREZID
-sig_up_ez   <- subset(fulldf, padj <= pval_cutoff & logFC > 0)$ENTREZID
-sig_down_ez <- subset(fulldf, padj <= pval_cutoff & logFC < 0)$ENTREZID
+sig_all_ez  <- as.character(subset(fulldf, padj <= pval_cutoff)$ENTREZID)
+sig_up_ez   <- as.character(subset(fulldf, padj <= pval_cutoff & logFC > 0)$ENTREZID)
+sig_down_ez <- as.character(subset(fulldf, padj <= pval_cutoff & logFC < 0)$ENTREZID)
 
 ranked_list <- fulldf %>% arrange(desc(logFC))
 gene_list_ez <- ranked_list$logFC
-names(gene_list_ez) <- ranked_list$ENTREZID
+names(gene_list_ez) <- as.character(ranked_list$ENTREZID)
 
 gene_list_sym <- ranked_list$logFC
 names(gene_list_sym) <- ranked_list$gene
@@ -178,20 +178,42 @@ msigdb_cats <- if (species == "hsa") {
   c("H", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8")
 }
 
+# List all categories actually available in the installed msigdbr for this species
+available_cats <- tryCatch({
+  all_sets <- msigdbr_collections()
+  unique(all_sets$gs_cat)
+}, error = function(e) character(0))
+message(sprintf("msigdbr available categories for %s: %s",
+                species_full[[species]], paste(sort(available_cats), collapse = ", ")))
+
 for (cat in msigdb_cats) {
-  message(sprintf("ORA MSigDB %s (full)...", cat))
-  m_t2g <- tryCatch(
-    msigdbr(species = species_full[[species]], category = cat) %>%
-      dplyr::select(gs_name, entrez_gene),
-    error = function(e) { message(sprintf("  skipping %s: %s", cat, conditionMessage(e))); NULL })
+  message(sprintf("MSigDB %s: fetching gene sets...", cat))
+  m_t2g <- tryCatch({
+    raw <- msigdbr(species = species_full[[species]], category = cat)
+    message(sprintf("  %s: %d rows, %d gene sets", cat, nrow(raw), length(unique(raw$gs_name))))
+    raw %>% dplyr::select(gs_name, entrez_gene) %>%
+      dplyr::mutate(entrez_gene = as.character(entrez_gene)) %>%
+      dplyr::filter(!is.na(entrez_gene))
+  }, error = function(e) {
+    message(sprintf("  %s: FAILED — %s", cat, conditionMessage(e)))
+    NULL
+  })
+
   if (!is.null(m_t2g) && nrow(m_t2g) > 0) {
+    message(sprintf("  %s: running ORA...", cat))
     output[[paste0("ORA.FULL.MSigDB.", cat)]] <- safe_df(tryCatch(
       enricher(sig_all_ez, TERM2GENE = m_t2g, pvalueCutoff = pval_cutoff),
-      error = function(e) NULL), convert_entrez = TRUE)
+      error = function(e) { message(sprintf("  ORA %s error: %s", cat, e$message)); NULL }),
+      convert_entrez = TRUE)
 
+    message(sprintf("  %s: running GSEA...", cat))
     output[[paste0("GSEA.MSigDB.", cat)]] <- safe_df(tryCatch(
       GSEA(gene_list_ez, TERM2GENE = m_t2g, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
-      error = function(e) NULL), convert_entrez = TRUE)
+      error = function(e) { message(sprintf("  GSEA %s error: %s", cat, e$message)); NULL }),
+      convert_entrez = TRUE)
+    message(sprintf("  %s: done.", cat))
+  } else {
+    message(sprintf("  %s: no gene sets returned — skipping.", cat))
   }
 }
 

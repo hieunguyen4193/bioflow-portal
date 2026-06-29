@@ -17,7 +17,7 @@ export default function Layout() {
     <div className="h-screen flex flex-col overflow-hidden">
       <header className="bg-indigo-700 text-white px-6 py-3 flex items-center justify-between shadow">
         <div className="flex items-center gap-6">
-          <span className="font-bold text-lg tracking-tight">BioFlow Portal</span>
+          <span className="font-bold text-lg tracking-tight">Pipeline Portal</span>
           <nav className="flex gap-4 text-sm">
             <NavLink to="/" end className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
               Dashboard

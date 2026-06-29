@@ -773,25 +773,53 @@ function MetadataTab({ meta }: { meta: SeuratMeta }) {
 }
 
 // ── Pathway Analysis tab ───────────────────────────────────────────────────────
-const PATHWAY_LABEL: Record<string, string> = {
-  'ORA.FULL.GO': 'ORA — GO (all sig.)',
-  'ORA.UP.GO':   'ORA — GO (up)',
-  'ORA.DOWN.GO': 'ORA — GO (down)',
-  'ORA.FULL.KEGG': 'ORA — KEGG (all)',
-  'ORA.UP.KEGG':   'ORA — KEGG (up)',
-  'ORA.DOWN.KEGG': 'ORA — KEGG (down)',
-  'ORA.FULL.WP': 'ORA — WikiPathways (all)',
-  'ORA.UP.WP':   'ORA — WikiPathways (up)',
-  'ORA.DOWN.WP': 'ORA — WikiPathways (down)',
-  'GSEA.GO':     'GSEA — GO',
-  'GSEA.KEGG':   'GSEA — KEGG',
-  'GSEA.WP':     'GSEA — WikiPathways',
-  'ORA.FULL.MSigDB.H':  'ORA — MSigDB Hallmark',
-  'GSEA.MSigDB.H':      'GSEA — MSigDB Hallmark',
-  'ORA.FULL.MSigDB.C2': 'ORA — MSigDB C2 (Curated)',
-  'GSEA.MSigDB.C2':     'GSEA — MSigDB C2 (Curated)',
-  'ORA.FULL.MSigDB.C5': 'ORA — MSigDB C5 (Ontology)',
-  'GSEA.MSigDB.C5':     'GSEA — MSigDB C5 (Ontology)',
+const MSIGDB_CAT_LABEL: Record<string, string> = {
+  H:  'Hallmark',
+  C1: 'C1 — Positional',
+  C2: 'C2 — Curated',
+  C3: 'C3 — Regulatory',
+  C4: 'C4 — Computational',
+  C5: 'C5 — Ontology',
+  C6: 'C6 — Oncogenic',
+  C7: 'C7 — Immunologic',
+  C8: 'C8 — Cell type',
+  C9: 'C9 — Cancer',
+  M1: 'M1 — Positional',
+  M2: 'M2 — Curated',
+  M3: 'M3 — Regulatory',
+  M4: 'M4 — Computational',
+  M5: 'M5 — Ontology',
+  M6: 'M6 — Oncogenic',
+  M7: 'M7 — Immunologic',
+  M8: 'M8 — Cell type',
+}
+
+function pathwayLabel(key: string): string {
+  const fixed: Record<string, string> = {
+    'ORA.FULL.GO':   'ORA — GO (all sig.)',
+    'ORA.UP.GO':     'ORA — GO (up)',
+    'ORA.DOWN.GO':   'ORA — GO (down)',
+    'ORA.FULL.KEGG': 'ORA — KEGG (all)',
+    'ORA.UP.KEGG':   'ORA — KEGG (up)',
+    'ORA.DOWN.KEGG': 'ORA — KEGG (down)',
+    'ORA.FULL.WP':   'ORA — WikiPathways (all)',
+    'ORA.UP.WP':     'ORA — WikiPathways (up)',
+    'ORA.DOWN.WP':   'ORA — WikiPathways (down)',
+    'GSEA.GO':       'GSEA — GO',
+    'GSEA.KEGG':     'GSEA — KEGG',
+    'GSEA.WP':       'GSEA — WikiPathways',
+  }
+  if (fixed[key]) return fixed[key]
+  // ORA.FULL.MSigDB.C2 → ORA — MSigDB C2 — Curated
+  // GSEA.MSigDB.H      → GSEA — MSigDB Hallmark
+  const oraMatch  = key.match(/^ORA\.FULL\.MSigDB\.(.+)$/)
+  const gseaMatch = key.match(/^GSEA\.MSigDB\.(.+)$/)
+  const cat = (oraMatch ?? gseaMatch)?.[1]
+  if (cat) {
+    const catLabel = MSIGDB_CAT_LABEL[cat] ?? cat
+    return oraMatch ? `ORA — MSigDB ${catLabel}` : `GSEA — MSigDB ${catLabel}`
+  }
+  return key
 }
 
 function PathwayResultTable({ rows }: { rows: Record<string, unknown>[] }) {
@@ -1018,7 +1046,7 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
       <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
         <h3 className="font-semibold text-slate-700">Pathway Analysis</h3>
         <p className="text-xs text-slate-400">
-          Runs ORA and GSEA against GO, KEGG, WikiPathways, and MSigDB (H, C2, C5) using clusterProfiler.
+          Runs ORA and GSEA against GO, KEGG, WikiPathways, and MSigDB (H + C1–C9 for human, H + M1–M8 for mouse) using clusterProfiler.
           Provide a ranked gene list from a DGE result (columns: gene, pval / p_val, logFC / avg_log2FC, padj / p_val_adj).
         </p>
 
@@ -1124,7 +1152,7 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
               <button key={m} onClick={() => setActiveMethod(m)}
                 className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
                   ${activeMethod === m ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-                {PATHWAY_LABEL[m] ?? m}
+                {pathwayLabel(m)}
               </button>
             ))}
           </div>
@@ -1481,7 +1509,7 @@ function GuideTab() {
         { label: 'Gene list source', text: 'Three modes — "From DGE session" auto-populates from a saved DGE run; "Paste" accepts a raw gene list; "Upload CSV" accepts a file with gene, logFC, pval, padj columns.' },
         { label: 'Species', text: 'Auto-detected from gene name capitalisation (>50 % uppercase → human / hsa). Override to hsa or mmu if needed.' },
         { label: 'p-value cutoff', text: 'Applied to all ORA and GSEA results (default 0.05).' },
-        { label: 'Methods run', text: 'GO BP/MF/CC (up/down/all), KEGG, WikiPathways, MSigDB Hallmark, C2 (curated), C5 (ontology) — both ORA and GSEA where applicable.' },
+        { label: 'Methods run', text: 'GO BP/MF/CC (up/down/all), KEGG, WikiPathways, and all MSigDB collections (H + C1–C9 for human, H + M1–M8 for mouse) — both ORA and GSEA per collection.' },
         { label: 'Live log', text: 'A terminal panel shows R output in real time so you can track progress.' },
         { label: 'Results', text: 'Each method appears as a collapsible section with a paginated table of enriched terms.' },
       ],

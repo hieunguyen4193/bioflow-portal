@@ -28,7 +28,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100">
       <div className="bg-white shadow rounded-xl p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-bold text-indigo-700 mb-6">BioFlow Portal</h1>
+        <h1 className="text-2xl font-bold text-indigo-700 mb-6">Pipeline Portal</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">Email</label>
