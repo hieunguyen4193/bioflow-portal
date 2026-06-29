@@ -783,15 +783,14 @@ const MSIGDB_CAT_LABEL: Record<string, string> = {
   C6: 'C6 — Oncogenic',
   C7: 'C7 — Immunologic',
   C8: 'C8 — Cell type',
-  C9: 'C9 — Cancer',
-  M1: 'M1 — Positional',
-  M2: 'M2 — Curated',
-  M3: 'M3 — Regulatory',
-  M4: 'M4 — Computational',
-  M5: 'M5 — Ontology',
-  M6: 'M6 — Oncogenic',
-  M7: 'M7 — Immunologic',
-  M8: 'M8 — Cell type',
+  M1: 'M1 — Positional (mouse)',
+  M2: 'M2 — Curated (mouse)',
+  M3: 'M3 — Regulatory (mouse)',
+  M4: 'M4 — Computational (mouse)',
+  M5: 'M5 — Ontology (mouse)',
+  M6: 'M6 — Oncogenic (mouse)',
+  M7: 'M7 — Immunologic (mouse)',
+  M8: 'M8 — Cell type (mouse)',
 }
 
 function pathwayLabel(key: string): string {
@@ -947,6 +946,157 @@ function PathwayDotplot({ rows }: { rows: Record<string, unknown>[] }) {
       }}
       config={{ displayModeBar: false }}
     />
+  )
+}
+
+// ── Per-method explanation ─────────────────────────────────────────────────────
+const METHOD_INFO: Record<string, { what: string; columns: { col: string; meaning: string }[] }> = {
+  ORA: {
+    what: 'Over-Representation Analysis (ORA) tests whether your significant gene list contains more members of a gene set than expected by chance (Fisher\'s exact test / hypergeometric test). Only genes passing the p-value cutoff are used.',
+    columns: [
+      { col: 'GeneRatio', meaning: 'k/n — fraction of your significant genes that belong to this term.' },
+      { col: 'BgRatio',   meaning: 'K/N — fraction of all background genes that belong to this term.' },
+      { col: 'pvalue',    meaning: 'Raw hypergeometric p-value.' },
+      { col: 'p.adjust',  meaning: 'BH-adjusted p-value. Use this as the primary significance filter.' },
+      { col: 'qvalue',    meaning: 'FDR q-value (Storey method). An alternative to p.adjust.' },
+      { col: 'Count',     meaning: 'Number of your significant genes in this term — the bar length in the chart.' },
+      { col: 'geneID',    meaning: 'Gene symbols that overlap between your list and this term.' },
+    ],
+  },
+  GSEA: {
+    what: 'Gene Set Enrichment Analysis (GSEA) uses the full ranked gene list (sorted by log₂FC) and asks whether the members of a gene set are concentrated at the top or bottom of the ranking — without a significance cutoff. It is more sensitive than ORA for detecting pathway shifts.',
+    columns: [
+      { col: 'NES',       meaning: 'Normalized Enrichment Score. Positive = gene set enriched in up-regulated genes; negative = enriched in down-regulated genes.' },
+      { col: 'pvalue',    meaning: 'Raw GSEA p-value (permutation-based).' },
+      { col: 'p.adjust',  meaning: 'BH-adjusted p-value across all tested gene sets.' },
+      { col: 'setSize',   meaning: 'Number of genes in this gene set that were present in your ranked list — the bar length in the chart.' },
+      { col: 'geneID',    meaning: 'Leading-edge genes: the subset that drives the enrichment score.' },
+    ],
+  },
+}
+
+const DATABASE_INFO: Record<string, string> = {
+  GO:    'Gene Ontology (GO) — three independent sub-ontologies: Biological Process (BP), Molecular Function (MF), and Cellular Component (CC). Covers most annotated gene functions.',
+  KEGG:  'KEGG Pathway database — curated metabolic and signalling pathways. Gene IDs are ENTREZ-based; geneID column has been converted back to gene symbols.',
+  WP:    'WikiPathways — community-curated, freely editable pathways. Broader coverage of emerging biology than KEGG.',
+  MSigDB_H:  'MSigDB Hallmark — 50 well-defined biological states representing coherent and specific biological processes. Good starting point for high-level interpretation.',
+  MSigDB_C1: 'MSigDB C1 — Positional gene sets: one set per cytogenetic band. Useful for detecting chromosomal amplifications or deletions.',
+  MSigDB_C2: 'MSigDB C2 — Curated gene sets from pathway databases (KEGG, Reactome, BioCarta) and published literature. Very large collection.',
+  MSigDB_C3: 'MSigDB C3 — Regulatory targets: genes sharing a transcription factor binding site (TFT) or miRNA seed sequence (MIR). Useful for upstream regulator analysis.',
+  MSigDB_C4: 'MSigDB C4 — Computational gene sets defined by mining cancer microarray data. Cancer-focused.',
+  MSigDB_C5: 'MSigDB C5 — Gene Ontology gene sets (BP, MF, CC). Overlaps with direct GO analysis but uses MSigDB curation.',
+  MSigDB_C6: 'MSigDB C6 — Oncogenic signatures: gene sets up- or down-regulated by known oncogenes and tumour suppressors.',
+  MSigDB_C7: 'MSigDB C7 — Immunologic signatures: gene sets representing cell states and perturbations in the immune system (ImmuneSigDB).',
+  MSigDB_C8: 'MSigDB C8 — Cell type signature gene sets from single-cell studies. Useful for cell type deconvolution.',
+  MSigDB_M1: 'MSigDB M1 — Mouse positional gene sets (one per cytogenetic band).',
+  MSigDB_M2: 'MSigDB M2 — Mouse curated gene sets (Reactome, WikiPathways, literature).',
+  MSigDB_M3: 'MSigDB M3 — Mouse regulatory target gene sets (TFT, MIR).',
+  MSigDB_M5: 'MSigDB M5 — Mouse Gene Ontology gene sets (BP, MF, CC).',
+  MSigDB_M8: 'MSigDB M8 — Mouse cell type signature gene sets from single-cell studies.',
+}
+
+function PathwayMethodExplanation({ methodKey, rows }: {
+  methodKey: string
+  rows: Record<string, unknown>[]
+}) {
+  const [open, setOpen] = useState(false)
+
+  const isGSEA = methodKey.startsWith('GSEA')
+  const methodType = isGSEA ? 'GSEA' : 'ORA'
+  const info = METHOD_INFO[methodType]
+
+  // Derive database label from key, e.g. ORA.FULL.MSigDB.C2 → MSigDB_C2
+  let dbKey = ''
+  if (methodKey.includes('GO'))     dbKey = 'GO'
+  else if (methodKey.includes('KEGG')) dbKey = 'KEGG'
+  else if (methodKey.includes('.WP'))  dbKey = 'WP'
+  else {
+    const m = methodKey.match(/MSigDB\.(.+)$/)
+    if (m) dbKey = `MSigDB_${m[1]}`
+  }
+  const dbInfo = DATABASE_INFO[dbKey]
+
+  const hasNoResults = rows.length === 0 || ('status' in rows[0])
+  const resultCount  = hasNoResults ? 0 : rows.length
+
+  // Which columns from the explanation actually appear in the data
+  const dataCols = rows.length > 0 && !('status' in rows[0]) ? Object.keys(rows[0]) : []
+  const relevantCols = info.columns.filter(c => dataCols.includes(c.col))
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-600 overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-100 transition-colors text-left">
+        <div className="flex items-center gap-3">
+          <span className="font-medium text-slate-700">{pathwayLabel(methodKey)}</span>
+          {hasNoResults
+            ? <span className="text-slate-400">no significant results</span>
+            : <span className="text-indigo-600 font-medium">{resultCount} enriched terms</span>}
+          {!hasNoResults && isGSEA && (() => {
+            const pos = rows.filter(r => Number(r.NES ?? 0) > 0).length
+            const neg = rows.filter(r => Number(r.NES ?? 0) < 0).length
+            return <span className="text-slate-400">{pos} up · {neg} down</span>
+          })()}
+        </div>
+        <span className="text-slate-400 ml-2">{open ? '▲ hide explanation' : '▼ show explanation'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 pt-1 space-y-3 border-t border-slate-200 bg-white">
+          {/* Method */}
+          <div>
+            <p className="font-medium text-slate-700 mb-0.5">{methodType} method</p>
+            <p className="text-slate-500 leading-relaxed">{info.what}</p>
+          </div>
+
+          {/* Database */}
+          {dbInfo && (
+            <div>
+              <p className="font-medium text-slate-700 mb-0.5">Gene set database</p>
+              <p className="text-slate-500 leading-relaxed">{dbInfo}</p>
+            </div>
+          )}
+
+          {/* Chart legend */}
+          {!hasNoResults && (
+            <div>
+              <p className="font-medium text-slate-700 mb-0.5">Bar chart</p>
+              <p className="text-slate-500 leading-relaxed">
+                Top 20 terms by adjusted p-value.
+                {isGSEA
+                  ? ' Bar length = gene set size in your ranked list. Colour = adjusted p-value (red = most significant).'
+                  : ' Bar length = number of your significant genes in the term (Count). Colour = adjusted p-value (red = most significant).'}
+              </p>
+            </div>
+          )}
+
+          {/* Column guide */}
+          {relevantCols.length > 0 && (
+            <div>
+              <p className="font-medium text-slate-700 mb-1">Table columns</p>
+              <dl className="space-y-1">
+                {relevantCols.map(({ col, meaning }) => (
+                  <div key={col} className="flex gap-2">
+                    <dt className="font-mono text-indigo-700 shrink-0 w-28">{col}</dt>
+                    <dd className="text-slate-500">{meaning}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
+
+          {/* GSEA NES hint */}
+          {!hasNoResults && isGSEA && (
+            <div className="bg-amber-50 border border-amber-100 rounded px-3 py-2 text-amber-700">
+              NES &gt; 0 → gene set enriched among <strong>up-regulated</strong> genes.
+              NES &lt; 0 → enriched among <strong>down-regulated</strong> genes.
+              Sort the table by NES to separate activated from repressed pathways.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1178,6 +1328,7 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
 
           {activeMethod && results[activeMethod] && (
             <div className="space-y-4">
+              <PathwayMethodExplanation methodKey={activeMethod} rows={results[activeMethod]} />
               <PathwayDotplot rows={results[activeMethod]} />
               <PathwayResultTable rows={results[activeMethod]} label={pathwayLabel(activeMethod)} />
             </div>

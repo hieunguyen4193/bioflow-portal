@@ -173,30 +173,41 @@ output[["GSEA.WP"]] <- safe_df(tryCatch(
 # ── MSigDB — all available collections for the detected species ───────────────
 message(sprintf("msigdbr version: %s", as.character(packageVersion("msigdbr"))))
 
-# Discover which categories are actually bundled in this msigdbr installation
+# Discover which categories are bundled for this species in the installed msigdbr
+probe_cats_for_species <- function(sp_full, candidates) {
+  Filter(function(cat) {
+    tryCatch(nrow(msigdbr(species = sp_full, category = cat)) > 0, error = function(e) FALSE)
+  }, candidates)
+}
+
 available_cats <- tryCatch({
   cols <- msigdbr_collections()
-  unique(cols$gs_cat)
+  # msigdbr >= 2023: collections() returns all; filter to what this species has
+  sp_cats <- unique(cols$gs_cat[cols$organism == species_full[[species]]])
+  if (length(sp_cats) == 0) sp_cats <- unique(cols$gs_cat)  # fallback: try all
+  sp_cats
 }, error = function(e) {
-  # msigdbr < 7.4 lacks msigdbr_collections(); probe directly
-  message("msigdbr_collections() not available, probing categories directly")
-  all_cats_human <- c("H","C1","C2","C3","C4","C5","C6","C7","C8","C9")
-  all_cats_mouse <- c("H","M1","M2","M3","M4","M5","M6","M7","M8")
-  probe_cats <- if (species == "hsa") all_cats_human else all_cats_mouse
-  Filter(function(cat) {
-    tryCatch(nrow(msigdbr(species = species_full[[species]], category = cat)) > 0, error = function(e) FALSE)
-  }, probe_cats)
+  message("msigdbr_collections() not available — probing categories directly")
+  character(0)
 })
-message(sprintf("msigdbr available categories for %s: %s",
-                species_full[[species]], paste(sort(available_cats), collapse = ", ")))
 
-# Use only what's available; keep our preferred order
-desired_cats <- if (species == "hsa") {
-  c("H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9")
+# For human: H + C1–C8 (C9 doesn't exist in MSigDB)
+# For mouse: try M1–M8 first (msigdbr >= 2023); fall back to H + C1–C8 with ortholog mapping
+if (species == "hsa") {
+  desired_cats <- c("H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8")
 } else {
-  c("H", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8")
+  desired_cats <- c("H", "M1", "M2", "M3", "M5", "M8",   # mouse-specific (common subset)
+                    "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8")  # ortholog-mapped fallback
 }
-msigdb_cats <- intersect(desired_cats, available_cats)
+
+# If available_cats is populated, intersect; otherwise probe directly
+if (length(available_cats) > 0) {
+  msigdb_cats <- intersect(desired_cats, available_cats)
+} else {
+  msigdb_cats <- probe_cats_for_species(species_full[[species]], desired_cats)
+}
+message(sprintf("msigdbr available for %s: %s",
+                species_full[[species]], paste(sort(available_cats), collapse = ", ")))
 message(sprintf("Will run MSigDB for: %s", paste(msigdb_cats, collapse = ", ")))
 
 for (cat in msigdb_cats) {
