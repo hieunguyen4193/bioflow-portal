@@ -158,8 +158,7 @@ all.QC\$nCount.vs.nFeature.MT <- ggplot(seurat@meta.data,
   facet_wrap(~name) +
   ggtitle("Scatter plot: nCount_RNA vs. nFeature_RNA, cmap % Mitochondrial genes")
 
-seurat@meta.data <- seurat@meta.data %>%
-  mutate(percent.ribo = PercentageFeatureSet(seurat, pattern = "^RP[SL]|^Rp[sl]")[,1])
+seurat[["percent.ribo"]] <- PercentageFeatureSet(seurat, pattern = "^RP[SL]|^Rp[sl]")
 
 all.QC\$nCount.vs.nFeature.Ribo <- ggplot(seurat@meta.data,
     aes(x=nCount_RNA, y=nFeature_RNA, color=percent.ribo)) +
