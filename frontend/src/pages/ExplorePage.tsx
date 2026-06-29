@@ -138,10 +138,33 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
         hoverinfo: 'text' as const,
       }
     })
+
+    // Centroid label trace — one text annotation per cluster
+    const labelTrace: any = {
+      type: 'scatter',
+      mode: 'text',
+      name: '',
+      showlegend: false,
+      hoverinfo: 'skip',
+      x: groups.map((g: any) => {
+        const idx = red.cells.map((_: string, i: number) => i)
+          .filter((i: number) => mask[i] && colorVals[i] === g && (!grp || splitMeta[i] === grp))
+        return idx.length ? idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length : null
+      }),
+      y: groups.map((g: any) => {
+        const idx = red.cells.map((_: string, i: number) => i)
+          .filter((i: number) => mask[i] && colorVals[i] === g && (!grp || splitMeta[i] === grp))
+        return idx.length ? idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length : null
+      }),
+      text: groups.map((g: any) => String(g)),
+      textfont: { size: 13, color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
+      textposition: 'middle center',
+    }
+
     return (
       <div key={grp ?? 'all'} style={{ width: 1120, flexShrink: 0 }}>
         {grp && <div className="text-center text-xs text-slate-500 mb-1">{grp}</div>}
-        <Plot key={`${reduction}-${grp ?? 'all'}-${colorBy}`} data={traces} layout={{
+        <Plot key={`${reduction}-${grp ?? 'all'}-${colorBy}`} data={[...traces, labelTrace]} layout={{
           width: 1120, height: 1040,
           title: grp ? undefined : { text: `${reduction} — ${colorBy}`, font: { size: 13 } },
           xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain' },
@@ -203,42 +226,88 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
         )}
       </div>
 
-      {exprData && red && (
-        <div className="flex flex-wrap gap-4">
-          {genes.filter(g => exprData[g]).map(gene => {
-            const exprVals = exprData[gene]
-            const idxMap   = Object.fromEntries(cells.map((c, i) => [c, i]))
-            const traces = [{
-              type: 'scatter' as const,
-              mode: 'markers' as const,
-              x: red.cells.map((c: string) => red.x[red.cells.indexOf(c)]),
-              y: red.cells.map((c: string) => red.y[red.cells.indexOf(c)]),
-              marker: {
-                color: red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0),
-                colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
-                size: 6, opacity: 0.85,
-                showscale: true, colorbar: { thickness: 12, len: 0.6 },
-              },
-              text: red.cells.map((c: string, i: number) =>
-                `${c}<br>${gene}: ${(exprVals[idxMap[c]] ?? 0).toFixed(3)}`),
-              hoverinfo: 'text' as const,
-              name: gene,
-            }]
-            return (
-              <div key={gene} style={{ width: 1120, flexShrink: 0 }}>
-                <Plot key={`fp-${gene}-${reduction}`} data={traces} layout={{
-                  width: 1120, height: 1040,
-                  title: { text: gene, font: { size: 14 } },
-                  xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain' },
-                  yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1 },
-                  margin: { t: 50, l: 55, r: 20, b: 55 },
+      {exprData && red && (() => {
+        const validGenes = genes.filter(g => exprData[g])
+        const n = validGenes.length
+
+        // Pick grid columns: 1 gene → 1 col, 2–4 → 2 cols, 5–9 → 3 cols, 10+ → 4 cols
+        const cols = n === 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4
+
+        // Each panel is square; fit to a comfortable reading width
+        // Single: 700px. 2-col: 520px each. 3-col: 380px each. 4-col: 300px each.
+        const panelSizes: Record<number, { w: number; h: number; dot: number; fontSize: number }> = {
+          1: { w: 700, h: 660, dot: 6,  fontSize: 14 },
+          2: { w: 520, h: 490, dot: 5,  fontSize: 13 },
+          3: { w: 380, h: 360, dot: 4,  fontSize: 12 },
+          4: { w: 300, h: 280, dot: 3,  fontSize: 11 },
+        }
+        const { w, h, dot, fontSize } = panelSizes[cols]
+
+        return (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${cols}, ${w}px)`,
+            gap: 12,
+          }}>
+            {validGenes.map(gene => {
+              const exprVals  = exprData[gene]
+              const idxMap    = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
+              const colorVals = meta.metadata[colorBy] ?? []
+              const metaIndex = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
+
+              // Centroid per cluster for labels
+              const clusterGroups = [...new Set(colorVals)] as string[]
+              const clusterLabelTrace: any = {
+                type: 'scatter',
+                mode: 'text',
+                name: '',
+                showlegend: false,
+                hoverinfo: 'skip',
+                x: clusterGroups.map(g => {
+                  const idx = red.cells.map((_: string, i: number) => i).filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+                  return idx.length ? idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length : null
+                }),
+                y: clusterGroups.map(g => {
+                  const idx = red.cells.map((_: string, i: number) => i).filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+                  return idx.length ? idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length : null
+                }),
+                text: clusterGroups.map(g => String(g)),
+                textfont: { size: Math.max(9, fontSize - 2), color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
+                textposition: 'middle center',
+              }
+
+              const markerTrace = {
+                type: 'scatter' as const,
+                mode: 'markers' as const,
+                x: red.cells.map((c: string) => red.x[red.cells.indexOf(c)]),
+                y: red.cells.map((c: string) => red.y[red.cells.indexOf(c)]),
+                marker: {
+                  color: red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0),
+                  colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
+                  size: dot, opacity: 0.85,
+                  showscale: true,
+                  colorbar: { thickness: 10, len: 0.55, x: 1.02 },
+                },
+                text: red.cells.map((c: string) =>
+                  `${c}<br>${gene}: ${(exprVals[idxMap[c]] ?? 0).toFixed(3)}`),
+                hoverinfo: 'text' as const,
+                name: gene,
+              }
+
+              return (
+                <Plot key={`fp-${gene}-${reduction}`} data={[markerTrace, clusterLabelTrace]} layout={{
+                  width: w, height: h,
+                  title: { text: gene, font: { size: fontSize } },
+                  xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 } },
+                  yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
+                  margin: { t: 40, l: 50, r: 55, b: 45 },
                   paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
                 }} config={{ responsive: false }} />
-              </div>
-            )
-          })}
-        </div>
-      )}
+              )
+            })}
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -925,10 +994,10 @@ function PathwayDotplot({ rows, label }: { rows: Record<string, unknown>[]; labe
   async function handleDownloadPdf() {
     if (!graphDivRef.current) return
     try {
-      // Dynamic import avoids top-level bundle issues with plotly.js v3
-      const Plotly = await import('plotly.js')
-      const scale  = 3  // 96 dpi × 3 ≈ 288 dpi (effective 300 dpi)
-      const dataUrl: string = await (Plotly as any).toImage(graphDivRef.current, { format: 'png', scale })
+      const PlotlyLib = (window as any).Plotly
+      if (!PlotlyLib) { toast.error('Plotly not ready — try again in a moment'); return }
+      const scale   = 3  // 96 dpi × 3 ≈ 288 dpi (effective 300 dpi)
+      const dataUrl: string = await PlotlyLib.toImage(graphDivRef.current, { format: 'png', scale })
 
       const img = new Image()
       img.src = dataUrl
