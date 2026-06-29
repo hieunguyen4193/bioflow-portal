@@ -104,6 +104,14 @@ export async function getCellChatStatus(task_id: string): Promise<{
   return data
 }
 
+export async function cancelPathwayAnalysis(task_id: string): Promise<void> {
+  await api.post(`/explore/pathway/${task_id}/cancel`)
+}
+
+export async function cancelCellChat(task_id: string): Promise<void> {
+  await api.post(`/explore/cellchat/${task_id}/cancel`)
+}
+
 export async function getPathwayResult(task_id: string): Promise<{
   status: 'running' | 'done' | 'error'
   log?: string

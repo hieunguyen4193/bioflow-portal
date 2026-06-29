@@ -188,17 +188,21 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
     try:
         with open(log_path, "w") as log_f:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            _pathway_tasks[task_id]["proc"] = proc
             stdout_chunks = []
             for line in proc.stdout:
+                if _pathway_tasks[task_id].get("status") == "cancelled":
+                    proc.kill()
+                    return
                 log_f.write(line)
                 log_f.flush()
                 stdout_chunks.append(line)
                 _pathway_tasks[task_id]["log"] = "".join(stdout_chunks)
             proc.wait(timeout=1800)
 
+        if _pathway_tasks[task_id].get("status") == "cancelled":
+            return
         full_output = "".join(stdout_chunks)
-        # stdout from Rscript --vanilla: R messages go to stderr which we merged;
-        # the JSON is the last line printed via cat()
         json_line = next((l for l in reversed(full_output.splitlines()) if l.strip().startswith("{")), None)
 
         if proc.returncode != 0 or not json_line:
@@ -211,6 +215,8 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
         _pathway_tasks[task_id].update({"status": "error", "error": "Pathway analysis timed out (30 min)"})
     except Exception as exc:
         _pathway_tasks[task_id].update({"status": "error", "error": str(exc)})
+    finally:
+        _pathway_tasks[task_id].pop("proc", None)
 
 
 @router.post("/pathway")
@@ -250,13 +256,26 @@ async def get_pathway_result(task_id: str):
     task = _pathway_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
-    # Always return log; only include full results when done (they can be large)
     response = {"status": task.get("status"), "log": task.get("log", "")}
     if task.get("status") == "done":
         response["results"] = task.get("results")
     if task.get("status") == "error":
         response["error"] = task.get("error")
     return JSONResponse(response)
+
+
+@router.post("/pathway/{task_id}/cancel")
+async def cancel_pathway(task_id: str):
+    task = _pathway_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    if task.get("status") != "running":
+        raise HTTPException(400, "Task is not running")
+    proc = task.get("proc")
+    if proc:
+        proc.kill()
+    task.update({"status": "cancelled"})
+    return JSONResponse({"status": "cancelled"})
 
 
 # ── CellChat Analysis ─────────────────────────────────────────────────────────
@@ -318,14 +337,20 @@ def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict
     try:
         with open(log_path, "w") as log_f:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            _cellchat_tasks[task_id]["proc"] = proc
             chunks = []
             for line in proc.stdout:
+                if _cellchat_tasks[task_id].get("status") == "cancelled":
+                    proc.kill()
+                    return
                 log_f.write(line)
                 log_f.flush()
                 chunks.append(line)
                 _cellchat_tasks[task_id]["log"] = "".join(chunks)
             proc.wait(timeout=3600)
 
+        if _cellchat_tasks[task_id].get("status") == "cancelled":
+            return
         full_output = "".join(chunks)
         json_line = next((l for l in reversed(full_output.splitlines()) if l.strip().startswith("{")), None)
 
@@ -339,6 +364,8 @@ def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict
         _cellchat_tasks[task_id].update({"status": "error", "error": "CellChat timed out (60 min)"})
     except Exception as exc:
         _cellchat_tasks[task_id].update({"status": "error", "error": str(exc)})
+    finally:
+        _cellchat_tasks[task_id].pop("proc", None)
 
 
 @router.post("/cellchat")
@@ -372,3 +399,17 @@ async def get_cellchat_status(task_id: str):
     if task.get("status") == "error":
         result["error"] = task.get("error")
     return JSONResponse(result)
+
+
+@router.post("/cellchat/{task_id}/cancel")
+async def cancel_cellchat(task_id: str):
+    task = _cellchat_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    if task.get("status") != "running":
+        raise HTTPException(400, "Task is not running")
+    proc = task.get("proc")
+    if proc:
+        proc.kill()
+    task.update({"status": "cancelled"})
+    return JSONResponse({"status": "cancelled"})

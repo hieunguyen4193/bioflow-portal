@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, startCellChat, getCellChatStatus, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -1333,6 +1333,9 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
           clearInterval(pollRef.current!)
           setStatus('error')
           setError(res.error ?? 'Unknown error')
+        } else if ((res.status as string) === 'cancelled') {
+          clearInterval(pollRef.current!)
+          setStatus('idle')
         }
       } catch {}
     }, 5000)
@@ -1469,10 +1472,23 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
           </div>
         )}
 
-        <button onClick={handleRun} disabled={status === 'running'}
-          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-          {status === 'running' ? 'Running… (polling every 5 s)' : 'Run Pathway Analysis'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={handleRun} disabled={status === 'running'}
+            className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+            {status === 'running' ? 'Running… (polling every 5 s)' : 'Run Pathway Analysis'}
+          </button>
+          {status === 'running' && taskId && (
+            <button onClick={async () => {
+              try { await cancelPathwayAnalysis(taskId) } catch {}
+              clearInterval(pollRef.current!)
+              setStatus('idle')
+              setLog(prev => prev + '\n[Cancelled by user]')
+            }}
+              className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors">
+              Cancel
+            </button>
+          )}
+        </div>
 
         {(status === 'running' || status === 'done' || (status === 'error' && log)) && (
           <div className="space-y-1">
@@ -1533,7 +1549,13 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
   const [filter10cells,  setFilter10cells]  = useState('NoFilter')
   const [reductionName,  setReductionName]  = useState(reductions[0] ?? 'umap')
   const [clusterName,    setClusterName]    = useState(clusterCols[0] ?? 'seurat_clusters')
-  const [inputSpec,      setInputSpec]      = useState('Human')
+  const detectedSpec = useMemo(() => {
+    const sample = (meta.genes ?? []).slice(0, 200).filter((g: string) => g.length >= 3)
+    if (!sample.length) return 'Human'
+    const pctUpper = sample.filter((g: string) => g === g.toUpperCase()).length / sample.length
+    return pctUpper > 0.5 ? 'Human' : 'Mouse'
+  }, [meta.genes])
+  const [inputSpec, setInputSpec] = useState(detectedSpec)
   const [taskId,         setTaskId]         = useState<string | null>(null)
   const [status,         setStatus]         = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [reportUrl,      setReportUrl]      = useState<string | null>(null)
@@ -1560,6 +1582,9 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
           clearInterval(pollRef.current!)
           setStatus('error')
           setError(res.error ?? 'Unknown error')
+        } else if ((res.status as string) === 'cancelled') {
+          clearInterval(pollRef.current!)
+          setStatus('idle')
         }
       } catch {}
     }, 8000)
@@ -1615,7 +1640,10 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
           </div>
 
           <div>
-            <label className="text-xs text-slate-500 block mb-1">Species</label>
+            <label className="text-xs text-slate-500 block mb-1">
+              Species
+              <span className="ml-1 text-slate-400 font-normal">(auto-detected: {detectedSpec})</span>
+            </label>
             <select value={inputSpec} onChange={e => setInputSpec(e.target.value)}
               className="border border-slate-300 rounded px-3 py-1.5 text-sm w-full">
               <option value="Human">Human</option>
@@ -1640,10 +1668,23 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
           </div>
         </div>
 
-        <button onClick={handleRun} disabled={status === 'running'}
-          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-          {status === 'running' ? 'Running… (polling every 8 s)' : 'Run CellChat Analysis'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={handleRun} disabled={status === 'running'}
+            className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+            {status === 'running' ? 'Running… (polling every 8 s)' : 'Run CellChat Analysis'}
+          </button>
+          {status === 'running' && taskId && (
+            <button onClick={async () => {
+              try { await cancelCellChat(taskId) } catch {}
+              clearInterval(pollRef.current!)
+              setStatus('idle')
+              setLog(prev => prev + '\n[Cancelled by user]')
+            }}
+              className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors">
+              Cancel
+            </button>
+          )}
+        </div>
 
         {(status === 'running' || status === 'done' || (status === 'error' && log)) && (
           <div className="space-y-1">
