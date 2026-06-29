@@ -116,16 +116,23 @@ use.assay <- if ("SCT" %in% names(s.obj@assays)) "SCT" else "RNA"
 data.input <- GetAssayData(object = s.obj, slot = "data", assay = use.assay)
 
 meta.data <- s.obj@meta.data %>% rownames_to_column("barcode")
-meta.data$cluster <- sapply(meta.data[[cluster.name]], function(x) sprintf("cluster_%s", x))
 
-check.type <- sample(unique(s.obj@meta.data[[cluster.name]]), 1)
-if (typeof(check.type) %in% c("double", "integer")) {
-  all.idx <- sort(as.numeric(unique(s.obj@meta.data[[cluster.name]])))
+# Remove cells with NA cluster assignment
+meta.data <- meta.data[!is.na(meta.data[[cluster.name]]), ]
+
+check.type <- typeof(meta.data[[cluster.name]][1])
+if (check.type %in% c("double", "integer")) {
+  meta.data$cluster <- sapply(meta.data[[cluster.name]], function(x) sprintf("cluster_%s", x))
+  all.idx <- sort(as.numeric(unique(meta.data[[cluster.name]])))
   meta.data$cluster <- factor(meta.data$cluster, levels = sapply(all.idx, function(i) sprintf("cluster_%s", i)))
 } else {
-  meta.data$cluster <- meta.data[[cluster.name]]
+  meta.data$cluster <- as.character(meta.data[[cluster.name]])
+  meta.data$cluster <- factor(meta.data$cluster, levels = sort(unique(meta.data$cluster)))
 }
 meta.data <- meta.data %>% column_to_rownames("barcode")
+
+# Subset expression matrix to match filtered cells
+data.input <- data.input[, colnames(data.input) %in% rownames(meta.data)]
 
 # Drop unused factor levels so cluster count matrix dimensions stay consistent
 meta.data$cluster <- droplevels(meta.data$cluster,
@@ -200,7 +207,10 @@ netVisual_circle(mat.count, vertex.weight = groupSize, weight.scale = TRUE,
 
 ### Heatmap
 ```{r heatmap-count, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=10, fig.height=8}
-netVisual_heatmap(cellchat, measure = "count", color.heatmap = "Blues")
+tryCatch(
+  netVisual_heatmap(cellchat, measure = "count", color.heatmap = "Blues"),
+  error = function(e) message("Heatmap skipped: ", conditionMessage(e))
+)
 ```
 
 ## Interaction strength {.tabset}
@@ -214,7 +224,10 @@ netVisual_circle(mat.weight, vertex.weight = groupSize, weight.scale = TRUE,
 
 ### Heatmap
 ```{r heatmap-weight, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=10, fig.height=8}
-netVisual_heatmap(cellchat, measure = "weight", color.heatmap = "Reds")
+tryCatch(
+  netVisual_heatmap(cellchat, measure = "weight", color.heatmap = "Reds"),
+  error = function(e) message("Heatmap skipped: ", conditionMessage(e))
+)
 ```
 
 # Sent signals per cluster
