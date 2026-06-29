@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, startCellChat, getCellChatStatus, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -322,7 +322,7 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
 }
 
 // ── DGE ───────────────────────────────────────────────────────────────────────
-function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
+function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any) {
   const [test,    setTest]    = useState('wilcox')
   const [ident1Raw, setIdent1Raw] = useState('')
   const [ident2Raw, setIdent2Raw] = useState('')
@@ -358,6 +358,13 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
         r.p_val_adj <= pval && Math.abs(Number(r.avg_log2FC)) >= logfc)
       setDgeResult({ ...res, markers: filtered })
       setLog(`Done — ${filtered.length} significant DEGs (${res.species} detected). TCR excluded: ${res.excluded_tcr.length}, BCR/Ig excluded: ${res.excluded_bcr.length}.`)
+      // Save to shared store so PathwayTab can pick it up
+      if (onSaveDge && res.markers.length > 0) {
+        const label = mode === 'clusters'
+          ? `DGE Clusters (${colorBy}) — ${new Date().toLocaleTimeString()}`
+          : `DGE Conditions (${ident1.join('+') || '?'} vs ${ident2.join('+') || 'others'}) — ${new Date().toLocaleTimeString()}`
+        onSaveDge(label, res.markers)
+      }
     } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
     finally { setLoading(false) }
   }
@@ -896,10 +903,14 @@ function PathwayDotplot({ rows }: { rows: Record<string, unknown>[] }) {
   )
 }
 
-function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }) {
-  const [species,     setSpecies]     = useState<'hsa' | 'mmu'>('hsa')
+function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
+  meta: SeuratMeta; sessionId: string
+  savedDgeResults?: { label: string; markers: Record<string, unknown>[] }[]
+}) {
+  const [species,     setSpecies]     = useState<'auto' | 'hsa' | 'mmu'>('auto')
   const [pvalCutoff,  setPvalCutoff]  = useState(0.05)
-  const [csvInput,    setCsvInput]    = useState<'upload' | 'paste'>('paste')
+  const [csvInput,    setCsvInput]    = useState<'session' | 'paste' | 'upload'>('session')
+  const [selectedSaved, setSelectedSaved] = useState(0)
   const [pastedGenes, setPastedGenes] = useState('')
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [taskId,      setTaskId]      = useState<string | null>(null)
@@ -908,6 +919,16 @@ function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }
   const [error,       setError]       = useState<string | null>(null)
   const [activeMethod, setActiveMethod] = useState<string>('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Auto-switch to session tab and select newest result when DGE results arrive
+  const prevSavedLen = useRef(0)
+  useEffect(() => {
+    if (savedDgeResults.length > prevSavedLen.current) {
+      setCsvInput('session')
+      setSelectedSaved(0)
+    }
+    prevSavedLen.current = savedDgeResults.length
+  }, [savedDgeResults.length])
 
   useEffect(() => {
     if (!taskId || status !== 'running') return
@@ -932,7 +953,21 @@ function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }
 
   async function handleRun() {
     let csvData = ''
-    if (csvInput === 'paste') {
+
+    if (csvInput === 'session') {
+      const saved = savedDgeResults[selectedSaved]
+      if (!saved || saved.markers.length === 0) { toast.error('No DGE result selected'); return }
+      // Normalize column names: rename to standard format expected by the R script
+      const rows = saved.markers.map((r: any) => ({
+        gene:    r.gene,
+        pval:    r.p_val    ?? r.pval    ?? 1,
+        logFC:   r.avg_log2FC ?? r.logFC  ?? 0,
+        padj:    r.p_val_adj ?? r.padj   ?? 1,
+        absLogFC: Math.abs(Number(r.avg_log2FC ?? r.logFC ?? 0)),
+      }))
+      csvData = JSON.stringify(rows)
+
+    } else if (csvInput === 'paste') {
       if (!pastedGenes.trim()) { toast.error('Paste a gene list first'); return }
       const lines = pastedGenes.trim().split('\n')
       const hasHeader = isNaN(Number(lines[0].split(',')[1]))
@@ -942,6 +977,7 @@ function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }
         return Object.fromEntries(header.map((h, i) => [h.trim(), parts[i]?.trim() ?? '']))
       })
       csvData = JSON.stringify(rows)
+
     } else {
       if (!uploadedFile) { toast.error('Upload a CSV file first'); return }
       const text = await uploadedFile.text()
@@ -982,8 +1018,9 @@ function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }
         <div className="flex flex-wrap gap-4 items-end">
           <div>
             <label className="text-xs text-slate-500 block mb-1">Species</label>
-            <select value={species} onChange={e => setSpecies(e.target.value as 'hsa' | 'mmu')}
+            <select value={species} onChange={e => setSpecies(e.target.value as 'auto' | 'hsa' | 'mmu')}
               className="border border-slate-300 rounded px-3 py-1.5 text-sm">
+              <option value="auto">Auto-detect</option>
               <option value="hsa">Human (hsa)</option>
               <option value="mmu">Mouse (mmu)</option>
             </select>
@@ -997,17 +1034,41 @@ function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }
           <div>
             <label className="text-xs text-slate-500 block mb-1">Gene list source</label>
             <div className="flex rounded overflow-hidden border border-slate-300 text-sm">
-              {(['paste', 'upload'] as const).map(m => (
+              {(['session', 'paste', 'upload'] as const).map(m => (
                 <button key={m} onClick={() => setCsvInput(m)}
                   className={`px-3 py-1.5 ${csvInput === m ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
-                  {m === 'paste' ? 'Paste CSV' : 'Upload CSV'}
+                  {m === 'session' ? 'From DGE' : m === 'paste' ? 'Paste CSV' : 'Upload CSV'}
                 </button>
               ))}
             </div>
           </div>
         </div>
 
-        {csvInput === 'paste' ? (
+        {csvInput === 'session' ? (
+          <div className="space-y-2">
+            {savedDgeResults.length === 0 ? (
+              <p className="text-xs text-slate-400 bg-slate-50 rounded p-3 border border-slate-200">
+                No DGE results yet. Run a DGE analysis in the <strong>DGE — Clusters</strong> or <strong>DGE — Conditions</strong> tab first — results will appear here automatically.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {savedDgeResults.map((r, i) => (
+                  <label key={i} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors
+                    ${selectedSaved === i ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 hover:border-slate-300 bg-white'}`}>
+                    <input type="radio" name="saved-dge" checked={selectedSaved === i}
+                      onChange={() => setSelectedSaved(i)} className="mt-0.5 accent-indigo-600" />
+                    <div>
+                      <div className="text-sm font-medium text-slate-700">{r.label}</div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {r.markers.length.toLocaleString()} genes · columns: {Object.keys(r.markers[0] ?? {}).join(', ')}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : csvInput === 'paste' ? (
           <textarea value={pastedGenes} onChange={e => setPastedGenes(e.target.value)}
             rows={6} placeholder={"gene,pval,logFC,padj\nCD3E,0.001,2.1,0.01\nFOXP3,0.005,-1.3,0.04"}
             className="w-full border border-slate-300 rounded px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-indigo-400" />
@@ -1056,6 +1117,149 @@ function PathwayTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }
               <PathwayResultTable rows={results[activeMethod]} />
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── CellChat tab ───────────────────────────────────────────────────────────────
+function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }) {
+  const reductions = Object.keys(meta.reductions)
+  const clusterCols = Object.keys(meta.metadata)
+
+  const [sampleId,       setSampleId]       = useState('ALL')
+  const [filter10cells,  setFilter10cells]  = useState('NoFilter')
+  const [reductionName,  setReductionName]  = useState(reductions[0] ?? 'umap')
+  const [clusterName,    setClusterName]    = useState(clusterCols[0] ?? 'seurat_clusters')
+  const [inputSpec,      setInputSpec]      = useState('Human')
+  const [taskId,         setTaskId]         = useState<string | null>(null)
+  const [status,         setStatus]         = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [reportUrl,      setReportUrl]      = useState<string | null>(null)
+  const [error,          setError]          = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (!taskId || status !== 'running') return
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await getCellChatStatus(taskId)
+        if (res.status === 'done') {
+          clearInterval(pollRef.current!)
+          setStatus('done')
+          setReportUrl(res.report_url ?? null)
+        } else if (res.status === 'error') {
+          clearInterval(pollRef.current!)
+          setStatus('error')
+          setError(res.error ?? 'Unknown error')
+        }
+      } catch {}
+    }, 8000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [taskId, status])
+
+  async function handleRun() {
+    setStatus('running')
+    setReportUrl(null)
+    setError(null)
+    try {
+      const { task_id } = await startCellChat({
+        session_id: sessionId,
+        sample_id: sampleId || 'ALL',
+        filter10cells,
+        reduction_name: reductionName,
+        cluster_name: clusterName,
+        input_spec: inputSpec,
+      })
+      setTaskId(task_id)
+      toast.success('CellChat analysis started — this may take 15–60 minutes')
+    } catch (e: any) {
+      setStatus('error')
+      setError(e.response?.data?.detail ?? String(e))
+    }
+  }
+
+  return (
+    <div className="p-4 space-y-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+        <h3 className="font-semibold text-slate-700">CellChat Analysis</h3>
+        <p className="text-xs text-slate-400">
+          Runs CellChat cell-cell communication analysis on the loaded Seurat object and renders an HTML report.
+          Results are cached — re-running with the same parameters is fast.
+        </p>
+
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Sample ID <span className="text-slate-400">(leave "ALL" to use all cells)</span></label>
+            <input value={sampleId} onChange={e => setSampleId(e.target.value)}
+              placeholder="ALL"
+              className="border border-slate-300 rounded px-3 py-1.5 text-sm w-full focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+          </div>
+
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Filter &lt;10 cells per cluster</label>
+            <select value={filter10cells} onChange={e => setFilter10cells(e.target.value)}
+              className="border border-slate-300 rounded px-3 py-1.5 text-sm w-full">
+              <option value="NoFilter">No filter</option>
+              <option value="Filter10">Filter (&lt;10 cells)</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Species</label>
+            <select value={inputSpec} onChange={e => setInputSpec(e.target.value)}
+              className="border border-slate-300 rounded px-3 py-1.5 text-sm w-full">
+              <option value="Human">Human</option>
+              <option value="Mouse">Mouse</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Reduction (UMAP)</label>
+            <select value={reductionName} onChange={e => setReductionName(e.target.value)}
+              className="border border-slate-300 rounded px-3 py-1.5 text-sm w-full">
+              {reductions.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Cluster column</label>
+            <select value={clusterName} onChange={e => setClusterName(e.target.value)}
+              className="border border-slate-300 rounded px-3 py-1.5 text-sm w-full">
+              {clusterCols.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <button onClick={handleRun} disabled={status === 'running'}
+          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+          {status === 'running' ? 'Running… (polling every 8 s)' : 'Run CellChat Analysis'}
+        </button>
+
+        {status === 'running' && (
+          <p className="text-xs text-amber-600 animate-pulse">
+            CellChat is running in the background. First run computes the communication network (~15–60 min).
+            Subsequent runs with the same parameters use cached results.
+          </p>
+        )}
+        {status === 'error' && (
+          <p className="text-xs text-red-600 bg-red-50 rounded p-2 font-mono whitespace-pre-wrap">{error}</p>
+        )}
+      </div>
+
+      {status === 'done' && reportUrl && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-200">
+            <span className="text-sm font-medium text-slate-700">CellChat Report</span>
+            <a href={reportUrl} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-indigo-600 hover:underline">Open in new tab ↗</a>
+          </div>
+          <iframe
+            src={reportUrl}
+            className="w-full"
+            style={{ height: '80vh', border: 'none' }}
+            title="CellChat Report"
+          />
         </div>
       )}
     </div>
@@ -1195,7 +1399,7 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'Metadata']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'CellChat', 'Metadata']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -1206,6 +1410,14 @@ export default function ExplorePage() {
   const [slot,     setSlot]     = useState('data')
   const [splitBy,  setSplitBy]  = useState('')
   const [selectedClusters, setSelectedClusters] = useState<string[]>([])
+  const [savedDgeResults, setSavedDgeResults] = useState<{ label: string; markers: Record<string, unknown>[] }[]>([])
+
+  function handleSaveDge(label: string, markers: Record<string, unknown>[]) {
+    setSavedDgeResults(prev => {
+      const without = prev.filter(r => r.label !== label)
+      return [{ label, markers }, ...without]
+    })
+  }
 
   function handleLoad(m: SeuratMeta) {
     setMeta(m)
@@ -1271,14 +1483,17 @@ export default function ExplorePage() {
           </div>
           <div className={tab === 'DGE — Clusters' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
-              sessionId={meta.session_id} mode="clusters" />
+              sessionId={meta.session_id} mode="clusters" onSaveDge={handleSaveDge} />
           </div>
           <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
-              sessionId={meta.session_id} mode="conditions" />
+              sessionId={meta.session_id} mode="conditions" onSaveDge={handleSaveDge} />
           </div>
           <div className={tab === 'Pathway' ? '' : 'hidden'}>
-            <PathwayTab meta={meta} sessionId={meta.session_id} />
+            <PathwayTab meta={meta} sessionId={meta.session_id} savedDgeResults={savedDgeResults} />
+          </div>
+          <div className={tab === 'CellChat' ? '' : 'hidden'}>
+            <CellChatTab meta={meta} sessionId={meta.session_id} />
           </div>
           <div className={tab === 'Metadata' ? '' : 'hidden'}>
             <MetadataTab meta={meta} />

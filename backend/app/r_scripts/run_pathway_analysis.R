@@ -11,14 +11,13 @@ args         <- commandArgs(trailingOnly = TRUE)
 csv_path     <- args[1]
 outputdir    <- args[2]
 pval_cutoff  <- as.numeric(args[3])
-species      <- args[4]   # "hsa" or "mmu"
+species      <- if (length(args) >= 4 && nchar(args[4]) > 0) args[4] else "auto"
 
 dir.create(outputdir, showWarnings = FALSE, recursive = TRUE)
 
 # ── Species config ────────────────────────────────────────────────────────────
-species_db <- list(hsa = org.Hs.eg.db, mmu = org.Mm.eg.db)
+species_db   <- list(hsa = org.Hs.eg.db, mmu = org.Mm.eg.db)
 species_full <- list(hsa = "Homo sapiens", mmu = "Mus musculus")
-org_db <- species_db[[species]]
 
 # ── Load gene list ────────────────────────────────────────────────────────────
 fulldf <- read.csv(csv_path, stringsAsFactors = FALSE)
@@ -26,19 +25,25 @@ if ("X" %in% colnames(fulldf)) fulldf <- subset(fulldf, select = -c(X))
 
 # Normalize column names from either DGE output format
 col_map <- list(
-  gene     = c("gene"),
-  logFC    = c("logFC", "avg_log2FC"),
-  pval     = c("pval", "p_val"),
-  padj     = c("padj", "p_val_adj")
+  gene  = c("gene"),
+  logFC = c("logFC", "avg_log2FC"),
+  pval  = c("pval", "p_val"),
+  padj  = c("padj", "p_val_adj")
 )
 for (target in names(col_map)) {
-  candidates <- col_map[[target]]
-  found <- intersect(candidates, colnames(fulldf))[1]
-  if (!is.na(found) && found != target) {
-    fulldf[[target]] <- fulldf[[found]]
-  }
+  found <- intersect(col_map[[target]], colnames(fulldf))[1]
+  if (!is.na(found) && found != target) fulldf[[target]] <- fulldf[[found]]
 }
 fulldf <- fulldf[!is.na(fulldf$gene) & !is.na(fulldf$logFC) & !is.na(fulldf$padj), ]
+
+# ── Auto-detect species from gene name casing ────────────────────────────────
+if (species == "auto") {
+  sample_genes <- head(fulldf$gene[nchar(fulldf$gene) >= 3], 200)
+  pct_upper    <- mean(sample_genes == toupper(sample_genes), na.rm = TRUE)
+  species      <- if (pct_upper > 0.5) "hsa" else "mmu"
+  message(sprintf("Auto-detected species: %s (%.0f%% uppercase gene names)", species, pct_upper * 100))
+}
+org_db <- species_db[[species]]
 
 # ── Convert gene symbols → ENTREZ IDs ────────────────────────────────────────
 convertdf <- tryCatch(
@@ -47,6 +52,9 @@ convertdf <- tryCatch(
 )
 fulldf <- merge(fulldf, convertdf, by.x = "gene", by.y = "SYMBOL", all.x = FALSE)
 fulldf <- fulldf[!duplicated(fulldf$gene), ]
+
+# ── Sort by logFC descending (required for GSEA ranked list) ─────────────────
+fulldf <- fulldf[order(fulldf$logFC, decreasing = TRUE), ]
 
 convert_geneids <- function(id_str) {
   ids <- strsplit(id_str, "/")[[1]]

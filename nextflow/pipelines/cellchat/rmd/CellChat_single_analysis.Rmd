@@ -1,0 +1,331 @@
+---
+title: "CellChat analysis — `r params$sample.id`"
+author: "BioFlow Portal"
+date: "Last update on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    keep_md: no
+    df_print: paged
+    toc: true
+    toc_float:
+      toc_collapsed: false
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+params:
+  sample.id: "ALL"
+  path.to.s.obj: NA
+  path.to.save.output: NA
+  filter10cells: "NoFilter"
+  reduction.name: "umap"
+  cluster.name: "seurat_clusters"
+  input.spec: "Human"
+---
+
+```{css zoom-lib-src, echo = FALSE}
+script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
+```
+
+```{js zoom-jquery, echo = FALSE}
+ $(document).ready(function() {
+    $('body').prepend('<div class=\"zoomDiv\"><img src=\"\" class=\"zoomImg\"></div>');
+    $('img:not(.zoomImg)').click(function() {
+      $('.zoomImg').attr('src', $(this).attr('src')).css({width: '100%'});
+      $('.zoomDiv').css({opacity: '1', width: 'auto', border: '1px solid white', borderRadius: '5px', position: 'fixed', top: '50%', left: '50%', marginRight: '-50%', transform: 'translate(-50%, -50%)', boxShadow: '0px 0px 50px #888888', zIndex: '50', overflow: 'auto', maxHeight: '100%'});
+    });
+    $('img.zoomImg').click(function() {
+      $('.zoomDiv').css({opacity: '0', width: '0%'});
+    });
+  });
+```
+
+<style type="text/css">
+    div.datatables { height: auto !important;}
+</style>
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+options(stringsAsFactors = FALSE)
+
+for (pkg in c("CellChat", "Seurat", "dplyr", "stringr", "ggplot2", "patchwork", "DT", "tibble", "hash")) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    if (pkg == "CellChat") {
+      if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+      BiocManager::install(c("BiocNeighbors", "ComplexHeatmap"), ask = FALSE, update = FALSE)
+      devtools::install_github("jinworks/CellChat", upgrade = "never")
+    } else {
+      install.packages(pkg, repos = "https://cloud.r-project.org")
+    }
+  }
+}
+
+suppressPackageStartupMessages({
+  library(CellChat)
+  library(Seurat)
+  library(dplyr)
+  library(stringr)
+  library(ggplot2)
+  library(patchwork)
+  library(DT)
+  library(tibble)
+  library(hash)
+})
+
+# Inline helper
+create_dt <- function(x) {
+  DT::datatable(x,
+    extensions = "Buttons", filter = "top",
+    options = list(
+      dom = "Blfrtip",
+      buttons = c("copy", "csv", "excel"),
+      lengthMenu = list(c(10, 25, 50, -1), c(10, 25, 50, "All"))
+    ))
+}
+```
+
+```{r load, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+sample.id           <- params$sample.id
+path.to.s.obj       <- params$path.to.s.obj
+path.to.save.output <- params$path.to.save.output
+filter10cells       <- params$filter10cells
+reduction.name      <- params$reduction.name
+cluster.name        <- params$cluster.name
+input.spec          <- params$input.spec
+
+dir.create(path.to.save.output, showWarnings = FALSE, recursive = TRUE)
+s.obj <- readRDS(path.to.s.obj)
+s.obj.original <- s.obj
+
+# Subset to a specific sample if requested
+if (!is.na(sample.id) && sample.id != "ALL" && "label" %in% colnames(s.obj@meta.data)) {
+  s.obj <- subset(s.obj, label == sample.id)
+}
+```
+
+# Dataset overview
+
+## All cells (UMAP)
+```{r umap-all, echo=FALSE, warning=FALSE, message=FALSE, fig.width=14, fig.height=10}
+if (reduction.name %in% names(s.obj.original@reductions)) {
+  DimPlot(s.obj.original, reduction = reduction.name, label = TRUE, label.box = TRUE, repel = TRUE, group.by = cluster.name)
+} else {
+  message(sprintf("Reduction '%s' not found. Available: %s", reduction.name, paste(names(s.obj.original@reductions), collapse = ", ")))
+}
+```
+
+## Selected subset
+```{r umap-subset, echo=FALSE, warning=FALSE, message=FALSE, fig.width=14, fig.height=10}
+if (reduction.name %in% names(s.obj@reductions)) {
+  DimPlot(s.obj, reduction = reduction.name, label = TRUE, label.box = TRUE, repel = TRUE, group.by = cluster.name) +
+    ggtitle(sprintf("Sample: %s", sample.id))
+}
+```
+
+# CellChat setup
+
+```{r cellchat-setup, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=14, fig.height=10}
+# Detect assay: prefer SCT, fall back to RNA
+use.assay <- if ("SCT" %in% names(s.obj@assays)) "SCT" else "RNA"
+data.input <- GetAssayData(object = s.obj, slot = "data", assay = use.assay)
+
+meta.data <- s.obj@meta.data %>% rownames_to_column("barcode")
+meta.data$cluster <- sapply(meta.data[[cluster.name]], function(x) sprintf("cluster_%s", x))
+
+check.type <- sample(unique(s.obj@meta.data[[cluster.name]]), 1)
+if (typeof(check.type) %in% c("double", "integer")) {
+  all.idx <- sort(as.numeric(unique(s.obj@meta.data[[cluster.name]])))
+  meta.data$cluster <- factor(meta.data$cluster, levels = sapply(all.idx, function(i) sprintf("cluster_%s", i)))
+} else {
+  meta.data$cluster <- meta.data[[cluster.name]]
+}
+meta.data <- meta.data %>% column_to_rownames("barcode")
+
+cellchat <- createCellChat(object = data.input, meta = meta.data, group.by = "cluster")
+cellchat <- addMeta(cellchat, meta = meta.data)
+cellchat <- setIdent(cellchat, ident.use = "cluster")
+groupSize <- as.data.frame(table(cellchat@idents))
+create_dt(groupSize)
+```
+
+```{r db-setup, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=14, fig.height=10}
+CellChatDB <- if (input.spec == "Human") CellChatDB.human else CellChatDB.mouse
+showDatabaseCategory(CellChatDB)
+```
+
+```{r run-cellchat, echo=FALSE, warning=FALSE, message=FALSE, results='hide', fig.width=14, fig.height=10}
+cache.file <- file.path(path.to.save.output,
+  sprintf("CellChat_object.%s.%s.rds", str_replace_all(sample.id, " ", "_"), filter10cells))
+
+if (!file.exists(cache.file)) {
+  CellChatDB.use <- CellChatDB
+  cellchat@DB <- CellChatDB.use
+  cellchat <- subsetData(cellchat)
+  future::plan("multicore", workers = 4)
+  cellchat <- identifyOverExpressedGenes(cellchat)
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  cellchat <- computeCommunProb(cellchat)
+  if (filter10cells == "Filter10") {
+    cellchat <- filterCommunication(cellchat, min.cells = 10)
+  }
+  cellchat <- computeCommunProbPathway(cellchat)
+  cellchat <- aggregateNet(cellchat)
+  saveRDS(cellchat, cache.file)
+} else {
+  cellchat <- readRDS(cache.file)
+}
+```
+
+# Signal tables {.tabset}
+
+## Counts
+Number of interactions between cell groups (row → source, column → target).
+```{r mat-count, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+mat.count  <- cellchat@net$count
+mat.weight <- cellchat@net$weight
+create_dt(as.data.frame(mat.count))
+```
+
+## Weights
+Total reaction strength (weights proportional to interaction strength).
+```{r mat-weight, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+create_dt(as.data.frame(mat.weight))
+```
+
+# Aggregated network
+
+## Number of interactions {.tabset}
+
+### Circle
+```{r circle-count, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=10, fig.height=10}
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1, 1), xpd = TRUE)
+netVisual_circle(mat.count, vertex.weight = groupSize, weight.scale = TRUE,
+                 label.edge = FALSE, title.name = "Number of interactions")
+```
+
+### Heatmap
+```{r heatmap-count, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=10, fig.height=8}
+netVisual_heatmap(cellchat, measure = "count", color.heatmap = "Blues")
+```
+
+## Interaction strength {.tabset}
+
+### Circle
+```{r circle-weight, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=10, fig.height=10}
+par(mfrow = c(1, 1), xpd = TRUE)
+netVisual_circle(mat.weight, vertex.weight = groupSize, weight.scale = TRUE,
+                 label.edge = FALSE, title.name = "Interaction weights/strength")
+```
+
+### Heatmap
+```{r heatmap-weight, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=10, fig.height=8}
+netVisual_heatmap(cellchat, measure = "weight", color.heatmap = "Reds")
+```
+
+# Sent signals per cluster
+
+```{r sent-signals, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=14, fig.height=10}
+par(mfrow = c(2, 2), xpd = TRUE)
+for (i in seq_len(nrow(mat.weight))) {
+  mat2 <- matrix(0, nrow = nrow(mat.weight), ncol = ncol(mat.weight), dimnames = dimnames(mat.weight))
+  mat2[i, ] <- mat.weight[i, ]
+  mat2[i, i] <- 0
+  strength <- sort(mat2[i, ], decreasing = TRUE)[1:min(5, ncol(mat2))]
+  strength <- strength[strength != 0]
+  names(strength) <- str_replace(names(strength), "cluster_", "")
+  title <- sprintf("Top signals from %s → %s", rownames(mat.weight)[i], paste(names(strength), collapse = ", "))
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = TRUE,
+                   edge.weight.max = max(mat.weight), title.name = title, arrow.size = 1)
+}
+```
+
+# Received signals per cluster
+
+```{r received-signals, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=14, fig.height=10}
+par(mfrow = c(2, 2), xpd = TRUE)
+for (i in seq_len(nrow(mat.weight))) {
+  mat2 <- matrix(0, nrow = nrow(mat.weight), ncol = ncol(mat.weight), dimnames = dimnames(mat.weight))
+  mat2[, i] <- mat.weight[, i]
+  mat2[i, i] <- 0
+  strength <- sort(mat2[, i], decreasing = TRUE)[1:min(5, nrow(mat2))]
+  strength <- strength[strength != 0]
+  names(strength) <- str_replace(names(strength), "cluster_", "")
+  title <- sprintf("Top signals to %s from %s", rownames(mat.weight)[i], paste(names(strength), collapse = ", "))
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = TRUE,
+                   edge.weight.max = max(mat.weight), title.name = title, arrow.size = 1)
+}
+```
+
+# Pathway-level visualization
+
+```{r pathway-setup, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+all.pathways  <- cellchat@netP$pathways
+all.clusters  <- rownames(mat.weight)
+pathway.groups <- split(all.pathways, ceiling(seq_along(all.pathways) / 7))
+```
+
+Total pathways detected: **`r length(all.pathways)`**
+
+```{r pathway-list, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+cat(paste(all.pathways, collapse = ", "))
+```
+
+## Sent signals {.tabset}
+
+```{r sent-pathway, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=14, fig.height=10}
+for (cluster.id in all.clusters) {
+  cat(sprintf("### %s {.tabset}\n\n", cluster.id))
+  for (g in names(pathway.groups)) {
+    cat(sprintf("#### Group %s {.tabset}\n\n", g))
+    for (pathway in pathway.groups[[g]]) {
+      cat(sprintf("##### %s\n\n", pathway))
+      tryCatch({
+        par(mfrow = c(1, 1), xpd = TRUE)
+        netVisual_aggregate(cellchat, signaling = pathway, layout = "circle",
+                            sources.use = cluster.id,
+                            targets.use = setdiff(all.clusters, cluster.id), arrow.size = 1)
+      }, error = function(e) message(sprintf("Skipped %s for %s: %s", pathway, cluster.id, e$message)))
+      cat("\n\n")
+    }
+  }
+}
+```
+
+## Received signals {.tabset}
+
+```{r received-pathway, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=14, fig.height=10}
+for (cluster.id in all.clusters) {
+  cat(sprintf("### %s {.tabset}\n\n", cluster.id))
+  for (g in names(pathway.groups)) {
+    cat(sprintf("#### Group %s {.tabset}\n\n", g))
+    for (pathway in pathway.groups[[g]]) {
+      cat(sprintf("##### %s\n\n", pathway))
+      tryCatch({
+        par(mfrow = c(1, 1), xpd = TRUE)
+        netVisual_aggregate(cellchat, signaling = pathway, layout = "circle",
+                            targets.use = cluster.id,
+                            sources.use = setdiff(all.clusters, cluster.id), arrow.size = 1)
+      }, error = function(e) message(sprintf("Skipped %s for %s: %s", pathway, cluster.id, e$message)))
+      cat("\n\n")
+    }
+  }
+}
+```
+
+# Pathway heatmaps {.tabset}
+
+```{r pathway-heatmaps, echo=FALSE, warning=FALSE, message=FALSE, results='asis', fig.width=14, fig.height=10}
+for (g in names(pathway.groups)) {
+  cat(sprintf("## Group %s {.tabset}\n\n", g))
+  for (pathway in pathway.groups[[g]]) {
+    cat(sprintf("### %s\n\n", pathway))
+    tryCatch({
+      p <- netVisual_heatmap(cellchat, signaling = pathway, color.heatmap = "Reds")
+      print(p)
+    }, error = function(e) {
+      p <- ggplot() + ggtitle(sprintf("No data for pathway: %s", pathway))
+      print(p)
+    })
+    cat("\n\n")
+  }
+}
+```

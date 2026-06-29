@@ -75,10 +75,31 @@ export async function runDGE(params: {
 export async function startPathwayAnalysis(params: {
   session_id: string
   csv_data: string   // JSON-stringified array of marker rows
-  species: 'hsa' | 'mmu'
+  species?: 'hsa' | 'mmu' | 'auto'
   pval_cutoff: number
 }): Promise<{ task_id: string }> {
   const { data } = await api.post('/explore/pathway', params)
+  return data
+}
+
+export async function startCellChat(params: {
+  session_id: string
+  sample_id?: string
+  filter10cells?: string
+  reduction_name?: string
+  cluster_name?: string
+  input_spec?: string
+}): Promise<{ task_id: string }> {
+  const { data } = await api.post('/explore/cellchat', params)
+  return data
+}
+
+export async function getCellChatStatus(task_id: string): Promise<{
+  status: 'running' | 'done' | 'error'
+  report_url?: string
+  error?: string
+}> {
+  const { data } = await api.get(`/explore/cellchat/${task_id}`)
   return data
 }
 

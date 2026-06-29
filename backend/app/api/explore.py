@@ -170,7 +170,7 @@ async def run_dge(req: DGERequest):
 class PathwayRequest(BaseModel):
     session_id:  str
     csv_data:    str        # JSON-encoded list of row dicts (the DGE markers table)
-    species:     str = "hsa"
+    species:     str = "auto"
     pval_cutoff: float = 0.05
 
 
@@ -201,8 +201,8 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
 async def start_pathway_analysis(req: PathwayRequest):
     if req.session_id not in _sessions:
         raise HTTPException(404, "Session not found")
-    if req.species not in ("hsa", "mmu"):
-        raise HTTPException(400, "species must be 'hsa' or 'mmu'")
+    if req.species not in ("hsa", "mmu", "auto"):
+        raise HTTPException(400, "species must be 'hsa', 'mmu', or 'auto'")
 
     task_id = str(uuid.uuid4())
     task_dir = os.path.join(EXPLORE_DIR, f"pathway_{task_id}")
@@ -235,3 +235,107 @@ async def get_pathway_result(task_id: str):
     if task is None:
         raise HTTPException(404, "Task not found")
     return JSONResponse(task)
+
+
+# ── CellChat Analysis ─────────────────────────────────────────────────────────
+_cellchat_tasks: dict[str, dict] = {}
+
+CELLCHAT_RMD = os.environ.get(
+    "CELLCHAT_RMD",
+    "/nextflow/pipelines/cellchat/rmd/CellChat_single_analysis.Rmd",
+)
+HOST_CELLCHAT_RMD = os.environ.get(
+    "HOST_CELLCHAT_RMD",
+    os.path.join(
+        os.environ.get("HOST_DATA_DIR", "").replace("/data", ""),
+        "nextflow/pipelines/cellchat/rmd/CellChat_single_analysis.Rmd",
+    ),
+)
+
+# Serve rendered HTML files from the explore dir
+from fastapi.responses import FileResponse
+
+@router.get("/cellchat/html/{task_id}")
+async def get_cellchat_html(task_id: str):
+    task = _cellchat_tasks.get(task_id)
+    if not task or task.get("status") != "done":
+        raise HTTPException(404, "Report not ready")
+    html_path = task.get("html", "").replace(HOST_EXPLORE, EXPLORE_DIR)
+    if not os.path.exists(html_path):
+        raise HTTPException(404, "HTML file not found")
+    return FileResponse(html_path, media_type="text/html")
+
+
+class CellChatRequest(BaseModel):
+    session_id:     str
+    sample_id:      str = "ALL"
+    filter10cells:  str = "NoFilter"   # "Filter10" or "NoFilter"
+    reduction_name: str = "umap"
+    cluster_name:   str = "seurat_clusters"
+    input_spec:     str = "Human"      # "Human" or "Mouse"
+
+
+def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict):
+    host_rds    = rds_path.replace(EXPLORE_DIR, HOST_EXPLORE, 1)
+    host_out    = outdir.replace(EXPLORE_DIR, HOST_EXPLORE, 1)
+    container_script = os.path.join(R_SCRIPTS, "run_cellchat.R")
+
+    # Rmd is mounted via the nextflow volume: host nextflow dir → /nextflow
+    host_base = os.environ.get("HOST_DATA_DIR", "").rstrip("/").replace("/data", "")
+    host_rmd  = os.path.join(host_base, "nextflow/pipelines/cellchat/rmd/CellChat_single_analysis.Rmd")
+
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
+        "-v", f"{host_base}/nextflow:/nextflow",
+        DOCKER_IMAGE,
+        "Rscript", "--vanilla", container_script,
+        rds_path, outdir,
+        req["sample_id"], req["filter10cells"],
+        req["reduction_name"], req["cluster_name"],
+        req["input_spec"], CELLCHAT_RMD,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            _cellchat_tasks[task_id] = {"status": "error", "error": result.stderr[-4000:]}
+            return
+        import json as _json
+        parsed = _json.loads(result.stdout)
+        _cellchat_tasks[task_id] = {"status": "done", "html": parsed.get("html", "")}
+    except subprocess.TimeoutExpired:
+        _cellchat_tasks[task_id] = {"status": "error", "error": "CellChat timed out (60 min)"}
+    except Exception as exc:
+        _cellchat_tasks[task_id] = {"status": "error", "error": str(exc)}
+
+
+@router.post("/cellchat")
+async def start_cellchat(req: CellChatRequest):
+    rds_path = _sessions.get(req.session_id)
+    if not rds_path or not os.path.exists(rds_path):
+        raise HTTPException(404, "Session not found — please re-upload your file")
+
+    task_id  = str(uuid.uuid4())
+    task_dir = os.path.join(EXPLORE_DIR, f"cellchat_{task_id}")
+    os.makedirs(task_dir, exist_ok=True)
+
+    _cellchat_tasks[task_id] = {"status": "running"}
+    thread = threading.Thread(
+        target=_run_cellchat_background,
+        args=(task_id, rds_path, task_dir, req.model_dump()),
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse({"task_id": task_id})
+
+
+@router.get("/cellchat/{task_id}")
+async def get_cellchat_status(task_id: str):
+    task = _cellchat_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    result = dict(task)
+    if result.get("status") == "done":
+        result["report_url"] = f"/explore/cellchat/html/{task_id}"
+    return JSONResponse(result)
