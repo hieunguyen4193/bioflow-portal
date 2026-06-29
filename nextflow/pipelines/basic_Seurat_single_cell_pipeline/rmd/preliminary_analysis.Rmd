@@ -228,7 +228,7 @@ Identify differentially expressed genes in each cluster.
 Idents(s.obj) <- "RNA_PCA.cluster.0.5"
 if (file.exists(file.path(path.to.save.output, "DE_cluster_marker_genes.rds")) == FALSE){
   DefaultAssay(s.obj) <- input.assay
-  s.obj <- PrepSCTFindMarkers(s.obj)
+  if (input.assay == "SCT") s.obj <- PrepSCTFindMarkers(s.obj)
   cluster.markers <- FindAllMarkers(object = s.obj, assay = input.assay, test.use = "wilcox", slot = "data", min.pct = 0.5)
   cluster.markers <- subset(cluster.markers, cluster.markers$p_val_adj < 0.05 & cluster.markers$avg_log2FC > 0)
   saveRDS(cluster.markers, file.path(path.to.save.output, "DE_cluster_marker_genes.rds"))

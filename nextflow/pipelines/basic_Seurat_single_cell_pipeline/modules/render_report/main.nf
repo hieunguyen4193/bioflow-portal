@@ -13,6 +13,7 @@ process RENDER_REPORT {
 
     script:
     """
+    apt-get update -qq && apt-get install -y --no-install-recommends libgsl27 libgsl-dev 2>/dev/null || true
     mkdir -p src
     cp ${helper_functions} src/helper_functions.R
     cp ${import_libraries} src/import_libraries.R

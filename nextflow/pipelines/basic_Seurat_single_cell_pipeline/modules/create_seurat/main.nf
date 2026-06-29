@@ -109,6 +109,85 @@ p_post <- VlnPlot(seurat,
   ncol = 3, pt.size = 0.1)
 ggsave("qc_violin_postfilter.png", p_post, width = 12, height = 5, dpi = 150)
 
+# ── QC plots stored in misc ────────────────────────────────────────────────
+suppressPackageStartupMessages(library(dplyr))
+
+all.QC <- list()
+
+all.QC\$cell.counts.plot <- ggplot(seurat@meta.data,
+    aes(x=name, fill=name)) +
+  geom_bar() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title  = element_text(hjust=0.5, face="bold", size = 14)) +
+  ggtitle("Number of cells in each dataset")
+
+all.QC\$nCountRNA.distribution <- ggplot(seurat@meta.data,
+    aes(color=name, x=nCount_RNA, fill=name)) +
+  geom_density(alpha = 0.2) +
+  scale_x_log10() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title  = element_text(hjust=0.5, face="bold", size = 14)) +
+  ylab("Cell density") +
+  geom_vline(xintercept = 500, color = "red") +
+  ggtitle("Distribution of read depths in each sample")
+
+all.QC\$nFeature_RNA.distribution <- ggplot(seurat@meta.data,
+    aes(color=name, x=nFeature_RNA, fill=name)) +
+  geom_density(alpha = 0.2) +
+  scale_x_log10() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title  = element_text(hjust=0.5, face="bold", size = 14)) +
+  ylab("Cell density") +
+  geom_vline(xintercept = 1000, color = "red") +
+  xlim(1000, 10000) +
+  ggtitle("Distribution of number of detected genes in each sample")
+
+all.QC\$nCount.vs.nFeature.MT <- ggplot(seurat@meta.data,
+    aes(x=nCount_RNA, y=nFeature_RNA, color=percent.mt)) +
+  geom_point() +
+  scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm, formula = y ~ x) +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title  = element_text(hjust=0.5, face="bold", size = 12)) +
+  facet_wrap(~name) +
+  ggtitle("Scatter plot: nCount_RNA vs. nFeature_RNA, cmap % Mitochondrial genes")
+
+seurat@meta.data <- seurat@meta.data %>%
+  mutate(percent.ribo = PercentageFeatureSet(seurat, pattern = "^RP[SL]|^Rp[sl]")[,1])
+
+all.QC\$nCount.vs.nFeature.Ribo <- ggplot(seurat@meta.data,
+    aes(x=nCount_RNA, y=nFeature_RNA, color=percent.ribo)) +
+  geom_point() +
+  scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm, formula = y ~ x) +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title  = element_text(hjust=0.5, face="bold", size = 12)) +
+  facet_wrap(~name) +
+  ggtitle("Scatter plot: nCount_RNA vs. nFeature_RNA, cmap % Ribosome genes")
+
+seurat@meta.data <- seurat@meta.data %>%
+  mutate(log10GenesPerUMI = log10(nFeature_RNA) / log10(nCount_RNA))
+
+all.QC\$complexity <- ggplot(seurat@meta.data,
+    aes(x=log10GenesPerUMI, color=name, fill=name)) +
+  geom_density(alpha = 0.2) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title  = element_text(hjust=0.5, face="bold", size = 14)) +
+  geom_vline(xintercept = 0.8) +
+  ggtitle("Complexity: Log10(nCount_RNA) / log10(nFeature_RNA)")
+
+seurat@misc\$all.QC <- all.QC
+
 # ── QC summary ─────────────────────────────────────────────────────────────
 write.csv(data.frame(
   sample          = opt\$sample,
