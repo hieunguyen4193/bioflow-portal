@@ -4,7 +4,8 @@ nextflow.enable.dsl = 2
 include { SEURAT_PIPELINE } from './workflows/seurat_pipeline'
 
 // ── Input files ────────────────────────────────────────────────────────────
-params.barcodes              = null
+params.samplesheet           = null   // CSV: SampleID,barcodes,matrix,features
+params.barcodes              = null   // single-sample mode
 params.features              = null
 params.matrix                = null
 params.sample_name           = "sample"
@@ -70,12 +71,19 @@ params.s8_remove_genes           = "none"
 params.outdir                = "${launchDir}/results"
 
 workflow {
-    ch_input = Channel.of([
-        params.sample_name,
-        file(params.barcodes),
-        file(params.features),
-        file(params.matrix)
-    ])
+    if (params.samplesheet) {
+        ch_input = Channel
+            .fromPath(params.samplesheet)
+            .splitCsv(header: true, strip: true)
+            .map { row -> tuple(row.SampleID, file(row.barcodes), file(row.features), file(row.matrix)) }
+    } else {
+        ch_input = Channel.of(tuple(
+            params.sample_name ?: 'sample',
+            file(params.barcodes),
+            file(params.features),
+            file(params.matrix)
+        ))
+    }
 
     SEURAT_PIPELINE(ch_input, params)
 }

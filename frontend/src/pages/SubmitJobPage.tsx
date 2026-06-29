@@ -235,6 +235,95 @@ function TenXUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: Fil
   )
 }
 
+function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: File[]) => void }) {
+  const [mode, setMode] = useState<'single' | 'samplesheet'>('single')
+
+  const onDropTriplet = useCallback((accepted: File[]) => {
+    setFiles([...files, ...accepted.filter((f) => !files.some((x) => x.name === f.name))])
+  }, [files, setFiles])
+
+  const onDropSheet = useCallback((accepted: File[]) => {
+    if (accepted[0]) setFiles([accepted[0]])
+  }, [setFiles])
+
+  const { getRootProps: getTripletProps, getInputProps: getTripletInput, isDragActive: tripletDrag } = useDropzone({
+    onDrop: onDropTriplet,
+    accept: { 'application/gzip': ['.gz'], 'text/plain': ['.tsv', '.mtx'] },
+    multiple: true,
+  })
+  const { getRootProps: getSheetProps, getInputProps: getSheetInput, isDragActive: sheetDrag } = useDropzone({
+    onDrop: onDropSheet,
+    accept: { 'text/csv': ['.csv'], 'text/plain': ['.csv'] },
+    multiple: false,
+  })
+
+  function switchMode(m: 'single' | 'samplesheet') {
+    setMode(m)
+    setFiles([])
+  }
+
+  const missing = REQUIRED_FILES.filter((r) => !files.some((f) => f.name === r))
+
+  return (
+    <>
+      <div className="flex gap-2 mb-4">
+        {(['single', 'samplesheet'] as const).map((m) => (
+          <button key={m} type="button"
+            onClick={() => switchMode(m)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${mode === m ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-300 text-slate-600 hover:border-indigo-400'}`}>
+            {m === 'single' ? 'Single sample (triplet)' : 'Multiple samples (samplesheet)'}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'single' ? (
+        <>
+          <p className="text-xs text-slate-500 mb-3">
+            Upload the three CellRanger output files: <code>barcodes.tsv.gz</code>, <code>features.tsv.gz</code>, <code>matrix.mtx.gz</code>
+          </p>
+          <div {...getTripletProps()} className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${tripletDrag ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'}`}>
+            <input {...getTripletInput()} />
+            <p className="text-sm text-slate-500">{tripletDrag ? 'Drop here…' : 'Drag & drop files, or click to browse'}</p>
+          </div>
+          {files.length > 0 && (
+            <ul className="mt-3 space-y-1">
+              {files.map((f) => (
+                <li key={f.name} className="flex items-center justify-between text-sm">
+                  <span className="flex items-center gap-2">
+                    <span className={REQUIRED_FILES.includes(f.name) ? 'text-green-600' : 'text-slate-500'}>
+                      {REQUIRED_FILES.includes(f.name) ? '✓' : '·'}
+                    </span>
+                    {f.name}
+                  </span>
+                  <span className="text-slate-400">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {missing.length > 0 && files.length > 0 && (
+            <p className="mt-2 text-xs text-amber-600">Still needed: {missing.join(', ')}</p>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-slate-500 mb-3">
+            Upload a CSV with columns: <code>SampleID</code>, <code>barcodes</code>, <code>matrix</code>, <code>features</code> — paths on the server.
+          </p>
+          <div {...getSheetProps()} className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${sheetDrag ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'}`}>
+            <input {...getSheetInput()} />
+            <p className="text-sm text-slate-500">{sheetDrag ? 'Drop here…' : 'Drag & drop samplesheet.csv, or click to browse'}</p>
+          </div>
+          {files[0] && (
+            <p className="mt-3 text-sm text-green-700 flex items-center gap-2">
+              <span>✓</span> {files[0].name} ({(files[0].size / 1024).toFixed(1)} KB)
+            </p>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+
 function SamplesheetUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: File[]) => void }) {
   const onDrop = useCallback((accepted: File[]) => {
     if (accepted[0]) setFiles([accepted[0]])
@@ -284,8 +373,9 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
 
   const currentPipeline = pipelines.find((p: any) => p.id === selectedPipeline)
   const isSamplesheet = currentPipeline?.input_mode === 'samplesheet'
-  const missingFiles = isSamplesheet
-    ? (files.length === 0 ? ['samplesheet.csv'] : [])
+  const isSeurat = currentPipeline?.input_mode === 'seurat'
+  const missingFiles = (isSamplesheet || isSeurat)
+    ? (files.length === 0 ? ['input file'] : [])
     : REQUIRED_FILES.filter((req) => !files.some((f) => f.name === req))
 
   async function handleSubmit(e: React.FormEvent) {
@@ -345,7 +435,9 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
       {/* 2. File upload — adapts to pipeline input mode */}
       <div className="bg-white rounded-xl shadow p-5">
         <h3 className="font-medium mb-3">2. Upload Input Files</h3>
-        {isSamplesheet
+        {isSeurat
+          ? <SeuratUploadPanel files={files} setFiles={setFiles} />
+          : isSamplesheet
           ? <SamplesheetUploadPanel files={files} setFiles={setFiles} />
           : <TenXUploadPanel files={files} setFiles={setFiles} />
         }

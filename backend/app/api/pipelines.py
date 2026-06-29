@@ -166,13 +166,10 @@ PIPELINE_REGISTRY = {
     },
     "basic_Seurat_single_cell_pipeline": {
         "name": "Seurat object from 10x CellRanger",
-        "description": "Creates a Seurat object from the barcodes/features/matrix triplet produced by CellRanger. Outputs an RDS file and QC plots.",
+        "description": "Runs the full Seurat single-cell pipeline. Upload either a single CellRanger triplet (barcodes/features/matrix) or a samplesheet CSV (SampleID, barcodes, matrix, features) for multiple samples.",
         "readme": "basic_Seurat_single_cell_pipeline/README.md",
-        "input_files": [
-            {"key": "barcodes", "label": "barcodes.tsv.gz"},
-            {"key": "features", "label": "features.tsv.gz"},
-            {"key": "matrix",   "label": "matrix.mtx.gz"},
-        ],
+        "input_mode": "seurat",
+        "input_files": [],
         # steps: ordered list of pipeline steps; each has a run_key (None = always runs)
         # and a list of params. The frontend renders one collapsible panel per step.
         "steps": [
@@ -186,7 +183,7 @@ PIPELINE_REGISTRY = {
                     {"key": "min_features",     "label": "Min features per cell",  "type": "int",   "default": 200},
                     {"key": "max_features",     "label": "Max features per cell",  "type": "int",   "default": 5000},
                     {"key": "max_mt_pct",       "label": "Max % mitochondrial",    "type": "float", "default": 20},
-                    {"key": "sample_name",      "label": "Sample name",            "type": "str",   "default": "sample"},
+                    {"key": "sample_name",      "label": "Sample name (single-sample mode only)", "type": "str", "default": "sample"},
                     {"key": "remove_TCR_genes", "label": "Remove TCR genes",       "type": "bool",  "default": False},
                 ],
             },
