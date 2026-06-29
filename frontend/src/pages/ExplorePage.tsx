@@ -334,6 +334,9 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
   const [loading,   setLoading]   = useState(false)
   const [log,       setLog]       = useState('')
   const [showExcluded, setShowExcluded] = useState(false)
+  const [search,    setSearch]    = useState('')
+  const [sortCol,   setSortCol]   = useState<string>('avg_log2FC')
+  const [sortDir,   setSortDir]   = useState<1 | -1>(-1)
 
   const results = dgeResult?.markers ?? []
 
@@ -609,28 +612,62 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
             </div>
           </div>
 
-          {/* Active cluster table */}
+          {/* Search + Active cluster table */}
           {clusters.filter(cl => String(cl) === activeTab).map(cl => {
+            const COLS = [
+              { key: 'gene',        label: 'Gene',       numeric: false },
+              { key: 'p_val',       label: 'p_val',      numeric: true  },
+              { key: 'p_val_adj',   label: 'p_val_adj',  numeric: true  },
+              { key: 'avg_log2FC',     label: 'avg_log2FC',     numeric: true  },
+              { key: 'abs_avg_log2FC', label: '|avg_log2FC|',   numeric: true  },
+              { key: 'pct.1',          label: 'pct.1',          numeric: true  },
+              { key: 'pct.2',          label: 'pct.2',          numeric: true  },
+            ]
+
+            function toggleSort(col: string) {
+              if (sortCol === col) setSortDir(d => (d === 1 ? -1 : 1) as 1 | -1)
+              else { setSortCol(col); setSortDir(-1) }
+            }
+
             const clRows = results
               .filter((r: any) => r.cluster === cl)
-              .sort((a: any, b: any) => Math.abs(Number(b.avg_log2FC)) - Math.abs(Number(a.avg_log2FC)))
+              .filter((r: any) => !search || String(r.gene).toLowerCase().includes(search.toLowerCase()))
+              .sort((a: any, b: any) => {
+                const av = COLS.find(c => c.key === sortCol)?.numeric ? Number(a[sortCol]) : String(a[sortCol])
+                const bv = COLS.find(c => c.key === sortCol)?.numeric ? Number(b[sortCol]) : String(b[sortCol])
+                return av < bv ? sortDir : av > bv ? -sortDir : 0
+              })
+
+            const SortIcon = ({ col }: { col: string }) => (
+              <span className="ml-1 text-slate-400">
+                {sortCol === col ? (sortDir === -1 ? '▼' : '▲') : '⇅'}
+              </span>
+            )
+
             return (
               <div key={String(cl)}>
-                <div className="flex items-center justify-between px-4 py-2 border-b bg-slate-50 text-xs text-slate-500">
-                  <span>{clRows.length} significant DEGs</span>
+                <div className="flex items-center justify-between px-4 py-2 border-b bg-slate-50 gap-3">
+                  <input
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    placeholder="Search gene…"
+                    className="border border-slate-300 rounded px-2 py-1 text-xs w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  />
+                  <span className="text-xs text-slate-500">{clRows.length} DEGs</span>
                   <button onClick={() => downloadCSV(clRows, `dge_cluster_${cl}.csv`)}
-                    className="text-indigo-500 hover:underline">⬇ Download CSV</button>
+                    className="text-xs text-indigo-500 hover:underline ml-auto">⬇ CSV</button>
                 </div>
                 <div className="overflow-auto max-h-[55vh]">
                   <table className="w-full text-xs">
                     <thead className="bg-slate-50 border-b sticky top-0">
                       <tr>
-                        <th className="text-left px-3 py-2 font-medium">Gene</th>
-                        <th className="text-left px-3 py-2 font-medium">p_val</th>
-                        <th className="text-left px-3 py-2 font-medium">p_val_adj</th>
-                        <th className="text-left px-3 py-2 font-medium">avg_log2FC</th>
-                        <th className="text-left px-3 py-2 font-medium">pct.1</th>
-                        <th className="text-left px-3 py-2 font-medium">pct.2</th>
+                        {COLS.map(c => (
+                          <th key={c.key}
+                            onClick={() => toggleSort(c.key)}
+                            className="text-left px-3 py-2 font-medium cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
+                            {c.label}<SortIcon col={c.key} />
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -642,6 +679,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
                           <td className={`px-3 py-1.5 font-mono font-medium ${Number(r.avg_log2FC) > 0 ? 'text-green-600' : 'text-red-500'}`}>
                             {Number(r.avg_log2FC) > 0 ? '+' : ''}{Number(r.avg_log2FC).toFixed(3)}
                           </td>
+                          <td className="px-3 py-1.5 font-mono text-slate-600">{Math.abs(Number(r.avg_log2FC)).toFixed(3)}</td>
                           <td className="px-3 py-1.5 text-slate-500">{Number(r['pct.1']).toFixed(2)}</td>
                           <td className="px-3 py-1.5 text-slate-500">{Number(r['pct.2']).toFixed(2)}</td>
                         </tr>
