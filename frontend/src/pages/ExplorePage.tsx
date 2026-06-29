@@ -324,8 +324,10 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
 // ── DGE ───────────────────────────────────────────────────────────────────────
 function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
   const [test,    setTest]    = useState('wilcox')
-  const [ident1,  setIdent1]  = useState('')
-  const [ident2,  setIdent2]  = useState('')
+  const [ident1Raw, setIdent1Raw] = useState('')
+  const [ident2Raw, setIdent2Raw] = useState('')
+  const ident1 = ident1Raw.split(',').map(s => s.trim()).filter(Boolean)
+  const ident2 = ident2Raw.split(',').map(s => s.trim()).filter(Boolean)
   const [rmTCR,   setRmTCR]   = useState(true)
   const [rmBCR,   setRmBCR]   = useState(true)
   const [pval,    setPval]    = useState(0.05)
@@ -348,7 +350,8 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
       const res = await runDGE({
         session_id: sessionId, mode, group_by: colorBy,
         assay, slot, test_use: test,
-        ident1: ident1 || undefined, ident2: ident2 || undefined,
+        ident1: ident1.length ? ident1.join(',') : undefined,
+        ident2: ident2.length ? ident2.join(',') : undefined,
         rm_tcr: rmTCR, rm_bcr: rmBCR,
       })
       const filtered = res.markers.filter((r: any) =>
@@ -406,20 +409,16 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode }: any) {
           {mode === 'conditions' && (
             <>
               <div>
-                <label className="text-xs text-slate-500 block mb-1">Group 1</label>
-                <select value={ident1} onChange={e => setIdent1(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1 text-sm">
-                  <option value="">—</option>
-                  {groupVals.map(v => <option key={String(v)}>{String(v)}</option>)}
-                </select>
+                <label className="text-xs text-slate-500 block mb-1">Group 1 <span className="text-slate-400">(comma-separated)</span></label>
+                <input value={ident1Raw} onChange={e => setIdent1Raw(e.target.value)}
+                  placeholder="e.g. 0,1,3"
+                  className="border border-slate-300 rounded px-2 py-1 text-sm w-36 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
               </div>
               <div>
-                <label className="text-xs text-slate-500 block mb-1">Group 2</label>
-                <select value={ident2} onChange={e => setIdent2(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1 text-sm">
-                  <option value="">— (all others)</option>
-                  {groupVals.map(v => <option key={String(v)}>{String(v)}</option>)}
-                </select>
+                <label className="text-xs text-slate-500 block mb-1">Group 2 <span className="text-slate-400">(leave blank = all others)</span></label>
+                <input value={ident2Raw} onChange={e => setIdent2Raw(e.target.value)}
+                  placeholder="e.g. 2,4"
+                  className="border border-slate-300 rounded px-2 py-1 text-sm w-36 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
               </div>
             </>
           )}
@@ -701,30 +700,58 @@ function MetadataTab({ meta }: { meta: SeuratMeta }) {
   const cols = Object.keys(meta.metadata)
   const rows = meta.cells.map((cell, i) =>
     Object.fromEntries([['cell', cell], ...cols.map(c => [c, meta.metadata[c]?.[i] ?? ''])]))
-  const [filter, setFilter] = useState('')
-  const visible = filter ? rows.filter(r =>
-    Object.values(r).some(v => String(v).toLowerCase().includes(filter.toLowerCase()))
-  ) : rows
+  const allCols = ['cell', ...cols]
+  const [filter,  setFilter]  = useState('')
+  const [sortCol, setSortCol] = useState('cell')
+  const [sortDir, setSortDir] = useState<1 | -1>(1)
+
+  function toggleSort(col: string) {
+    if (sortCol === col) setSortDir(d => (d === 1 ? -1 : 1) as 1 | -1)
+    else { setSortCol(col); setSortDir(1) }
+  }
+
+  const visible = rows
+    .filter(r => !filter || Object.values(r).some(v => String(v).toLowerCase().includes(filter.toLowerCase())))
+    .sort((a, b) => {
+      const av = a[sortCol]; const bv = b[sortCol]
+      const an = Number(av); const bn = Number(bv)
+      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortDir
+      return String(av).localeCompare(String(bv)) * sortDir
+    })
 
   return (
     <div className="p-4 space-y-3">
-      <input value={filter} onChange={e => setFilter(e.target.value)}
-        placeholder="Filter cells…"
-        className="border border-slate-300 rounded px-3 py-1.5 text-sm w-64" />
-      <p className="text-xs text-slate-400">Showing {Math.min(visible.length, 500)} of {visible.length} cells</p>
+      <div className="flex items-center gap-3">
+        <input value={filter} onChange={e => setFilter(e.target.value)}
+          placeholder="Search across all columns…"
+          className="border border-slate-300 rounded px-3 py-1.5 text-sm w-72 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+        {filter && (
+          <button onClick={() => setFilter('')}
+            className="text-xs text-slate-400 hover:text-red-500">✕ Clear</button>
+        )}
+        <span className="text-xs text-slate-400 ml-auto">
+          Showing {Math.min(visible.length, 500)} of {visible.length} cells
+        </span>
+      </div>
       <div className="overflow-auto rounded-lg border border-slate-200 max-h-[60vh]">
         <table className="text-xs w-full">
           <thead className="bg-slate-50 border-b sticky top-0">
             <tr>
-              {['cell', ...cols].map(c => (
-                <th key={c} className="text-left px-3 py-2 font-medium whitespace-nowrap">{c}</th>
+              {allCols.map(c => (
+                <th key={c} onClick={() => toggleSort(c)}
+                  className="text-left px-3 py-2 font-medium whitespace-nowrap cursor-pointer hover:bg-slate-100 select-none">
+                  {c}
+                  <span className="ml-1 text-slate-400">
+                    {sortCol === c ? (sortDir === 1 ? '▲' : '▼') : '⇅'}
+                  </span>
+                </th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y">
             {visible.slice(0, 500).map((row, i) => (
               <tr key={i} className="hover:bg-slate-50">
-                {['cell', ...cols].map(c => (
+                {allCols.map(c => (
                   <td key={c} className="px-3 py-1.5 whitespace-nowrap text-slate-600 max-w-xs truncate">
                     {String(row[c])}
                   </td>

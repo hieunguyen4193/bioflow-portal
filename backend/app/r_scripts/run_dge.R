@@ -9,8 +9,8 @@ group_by     <- args[3]   # metadata column
 assay_name   <- args[4]
 slot_name    <- args[5]
 test_use     <- args[6]
-ident1       <- if (length(args) >= 7) args[7] else ""
-ident2       <- if (length(args) >= 8) args[8] else ""
+ident1       <- if (length(args) >= 7 && nchar(args[7]) > 0) trimws(strsplit(args[7], ",")[[1]]) else character(0)
+ident2       <- if (length(args) >= 8 && nchar(args[8]) > 0) trimws(strsplit(args[8], ",")[[1]]) else character(0)
 rm_tcr       <- if (length(args) >= 9) args[9] == "true" else TRUE
 rm_bcr       <- if (length(args) >= 10) args[10] == "true" else TRUE
 
@@ -76,11 +76,11 @@ if (mode == "clusters") {
                             test.use = test_use, slot = effective_slot,
                             features = features, verbose = FALSE)
 } else {
-  markers <- FindMarkers(s.obj, ident.1 = ident1, ident.2 = if (nchar(ident2) > 0) ident2 else NULL,
+  markers <- FindMarkers(s.obj, ident.1 = ident1, ident.2 = if (length(ident2) > 0) ident2 else NULL,
                          assay = assay_name, test.use = test_use, slot = effective_slot,
                          features = features, verbose = FALSE) %>%
     tibble::rownames_to_column("gene") %>%
-    mutate(cluster = paste(ident1, "vs", ident2))
+    mutate(cluster = paste(paste(ident1, collapse = "+"), "vs", if (length(ident2) > 0) paste(ident2, collapse = "+") else "others"))
 }
 
 if (nrow(markers) > 0 && "avg_log2FC" %in% colnames(markers)) {
