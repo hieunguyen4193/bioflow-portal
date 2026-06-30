@@ -72,13 +72,28 @@ def _load_expr_cache(rds_path: str, cache_base: str) -> None:
         _expr_caches[rds_path] = assay_data
 
 
-def _build_expr_cache_bg(rds_path: str, cache_base: str) -> None:
-    """Background thread: run load_seurat.R to build binary expression files."""
+def _build_expr_cache_bg(rds_path: str, cache_base: str, required_assay: Optional[str] = None) -> None:
+    """Background thread: run load_seurat.R to build binary expression files.
+
+    If *required_assay* is given, the R run is only skipped when that specific
+    assay's .bin file already exists (avoids the bug where SCT being cached
+    prevents RNA from ever being built).
+    """
+    # If the requested assay is already in memory, nothing to do
+    if required_assay and _expr_caches.get(rds_path, {}).get(required_assay):
+        return
+
     _cache_building.add(rds_path)
     try:
-        if any(Path(cache_base).parent.glob(Path(cache_base).name + "_*.bin")):
+        if required_assay:
+            bin_exists = Path(f"{cache_base}_{required_assay}.bin").exists()
+        else:
+            bin_exists = any(Path(cache_base).parent.glob(Path(cache_base).name + "_*.bin"))
+
+        if bin_exists:
             _load_expr_cache(rds_path, cache_base)
             return
+
         script = os.path.join(R_SCRIPTS, "load_seurat.R")
         cmd = [
             "docker", "run", "--rm",
@@ -162,11 +177,15 @@ async def load_preset(req: PresetLoadRequest):
 
 # ── Cache status ────────────────────────────────────────────────────────────
 @router.get("/cache-status")
-async def get_cache_status(session_id: str):
+async def get_cache_status(session_id: str, assay: Optional[str] = None):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
-    if rds_path in _expr_caches:
+    cache = _expr_caches.get(rds_path, {})
+    if assay:
+        if cache.get(assay):
+            return JSONResponse({"status": "ready"})
+    elif cache:
         return JSONResponse({"status": "ready"})
     if rds_path in _cache_building:
         return JSONResponse({"status": "building"})
@@ -220,7 +239,18 @@ async def get_gene_expression(req: GeneRequest):
                 expression[gene] = cache["mat"][idx].tolist()
         return JSONResponse({"cells": cache["cells"], "expression": expression})
 
-    # Fallback: Docker+R (only if cache missing, e.g. different slot or build failed)
+    # Cache miss for this assay — kick off a background build if nothing is running.
+    # _build_expr_cache_bg checks memory first, then disk, then runs R only if needed.
+    if rds_path not in _cache_building:
+        cache_base = _cache_base_for(rds_path)
+        threading.Thread(
+            target=_build_expr_cache_bg,
+            args=(rds_path, cache_base),
+            kwargs={"required_assay": req.assay},
+            daemon=True,
+        ).start()
+
+    # Fallback: Docker+R while cache builds
     data = _run_r("get_expression.R", [rds_path, req.genes, req.assay, req.slot], timeout=120)
     return JSONResponse(data)
 

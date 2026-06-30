@@ -2061,27 +2061,44 @@ export default function ExplorePage() {
   const [cacheStatus, setCacheStatus] = useState<'building' | 'ready' | 'idle'>('idle')
   const cachePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  function startCachePolling(sessionId: string) {
+  async function startCachePolling(sessionId: string, currentAssay: string) {
     if (cachePollRef.current) clearInterval(cachePollRef.current)
-    setCacheStatus('building')
+    cachePollRef.current = null
+
+    const check = async () => {
+      const res = await getCacheStatus(sessionId, currentAssay)
+      setCacheStatus(res.status === 'ready' ? 'ready' : res.status === 'building' ? 'building' : 'idle')
+      return res.status
+    }
+
+    // Immediate check so already-cached assays show "ready" without waiting 10 s
+    let status: string
+    try { status = await check() } catch { return }
+    if (status === 'ready') return
+
+    // Keep polling until ready or 20 min elapsed
+    let polls = 0
     cachePollRef.current = setInterval(async () => {
+      polls++
       try {
-        const res = await getCacheStatus(sessionId)
-        if (res.status === 'ready') {
-          setCacheStatus('ready')
-          clearInterval(cachePollRef.current!)
-          cachePollRef.current = null
-        } else if (res.status === 'not_cached') {
-          setCacheStatus('idle')
+        const s = await check()
+        if (s === 'ready' || polls > 120) {
           clearInterval(cachePollRef.current!)
           cachePollRef.current = null
         }
-      } catch { /* session expired or network error — stop polling */
+      } catch {
         clearInterval(cachePollRef.current!)
         cachePollRef.current = null
       }
     }, 10000)
   }
+
+  // Restart polling whenever the active assay or session changes
+  const sessionId = meta?.session_id
+  useEffect(() => {
+    if (!sessionId) return
+    startCachePolling(sessionId, assay)
+  }, [assay, sessionId])
 
   function handleSaveDge(label: string, markers: Record<string, unknown>[]) {
     setSavedDgeResults(prev => {
@@ -2099,7 +2116,7 @@ export default function ExplorePage() {
     setAssay(m.assays.find(a => a === 'RNA') ?? m.assays[0] ?? 'RNA')
     const clVals = [...new Set(Object.values(m.metadata)[0] ?? [])]
     setSelectedClusters(clVals as string[])
-    startCachePolling(m.session_id)
+    // cache polling is started by the useEffect watching [assay, sessionId]
   }
 
   if (!meta) return <UploadScreen onLoad={handleLoad} />

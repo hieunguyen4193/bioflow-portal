@@ -112,8 +112,8 @@ export async function cancelCellChat(task_id: string): Promise<void> {
   await api.post(`/explore/cellchat/${task_id}/cancel`)
 }
 
-export async function getCacheStatus(session_id: string): Promise<{ status: 'building' | 'ready' | 'not_cached' }> {
-  const { data } = await api.get('/explore/cache-status', { params: { session_id } })
+export async function getCacheStatus(session_id: string, assay?: string): Promise<{ status: 'building' | 'ready' | 'not_cached' }> {
+  const { data } = await api.get('/explore/cache-status', { params: { session_id, ...(assay ? { assay } : {}) } })
   return data
 }
 
