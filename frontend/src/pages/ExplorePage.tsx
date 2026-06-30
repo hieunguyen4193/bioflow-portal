@@ -346,7 +346,7 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
 
   const colorVals = meta.metadata[colorBy] ?? []
   const colorMap  = catColorMap(colorVals)
-  const groups    = [...new Set(colorVals)].filter((g: string) => selectedClusters.includes(g)).sort()
+  const groups    = ([...new Set(colorVals)] as string[]).sort()
 
   async function fetchExpr() {
     const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
