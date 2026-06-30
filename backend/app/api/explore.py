@@ -15,8 +15,8 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/explore", tags=["explore"])
 
 _sessions: dict[str, str] = {}      # session_id → rds_path
-_expr_caches: dict[str, dict] = {}  # rds_path → {assay_name: {mat, cells, gene_idx}}
-_cache_building: set[str] = set()   # rds_paths currently being built in background
+_expr_caches: dict[str, dict] = {}  # rds_path → {(assay, slot): {mat, cells, gene_idx}}
+_cache_building: set[tuple] = set() # {(rds_path, assay, slot)} currently being built
 _pathway_tasks: dict[str, dict] = {}
 
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
@@ -45,23 +45,29 @@ def _cache_base_for(rds_path: str) -> str:
 
 
 def _load_expr_cache(rds_path: str, cache_base: str) -> None:
-    """Memory-map the binary expression files written by load_seurat.R."""
+    """Memory-map binary expression files written by load_seurat.R.
+    Keys in _expr_caches[rds_path] are (assay, slot) tuples.
+    Files must have 'assay' and 'slot' fields in their JSON metadata.
+    """
     import numpy as np
     assay_data: dict = {}
     parent = Path(cache_base).parent
     prefix = Path(cache_base).name + "_"
     for meta_path in sorted(parent.glob(f"{prefix}*.json")):
-        assay_name = meta_path.stem[len(prefix):]
-        bin_path   = meta_path.with_suffix(".bin")
+        bin_path = meta_path.with_suffix(".bin")
         if not bin_path.exists():
             continue
         try:
-            meta    = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text())
+            assay_name = meta.get("assay")
+            slot_name  = meta.get("slot")
+            if not assay_name or not slot_name:
+                continue  # old-format file without assay/slot fields — skip
             n_genes = int(meta["n_genes"])
             n_cells = int(meta["n_cells"])
-            mat     = np.memmap(str(bin_path), dtype=np.float32, mode="r",
-                                shape=(n_genes, n_cells))
-            assay_data[assay_name] = {
+            mat = np.memmap(str(bin_path), dtype=np.float32, mode="r",
+                            shape=(n_genes, n_cells))
+            assay_data[(assay_name, slot_name)] = {
                 "mat":      mat,
                 "cells":    meta["cells"],
                 "gene_idx": {g: i for i, g in enumerate(meta["genes"])},
@@ -69,28 +75,31 @@ def _load_expr_cache(rds_path: str, cache_base: str) -> None:
         except Exception:
             continue
     if assay_data:
-        _expr_caches[rds_path] = assay_data
+        existing = _expr_caches.get(rds_path, {})
+        existing.update(assay_data)
+        _expr_caches[rds_path] = existing
 
 
-def _build_expr_cache_bg(rds_path: str, cache_base: str, required_assay: Optional[str] = None) -> None:
-    """Background thread: run load_seurat.R to build binary expression files.
+def _build_expr_cache_bg(rds_path: str, cache_base: str,
+                         required_assay: str, required_slot: str) -> None:
+    """Background thread: run load_seurat.R to cache one (assay, slot) pair.
 
-    If *required_assay* is given, the R run is only skipped when that specific
-    assay's .bin file already exists (avoids the bug where SCT being cached
-    prevents RNA from ever being built).
+    Errors out (and propagates to R stderr) if the slot is not available in
+    the assay — no silent zero-fill.
     """
-    # If the requested assay is already in memory, nothing to do
-    if required_assay and _expr_caches.get(rds_path, {}).get(required_assay):
+    cache_key = (rds_path, required_assay, required_slot)
+
+    # Already in memory — nothing to do
+    if _expr_caches.get(rds_path, {}).get((required_assay, required_slot)):
+        return
+    # Another thread is already building this exact pair
+    if cache_key in _cache_building:
         return
 
-    _cache_building.add(rds_path)
+    _cache_building.add(cache_key)
     try:
-        if required_assay:
-            bin_exists = Path(f"{cache_base}_{required_assay}.bin").exists()
-        else:
-            bin_exists = any(Path(cache_base).parent.glob(Path(cache_base).name + "_*.bin"))
-
-        if bin_exists:
+        bin_path = Path(f"{cache_base}_{required_assay}_{required_slot}.bin")
+        if bin_path.exists():
             _load_expr_cache(rds_path, cache_base)
             return
 
@@ -100,13 +109,14 @@ def _build_expr_cache_bg(rds_path: str, cache_base: str, required_assay: Optiona
             "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
             "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
             DOCKER_IMAGE,
-            "Rscript", "--vanilla", script, rds_path, cache_base,
+            "Rscript", "--vanilla", script,
+            rds_path, cache_base, required_assay, required_slot,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
         if result.returncode == 0:
             _load_expr_cache(rds_path, cache_base)
     finally:
-        _cache_building.discard(rds_path)
+        _cache_building.discard(cache_key)
 
 
 def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list:
@@ -171,24 +181,31 @@ async def load_preset(req: PresetLoadRequest):
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
-    threading.Thread(target=_build_expr_cache_bg, args=(rds_path, cache_base), daemon=True).start()
+    assays = data.get("assays") or []
+    default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
+    if default_assay:
+        threading.Thread(
+            target=_build_expr_cache_bg,
+            args=(rds_path, cache_base, default_assay, "data"),
+            daemon=True,
+        ).start()
     return JSONResponse(data)
 
 
 # ── Cache status ────────────────────────────────────────────────────────────
 @router.get("/cache-status")
-async def get_cache_status(session_id: str, assay: Optional[str] = None):
+async def get_cache_status(session_id: str, assay: Optional[str] = None, slot: Optional[str] = None):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
     cache = _expr_caches.get(rds_path, {})
-    if assay:
-        if cache.get(assay):
+    if assay and slot:
+        if cache.get((assay, slot)):
             return JSONResponse({"status": "ready"})
+        if (rds_path, assay, slot) in _cache_building:
+            return JSONResponse({"status": "building"})
     elif cache:
         return JSONResponse({"status": "ready"})
-    if rds_path in _cache_building:
-        return JSONResponse({"status": "building"})
     return JSONResponse({"status": "not_cached"})
 
 
@@ -210,7 +227,14 @@ async def upload_rds(file: UploadFile = File(...)):
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
-    threading.Thread(target=_build_expr_cache_bg, args=(rds_path, cache_base), daemon=True).start()
+    assays = data.get("assays") or []
+    default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
+    if default_assay:
+        threading.Thread(
+            target=_build_expr_cache_bg,
+            args=(rds_path, cache_base, default_assay, "data"),
+            daemon=True,
+        ).start()
     return JSONResponse(data)
 
 
@@ -229,7 +253,7 @@ async def get_gene_expression(req: GeneRequest):
         raise HTTPException(404, "Session not found — please re-upload your file")
 
     # Fast path: numpy memmap, no Docker
-    cache = _expr_caches.get(rds_path, {}).get(req.assay)
+    cache = _expr_caches.get(rds_path, {}).get((req.assay, req.slot))
     if cache:
         genes      = [g.strip() for g in req.genes.split(",")]
         expression = {}
@@ -239,18 +263,15 @@ async def get_gene_expression(req: GeneRequest):
                 expression[gene] = cache["mat"][idx].tolist()
         return JSONResponse({"cells": cache["cells"], "expression": expression})
 
-    # Cache miss for this assay — kick off a background build if nothing is running.
-    # _build_expr_cache_bg checks memory first, then disk, then runs R only if needed.
-    if rds_path not in _cache_building:
-        cache_base = _cache_base_for(rds_path)
-        threading.Thread(
-            target=_build_expr_cache_bg,
-            args=(rds_path, cache_base),
-            kwargs={"required_assay": req.assay},
-            daemon=True,
-        ).start()
+    # Cache miss for this (assay, slot) pair — kick off a background build.
+    cache_base = _cache_base_for(rds_path)
+    threading.Thread(
+        target=_build_expr_cache_bg,
+        args=(rds_path, cache_base, req.assay, req.slot),
+        daemon=True,
+    ).start()
 
-    # Fallback: Docker+R while cache builds
+    # Fallback: Docker+R while cache builds (errors propagate as HTTP 500)
     data = _run_r("get_expression.R", [rds_path, req.genes, req.assay, req.slot], timeout=120)
     return JSONResponse(data)
 

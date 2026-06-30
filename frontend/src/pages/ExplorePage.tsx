@@ -193,6 +193,7 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
   const [cells,          setCells]          = useState<string[]>([])
   const [loading,        setLoading]        = useState(false)
   const [requestedGenes, setRequestedGenes] = useState<string[]>([])
+  const [fetchError,     setFetchError]     = useState<string | null>(null)
 
   const red = meta.reductions[reduction]
 
@@ -200,6 +201,7 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
     const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
     if (!genes.length) { toast.error('Enter at least one gene'); return }
     setLoading(true)
+    setFetchError(null)
     setRequestedGenes(genes)
     try {
       const res = await getGeneExpression(sessionId, genes.join(','), assay, slot)
@@ -209,11 +211,16 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
       const missing = genes.filter(g => !found.includes(g))
       if (found.length === 0) toast.error('No genes found — check spelling and case (e.g. Cd3e not cd3e)')
       else if (missing.length) toast(`${missing.join(', ')} not found in dataset`, { icon: '⚠️' })
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed to fetch expression') }
+    } catch (e: any) {
+      const msg = e.response?.data?.detail || 'Failed to fetch expression'
+      setFetchError(msg)
+      setExprData(null)
+      toast.error('Expression fetch failed')
+    }
     finally { setLoading(false) }
   }
 
-  function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]) }
+  function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]); setFetchError(null) }
 
   // Memoize all heavy plot computation — only reruns when data/settings change, not on keystroke
   const plotSection = useMemo(() => {
@@ -331,6 +338,12 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
         <p className="text-amber-600 text-sm">No matching genes found for: <strong>{requestedGenes.join(', ')}</strong>. Gene names are case-sensitive.</p>
       )}
 
+      {fetchError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 font-mono whitespace-pre-wrap">
+          <span className="font-semibold not-italic">Error: </span>{fetchError}
+        </div>
+      )}
+
       {plotSection}
     </div>
   )
@@ -343,6 +356,7 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
   const [cells,          setCells]          = useState<string[]>([])
   const [loading,        setLoading]        = useState(false)
   const [requestedGenes, setRequestedGenes] = useState<string[]>([])
+  const [fetchError,     setFetchError]     = useState<string | null>(null)
 
   const colorVals = meta.metadata[colorBy] ?? []
   const colorMap  = catColorMap(colorVals)
@@ -352,6 +366,7 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
     const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
     if (!genes.length) { toast.error('Enter at least one gene'); return }
     setLoading(true)
+    setFetchError(null)
     setRequestedGenes(genes)
     try {
       const res = await getGeneExpression(sessionId, genes.join(','), assay, slot)
@@ -361,11 +376,16 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
       const missing = genes.filter(g => !found.includes(g))
       if (found.length === 0) toast.error('No genes found — check spelling and case (e.g. Cd3e not cd3e)')
       else if (missing.length) toast(`${missing.join(', ')} not found in dataset`, { icon: '⚠️' })
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed') }
+    } catch (e: any) {
+      const msg = e.response?.data?.detail || 'Failed to fetch expression'
+      setFetchError(msg)
+      setExprData(null)
+      toast.error('Expression fetch failed')
+    }
     finally { setLoading(false) }
   }
 
-  function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]) }
+  function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]); setFetchError(null) }
 
   const plotSection = useMemo(() => {
     if (!exprData) return null
@@ -434,6 +454,12 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
 
       {exprData && Object.keys(exprData).length === 0 && (
         <p className="text-amber-600 text-sm">No matching genes found for: <strong>{requestedGenes.join(', ')}</strong>. Gene names are case-sensitive.</p>
+      )}
+
+      {fetchError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 font-mono whitespace-pre-wrap">
+          <span className="font-semibold not-italic">Error: </span>{fetchError}
+        </div>
       )}
 
       {plotSection}
@@ -2061,17 +2087,17 @@ export default function ExplorePage() {
   const [cacheStatus, setCacheStatus] = useState<'building' | 'ready' | 'idle'>('idle')
   const cachePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  async function startCachePolling(sessionId: string, currentAssay: string) {
+  async function startCachePolling(sessionId: string, currentAssay: string, currentSlot: string) {
     if (cachePollRef.current) clearInterval(cachePollRef.current)
     cachePollRef.current = null
 
     const check = async () => {
-      const res = await getCacheStatus(sessionId, currentAssay)
+      const res = await getCacheStatus(sessionId, currentAssay, currentSlot)
       setCacheStatus(res.status === 'ready' ? 'ready' : res.status === 'building' ? 'building' : 'idle')
       return res.status
     }
 
-    // Immediate check so already-cached assays show "ready" without waiting 10 s
+    // Immediate check so already-cached pairs show "ready" without waiting 10 s
     let status: string
     try { status = await check() } catch { return }
     if (status === 'ready') return
@@ -2093,12 +2119,12 @@ export default function ExplorePage() {
     }, 10000)
   }
 
-  // Restart polling whenever the active assay or session changes
+  // Restart polling whenever the active (assay, slot) pair or session changes
   const sessionId = meta?.session_id
   useEffect(() => {
     if (!sessionId) return
-    startCachePolling(sessionId, assay)
-  }, [assay, sessionId])
+    startCachePolling(sessionId, assay, slot)
+  }, [assay, slot, sessionId])
 
   function handleSaveDge(label: string, markers: Record<string, unknown>[]) {
     setSavedDgeResults(prev => {

@@ -53,7 +53,13 @@ fetch_gene <- function(g) {
     tryCatch({
       mat <- GetAssayData(s.obj, assay = assay_name, slot = slot_name)
       as.numeric(mat[g, ])
-    }, error = function(e2) rep(0, ncol(s.obj)))
+    }, error = function(e2) {
+      assay_obj <- s.obj[[assay_name]]
+      avail <- tryCatch(paste(names(assay_obj@layers), collapse = ", "),
+                 error = function(e3) "unknown")
+      stop(paste0("Slot '", slot_name, "' not available in assay '", assay_name,
+                  "'. Available: ", avail))
+    })
   )
 }
 
