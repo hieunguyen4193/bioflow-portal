@@ -48,8 +48,14 @@ def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise HTTPException(500, f"R error:\n{result.stderr[-3000:]}")
+    json_line = next(
+        (l for l in result.stdout.splitlines() if l.strip().startswith(("{", "["))),
+        None,
+    )
+    if not json_line:
+        raise HTTPException(500, f"R parse error: no JSON in output\nstdout[:500]: {result.stdout[:500]}")
     try:
-        return json.loads(result.stdout)
+        return json.loads(json_line)
     except json.JSONDecodeError as exc:
         raise HTTPException(500, f"R parse error: {exc}\nstdout[:500]: {result.stdout[:500]}")
 
