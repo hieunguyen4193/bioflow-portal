@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -185,18 +185,19 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
 }
 
 // ── Feature plot ───────────────────────────────────────────────────────────────
+const MAX_FP_POINTS = 3000
+
 function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorBy, sessionId }: any) {
-  const [geneInput, setGeneInput] = useState('')
-  const [exprData,  setExprData]  = useState<Record<string, number[]> | null>(null)
-  const [cells,     setCells]     = useState<string[]>([])
-  const [loading,   setLoading]   = useState(false)
-
-  const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
-  const red   = meta.reductions[reduction]
-
+  const [geneInput,      setGeneInput]      = useState('')
+  const [exprData,       setExprData]       = useState<Record<string, number[]> | null>(null)
+  const [cells,          setCells]          = useState<string[]>([])
+  const [loading,        setLoading]        = useState(false)
   const [requestedGenes, setRequestedGenes] = useState<string[]>([])
 
+  const red = meta.reductions[reduction]
+
   async function fetchExpr() {
+    const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
     if (!genes.length) { toast.error('Enter at least one gene'); return }
     setLoading(true)
     setRequestedGenes(genes)
@@ -213,6 +214,92 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
   }
 
   function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]) }
+
+  // Memoize all heavy plot computation — only reruns when data/settings change, not on keystroke
+  const plotSection = useMemo(() => {
+    if (!exprData || !red) return null
+    const validGenes = Object.keys(exprData)
+    if (validGenes.length === 0) return null
+
+    const n    = validGenes.length
+    const cols = n === 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4
+    const panelSizes: Record<number, { w: number; h: number; dot: number; fontSize: number }> = {
+      1: { w: 700, h: 660, dot: 6, fontSize: 14 },
+      2: { w: 520, h: 490, dot: 5, fontSize: 13 },
+      3: { w: 380, h: 360, dot: 4, fontSize: 12 },
+      4: { w: 300, h: 280, dot: 3, fontSize: 11 },
+    }
+    const { w, h, dot, fontSize } = panelSizes[cols]
+
+    const idxMap        = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
+    const colorVals     = meta.metadata[colorBy] ?? []
+    const metaIndex     = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
+    const clusterGroups = [...new Set(colorVals)] as string[]
+
+    // Subsample indices for rendering — evenly spaced to preserve spatial coverage
+    const n_cells  = red.cells.length
+    const step     = n_cells > MAX_FP_POINTS ? n_cells / MAX_FP_POINTS : 1
+    const subIdx   = Array.from({ length: Math.min(n_cells, MAX_FP_POINTS) }, (_, i) => Math.floor(i * step))
+    const subCells = subIdx.map((i: number) => red.cells[i])
+    const subX     = subIdx.map((i: number) => red.x[i])
+    const subY     = subIdx.map((i: number) => red.y[i])
+
+    // Centroid traces use full cell list for accuracy
+    const fullIndices = red.cells.map((_: string, i: number) => i)
+    const clusterLabelTrace: any = {
+      type: 'scatter', mode: 'text', name: '', showlegend: false, hoverinfo: 'skip',
+      x: clusterGroups.map(g => {
+        const idx = fullIndices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+        return idx.length ? idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length : null
+      }),
+      y: clusterGroups.map(g => {
+        const idx = fullIndices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+        return idx.length ? idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length : null
+      }),
+      text: clusterGroups.map(g => String(g)),
+      textfont: { size: Math.max(9, fontSize - 2), color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
+      textposition: 'middle center',
+    }
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
+        {validGenes.map(gene => {
+          const exprVals = exprData[gene]
+          const allColor = red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0)
+          const subColor = subIdx.map((i: number) => allColor[i])
+          const cmin = Math.min(...allColor)
+          const cmax = Math.max(...allColor)
+
+          const markerTrace = {
+            type: 'scatter' as const,
+            mode: 'markers' as const,
+            x: subX, y: subY,
+            marker: {
+              color: subColor,
+              colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
+              cmin, cmax,
+              size: dot, opacity: 0.85,
+              showscale: true,
+              colorbar: { thickness: 10, len: 0.55, x: 1.02 },
+            },
+            hoverinfo: 'skip' as const,
+            name: gene,
+          }
+
+          return (
+            <Plot key={`fp-${gene}-${reduction}`} data={[markerTrace, clusterLabelTrace]} layout={{
+              width: w, height: h,
+              title: { text: gene, font: { size: fontSize } },
+              xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 } },
+              yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
+              margin: { t: 40, l: 50, r: 55, b: 45 },
+              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+            }} config={{ responsive: false }} />
+          )
+        })}
+      </div>
+    )
+  }, [exprData, cells, red, meta, colorBy, reduction])
 
   return (
     <div className="p-4 space-y-4">
@@ -237,76 +324,7 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
         <p className="text-amber-600 text-sm">No matching genes found for: <strong>{requestedGenes.join(', ')}</strong>. Gene names are case-sensitive.</p>
       )}
 
-      {exprData && red && (() => {
-        const validGenes = genes.filter(g => exprData[g])
-        const n = validGenes.length
-
-        const cols = n === 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4
-        const panelSizes: Record<number, { w: number; h: number; dot: number; fontSize: number }> = {
-          1: { w: 700, h: 660, dot: 6,  fontSize: 14 },
-          2: { w: 520, h: 490, dot: 5,  fontSize: 13 },
-          3: { w: 380, h: 360, dot: 4,  fontSize: 12 },
-          4: { w: 300, h: 280, dot: 3,  fontSize: 11 },
-        }
-        const { w, h, dot, fontSize } = panelSizes[cols]
-
-        const idxMap    = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
-        const colorVals = meta.metadata[colorBy] ?? []
-        const metaIndex = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
-        const clusterGroups = [...new Set(colorVals)] as string[]
-        const indices = red.cells.map((_: string, i: number) => i)
-
-        return (
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
-            {validGenes.map(gene => {
-              const exprVals = exprData[gene]
-
-              const clusterLabelTrace: any = {
-                type: 'scatter', mode: 'text', name: '', showlegend: false, hoverinfo: 'skip',
-                x: clusterGroups.map(g => {
-                  const idx = indices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
-                  return idx.length ? idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length : null
-                }),
-                y: clusterGroups.map(g => {
-                  const idx = indices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
-                  return idx.length ? idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length : null
-                }),
-                text: clusterGroups.map(g => String(g)),
-                textfont: { size: Math.max(9, fontSize - 2), color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
-                textposition: 'middle center',
-              }
-
-              const colorArr = red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0)
-              const markerTrace = {
-                type: 'scatter' as const,
-                mode: 'markers' as const,
-                x: red.x,
-                y: red.y,
-                marker: {
-                  color: colorArr,
-                  colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
-                  size: dot, opacity: 0.85,
-                  showscale: true,
-                  colorbar: { thickness: 10, len: 0.55, x: 1.02 },
-                },
-                hoverinfo: 'skip' as const,
-                name: gene,
-              }
-
-              return (
-                <Plot key={`fp-${gene}-${reduction}`} data={[markerTrace, clusterLabelTrace]} layout={{
-                  width: w, height: h,
-                  title: { text: gene, font: { size: fontSize } },
-                  xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 } },
-                  yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
-                  margin: { t: 40, l: 50, r: 55, b: 45 },
-                  paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-                }} config={{ responsive: false }} />
-              )
-            })}
-          </div>
-        )
-      })()}
+      {plotSection}
     </div>
   )
 }
@@ -2016,6 +2034,30 @@ export default function ExplorePage() {
   const [splitBy,  setSplitBy]  = useState('')
   const [selectedClusters, setSelectedClusters] = useState<string[]>([])
   const [savedDgeResults, setSavedDgeResults] = useState<{ label: string; markers: Record<string, unknown>[] }[]>([])
+  const [cacheStatus, setCacheStatus] = useState<'building' | 'ready' | 'idle'>('idle')
+  const cachePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  function startCachePolling(sessionId: string) {
+    if (cachePollRef.current) clearInterval(cachePollRef.current)
+    setCacheStatus('building')
+    cachePollRef.current = setInterval(async () => {
+      try {
+        const res = await getCacheStatus(sessionId)
+        if (res.status === 'ready') {
+          setCacheStatus('ready')
+          clearInterval(cachePollRef.current!)
+          cachePollRef.current = null
+        } else if (res.status === 'not_cached') {
+          setCacheStatus('idle')
+          clearInterval(cachePollRef.current!)
+          cachePollRef.current = null
+        }
+      } catch { /* session expired or network error — stop polling */
+        clearInterval(cachePollRef.current!)
+        cachePollRef.current = null
+      }
+    }, 10000)
+  }
 
   function handleSaveDge(label: string, markers: Record<string, unknown>[]) {
     setSavedDgeResults(prev => {
@@ -2033,6 +2075,7 @@ export default function ExplorePage() {
     setAssay(m.assays.find(a => a === 'RNA') ?? m.assays[0] ?? 'RNA')
     const clVals = [...new Set(Object.values(m.metadata)[0] ?? [])]
     setSelectedClusters(clVals as string[])
+    startCachePolling(m.session_id)
   }
 
   if (!meta) return <UploadScreen onLoad={handleLoad} />
@@ -2063,9 +2106,29 @@ export default function ExplorePage() {
               {t}
             </button>
           ))}
-          <div className="ml-auto flex items-center">
-            <button onClick={() => { setMeta(null); setTab('UMAP') }}
-              className="text-xs text-slate-400 hover:text-slate-600 px-3">
+          <div className="ml-auto flex items-center gap-3 px-3">
+            {cacheStatus === 'building' && (
+              <span className="flex items-center gap-1.5 text-xs text-amber-600">
+                <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                  <path d="M12 2a10 10 0 0 1 10 10" />
+                </svg>
+                Building expression cache…
+              </span>
+            )}
+            {cacheStatus === 'ready' && (
+              <span className="text-xs text-green-600 flex items-center gap-1">
+                <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clipRule="evenodd" /></svg>
+                Gene cache ready
+              </span>
+            )}
+            <button onClick={() => {
+              if (cachePollRef.current) clearInterval(cachePollRef.current)
+              setCacheStatus('idle')
+              setMeta(null)
+              setTab('UMAP')
+            }}
+              className="text-xs text-slate-400 hover:text-slate-600">
               ↩ Load new file
             </button>
           </div>
