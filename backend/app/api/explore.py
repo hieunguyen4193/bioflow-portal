@@ -13,7 +13,8 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/explore", tags=["explore"])
 
-_sessions: dict[str, str] = {}   # session_id → absolute rds path (host path)
+_sessions: dict[str, str] = {}        # session_id → absolute rds path (host path)
+_expr_caches: dict[str, str] = {}     # rds_path → cache_path (built once per file)
 _pathway_tasks: dict[str, dict] = {}  # task_id → {status, results, error}
 
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
@@ -34,6 +35,33 @@ R_SCRIPTS    = os.environ.get("R_SCRIPTS_DIR", "/app/app/r_scripts")
 # Fall back HOST_SCRIPTS to R_SCRIPTS if not overridden (works when host path == container path)
 if not HOST_SCRIPTS:
     HOST_SCRIPTS = R_SCRIPTS
+
+
+def _cache_path_for(rds_path: str) -> str:
+    import hashlib
+    key = hashlib.md5(rds_path.encode()).hexdigest()[:16]
+    return os.path.join(EXPLORE_DIR, f".expr_cache_{key}.rds")
+
+
+def _build_expr_cache(rds_path: str) -> None:
+    """Run in a background thread after a preset/upload load."""
+    cache_path = _cache_path_for(rds_path)
+    if os.path.exists(cache_path):
+        _expr_caches[rds_path] = cache_path
+        return
+    host_cache = cache_path.replace(EXPLORE_DIR, HOST_EXPLORE)
+    host_rds   = rds_path.replace(EXPLORE_DIR, HOST_EXPLORE)
+    container_script = os.path.join(R_SCRIPTS, "cache_expression.R")
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
+        DOCKER_IMAGE,
+        "Rscript", "--vanilla", container_script, host_rds, host_cache,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode == 0 and os.path.exists(cache_path):
+        _expr_caches[rds_path] = cache_path
 
 
 def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list:
@@ -97,6 +125,7 @@ async def load_preset(req: PresetLoadRequest):
     _sessions[session_id] = rds_path
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
+    threading.Thread(target=_build_expr_cache, args=(rds_path,), daemon=True).start()
     return JSONResponse(data)
 
 
@@ -118,6 +147,7 @@ async def upload_rds(file: UploadFile = File(...)):
 
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
+    threading.Thread(target=_build_expr_cache, args=(rds_path,), daemon=True).start()
     return JSONResponse(data)
 
 
@@ -134,7 +164,8 @@ async def get_gene_expression(req: GeneRequest):
     rds_path = _sessions.get(req.session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
-    data = _run_r("get_expression.R", [rds_path, req.genes, req.assay, req.slot], timeout=120)
+    cache_path = _expr_caches.get(rds_path, "")
+    data = _run_r("get_expression.R", [rds_path, req.genes, req.assay, req.slot, cache_path], timeout=120)
     return JSONResponse(data)
 
 
