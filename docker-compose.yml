@@ -22,9 +22,9 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend:/app
-      - ./data/uploads:/data/uploads
-      - ./data/results:/data/results
-      - ./data/explore:/data/explore
+      - ${BIOFLOW_DATA_DIR}/uploads:/data/uploads
+      - ${BIOFLOW_DATA_DIR}/results:/data/results
+      - ${BIOFLOW_DATA_DIR}/explore:/data/explore
       - ./nextflow:/nextflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:

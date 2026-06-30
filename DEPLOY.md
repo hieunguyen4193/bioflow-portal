@@ -24,11 +24,17 @@ cd bioflow-portal
 
 ---
 
-## 2 — Create data directories
+## 2 — Choose a data directory and create it
+
+All uploads, pipeline results, and Explore session data (including saved presets) are stored under one directory that you choose. It does **not** need to live inside the repo — point it at a dedicated disk, a mounted volume, or wherever you want persistent storage to live.
 
 ```bash
-mkdir -p data/uploads data/results data/explore
+# Example: a dedicated path outside the repo
+export BIOFLOW_DATA_DIR=/mnt/bioflow-data
+mkdir -p "$BIOFLOW_DATA_DIR"/{uploads,results,explore}
 ```
+
+(You can also just use a path inside the repo, e.g. `bioflow-portal/data`, if you don't need it elsewhere — that's only a default suggestion, not a requirement.)
 
 ---
 
@@ -42,8 +48,8 @@ cp .env.example .env
 
 Edit `.env`:
 ```dotenv
-# Absolute host path to the data directory — must match your machine
-BIOFLOW_DATA_DIR=/absolute/path/to/bioflow-portal/data
+# Absolute path to the data directory you chose in step 2 — can be anywhere
+BIOFLOW_DATA_DIR=/mnt/bioflow-data
 
 # Absolute host path to the R scripts directory
 BIOFLOW_R_SCRIPTS=/absolute/path/to/bioflow-portal/backend/app/r_scripts
@@ -53,7 +59,7 @@ PIPELINE_IMAGE=pipeline-portal/r-pipeline:latest
 ```
 
 > **Why host paths?** The backend calls `docker run` via the Docker socket.
-> The host Docker daemon interprets volume paths as paths on the *host machine*, not inside the backend container.
+> The host Docker daemon interprets volume paths as paths on the *host machine*, not inside the backend container. `docker-compose.yml` also mounts `${BIOFLOW_DATA_DIR}/uploads`, `${BIOFLOW_DATA_DIR}/results`, and `${BIOFLOW_DATA_DIR}/explore` directly into the backend container, so this one variable controls all data storage.
 
 ### `backend/.env`
 
@@ -182,10 +188,6 @@ bioflow-portal/
 ├── backend/
 │   ├── .env                      ← secret key, SMTP config
 │   └── app/r_scripts/            ← R scripts mounted into pipeline containers at runtime
-├── data/
-│   ├── uploads/                  ← uploaded input files
-│   ├── results/                  ← Nextflow pipeline outputs
-│   └── explore/                  ← Explore page session data and analysis results
 ├── frontend/
 ├── nextflow/
 │   └── pipelines/                ← Nextflow pipeline definitions and Rmd reports
@@ -195,6 +197,11 @@ bioflow-portal/
 ├── .env                          ← BIOFLOW_DATA_DIR, BIOFLOW_R_SCRIPTS, PIPELINE_IMAGE
 ├── .env.example                  ← template for the above
 └── docker-compose.yml
+
+$BIOFLOW_DATA_DIR/                ← lives wherever you chose in step 2, not necessarily in the repo
+├── uploads/                      ← uploaded input files
+├── results/                      ← Nextflow pipeline outputs
+└── explore/                      ← Explore page session data, presets, and analysis results
 ```
 
 ---
@@ -203,7 +210,7 @@ bioflow-portal/
 
 - [ ] Install Docker (24+) and Docker Compose v2
 - [ ] `git clone` the repository
-- [ ] `mkdir -p data/uploads data/results data/explore`
+- [ ] Choose a data directory and `mkdir -p $BIOFLOW_DATA_DIR/{uploads,results,explore}`
 - [ ] Copy and edit `.env` (set `BIOFLOW_DATA_DIR`, `BIOFLOW_R_SCRIPTS`, `PIPELINE_IMAGE`)
 - [ ] Copy and edit `backend/.env` (set `SECRET_KEY`)
 - [ ] Build or pull the R pipeline image
