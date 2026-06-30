@@ -270,12 +270,19 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
           const cmin = Math.min(...allColor)
           const cmax = Math.max(...allColor)
 
+          // Sort ascending by expression so high-expression points render on top
+          const order = Array.from({ length: subColor.length }, (_, i) => i)
+            .sort((a, b) => subColor[a] - subColor[b])
+          const sortedX     = order.map(i => subX[i])
+          const sortedY     = order.map(i => subY[i])
+          const sortedColor = order.map(i => subColor[i])
+
           const markerTrace = {
             type: 'scatter' as const,
             mode: 'markers' as const,
-            x: subX, y: subY,
+            x: sortedX, y: sortedY,
             marker: {
-              color: subColor,
+              color: sortedColor,
               colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
               cmin, cmax,
               size: dot, opacity: 0.85,
@@ -337,12 +344,12 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
   const [loading,        setLoading]        = useState(false)
   const [requestedGenes, setRequestedGenes] = useState<string[]>([])
 
-  const genes     = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
   const colorVals = meta.metadata[colorBy] ?? []
   const colorMap  = catColorMap(colorVals)
   const groups    = [...new Set(colorVals)].filter((g: string) => selectedClusters.includes(g)).sort()
 
   async function fetchExpr() {
+    const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
     if (!genes.length) { toast.error('Enter at least one gene'); return }
     setLoading(true)
     setRequestedGenes(genes)
@@ -359,6 +366,52 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
   }
 
   function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]) }
+
+  const plotSection = useMemo(() => {
+    if (!exprData) return null
+    const validGenes = Object.keys(exprData)
+    if (validGenes.length === 0) return null
+
+    const n    = validGenes.length
+    const cols = n === 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4
+    const panelSizes: Record<number, { w: number; h: number; fontSize: number }> = {
+      1: { w: 900, h: 420, fontSize: 13 },
+      2: { w: 540, h: 380, fontSize: 12 },
+      3: { w: 370, h: 340, fontSize: 11 },
+      4: { w: 280, h: 300, fontSize: 10 },
+    }
+    const { w, h, fontSize } = panelSizes[cols]
+    const idxMap = Object.fromEntries(cells.map((c, i) => [c, i]))
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
+        {validGenes.map(gene => {
+          const traces = groups.map(grp => ({
+            type: 'violin' as const,
+            name: String(grp),
+            y: meta.cells
+              .filter((_: string, i: number) => colorVals[i] === grp)
+              .map((c: string) => exprData[gene][idxMap[c]] ?? 0),
+            box: { visible: true },
+            meanline: { visible: true },
+            marker: { color: colorMap[grp as string] },
+            points: false,
+          }))
+          return (
+            <Plot key={`vln-${gene}`} data={traces} layout={{
+              width: w, height: h,
+              title: { text: gene, font: { size: fontSize } },
+              yaxis: { title: 'Expression', zeroline: false, titlefont: { size: fontSize - 1 } },
+              violinmode: 'group',
+              showlegend: cols === 1,
+              margin: { t: 40, l: 55, r: 15, b: 80 },
+              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+            }} config={{ responsive: false }} />
+          )
+        })}
+      </div>
+    )
+  }, [exprData, cells, meta, colorBy, colorVals, groups, colorMap])
 
   return (
     <div className="p-4 space-y-4">
@@ -383,36 +436,7 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
         <p className="text-amber-600 text-sm">No matching genes found for: <strong>{requestedGenes.join(', ')}</strong>. Gene names are case-sensitive.</p>
       )}
 
-      {exprData && (
-        <div className="space-y-6">
-          {Object.keys(exprData).map(gene => {
-            const idxMap = Object.fromEntries(cells.map((c, i) => [c, i]))
-            const traces = groups.map(grp => ({
-              type: 'violin' as const,
-              name: String(grp),
-              y: meta.cells
-                .filter((_: string, i: number) => colorVals[i] === grp)
-                .map((c: string) => exprData[gene][idxMap[c]] ?? 0),
-              box: { visible: true },
-              meanline: { visible: true },
-              marker: { color: colorMap[grp as string] },
-              points: false,
-            }))
-            return (
-              <div key={gene}>
-                <Plot data={traces} layout={{
-                  height: 420, autosize: true,
-                  title: { text: gene, font: { size: 13 } },
-                  yaxis: { title: 'Expression', zeroline: false },
-                  violinmode: 'group',
-                  margin: { t: 40, l: 60, r: 20, b: 60 },
-                  paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-                }} useResizeHandler style={{ width: '100%' }} config={{ responsive: true }} />
-              </div>
-            )
-          })}
-        </div>
-      )}
+      {plotSection}
     </div>
   )
 }
