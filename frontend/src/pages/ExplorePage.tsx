@@ -194,18 +194,25 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
   const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
   const red   = meta.reductions[reduction]
 
+  const [requestedGenes, setRequestedGenes] = useState<string[]>([])
+
   async function fetchExpr() {
     if (!genes.length) { toast.error('Enter at least one gene'); return }
     setLoading(true)
+    setRequestedGenes(genes)
     try {
       const res = await getGeneExpression(sessionId, genes.join(','), assay, slot)
       setExprData(res.expression)
       setCells(res.cells)
+      const found = Object.keys(res.expression)
+      const missing = genes.filter(g => !found.includes(g))
+      if (found.length === 0) toast.error('No genes found — check spelling and case (e.g. Cd3e not cd3e)')
+      else if (missing.length) toast(`${missing.join(', ')} not found in dataset`, { icon: '⚠️' })
     } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed to fetch expression') }
     finally { setLoading(false) }
   }
 
-  function clearResults() { setExprData(null); setCells([]); setGeneInput('') }
+  function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]) }
 
   return (
     <div className="p-4 space-y-4">
@@ -226,15 +233,15 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
         )}
       </div>
 
+      {exprData && Object.keys(exprData).length === 0 && (
+        <p className="text-amber-600 text-sm">No matching genes found for: <strong>{requestedGenes.join(', ')}</strong>. Gene names are case-sensitive.</p>
+      )}
+
       {exprData && red && (() => {
         const validGenes = genes.filter(g => exprData[g])
         const n = validGenes.length
 
-        // Pick grid columns: 1 gene → 1 col, 2–4 → 2 cols, 5–9 → 3 cols, 10+ → 4 cols
         const cols = n === 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4
-
-        // Each panel is square; fit to a comfortable reading width
-        // Single: 700px. 2-col: 520px each. 3-col: 380px each. 4-col: 300px each.
         const panelSizes: Record<number, { w: number; h: number; dot: number; fontSize: number }> = {
           1: { w: 700, h: 660, dot: 6,  fontSize: 14 },
           2: { w: 520, h: 490, dot: 5,  fontSize: 13 },
@@ -243,32 +250,25 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
         }
         const { w, h, dot, fontSize } = panelSizes[cols]
 
-        return (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: `repeat(${cols}, ${w}px)`,
-            gap: 12,
-          }}>
-            {validGenes.map(gene => {
-              const exprVals  = exprData[gene]
-              const idxMap    = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
-              const colorVals = meta.metadata[colorBy] ?? []
-              const metaIndex = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
+        const idxMap    = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
+        const colorVals = meta.metadata[colorBy] ?? []
+        const metaIndex = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
+        const clusterGroups = [...new Set(colorVals)] as string[]
+        const indices = red.cells.map((_: string, i: number) => i)
 
-              // Centroid per cluster for labels
-              const clusterGroups = [...new Set(colorVals)] as string[]
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
+            {validGenes.map(gene => {
+              const exprVals = exprData[gene]
+
               const clusterLabelTrace: any = {
-                type: 'scatter',
-                mode: 'text',
-                name: '',
-                showlegend: false,
-                hoverinfo: 'skip',
+                type: 'scatter', mode: 'text', name: '', showlegend: false, hoverinfo: 'skip',
                 x: clusterGroups.map(g => {
-                  const idx = red.cells.map((_: string, i: number) => i).filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+                  const idx = indices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
                   return idx.length ? idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length : null
                 }),
                 y: clusterGroups.map(g => {
-                  const idx = red.cells.map((_: string, i: number) => i).filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+                  const idx = indices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
                   return idx.length ? idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length : null
                 }),
                 text: clusterGroups.map(g => String(g)),
@@ -276,21 +276,20 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
                 textposition: 'middle center',
               }
 
+              const colorArr = red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0)
               const markerTrace = {
                 type: 'scatter' as const,
                 mode: 'markers' as const,
-                x: red.cells.map((c: string) => red.x[red.cells.indexOf(c)]),
-                y: red.cells.map((c: string) => red.y[red.cells.indexOf(c)]),
+                x: red.x,
+                y: red.y,
                 marker: {
-                  color: red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0),
+                  color: colorArr,
                   colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
                   size: dot, opacity: 0.85,
                   showscale: true,
                   colorbar: { thickness: 10, len: 0.55, x: 1.02 },
                 },
-                text: red.cells.map((c: string) =>
-                  `${c}<br>${gene}: ${(exprVals[idxMap[c]] ?? 0).toFixed(3)}`),
-                hoverinfo: 'text' as const,
+                hoverinfo: 'skip' as const,
                 name: gene,
               }
 
@@ -314,10 +313,11 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
 
 // ── Violin plot ────────────────────────────────────────────────────────────────
 function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: any) {
-  const [geneInput, setGeneInput] = useState('')
-  const [exprData,  setExprData]  = useState<Record<string, number[]> | null>(null)
-  const [cells,     setCells]     = useState<string[]>([])
-  const [loading,   setLoading]   = useState(false)
+  const [geneInput,      setGeneInput]      = useState('')
+  const [exprData,       setExprData]       = useState<Record<string, number[]> | null>(null)
+  const [cells,          setCells]          = useState<string[]>([])
+  const [loading,        setLoading]        = useState(false)
+  const [requestedGenes, setRequestedGenes] = useState<string[]>([])
 
   const genes     = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
   const colorVals = meta.metadata[colorBy] ?? []
@@ -327,15 +327,20 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
   async function fetchExpr() {
     if (!genes.length) { toast.error('Enter at least one gene'); return }
     setLoading(true)
+    setRequestedGenes(genes)
     try {
       const res = await getGeneExpression(sessionId, genes.join(','), assay, slot)
       setExprData(res.expression)
       setCells(res.cells)
+      const found = Object.keys(res.expression)
+      const missing = genes.filter(g => !found.includes(g))
+      if (found.length === 0) toast.error('No genes found — check spelling and case (e.g. Cd3e not cd3e)')
+      else if (missing.length) toast(`${missing.join(', ')} not found in dataset`, { icon: '⚠️' })
     } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed') }
     finally { setLoading(false) }
   }
 
-  function clearResults() { setExprData(null); setCells([]); setGeneInput('') }
+  function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]) }
 
   return (
     <div className="p-4 space-y-4">
@@ -356,9 +361,13 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
         )}
       </div>
 
+      {exprData && Object.keys(exprData).length === 0 && (
+        <p className="text-amber-600 text-sm">No matching genes found for: <strong>{requestedGenes.join(', ')}</strong>. Gene names are case-sensitive.</p>
+      )}
+
       {exprData && (
         <div className="space-y-6">
-          {genes.filter(g => exprData[g]).map(gene => {
+          {Object.keys(exprData).map(gene => {
             const idxMap = Object.fromEntries(cells.map((c, i) => [c, i]))
             const traces = groups.map(grp => ({
               type: 'violin' as const,
@@ -1755,7 +1764,7 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
 
   async function handleLoadPreset(project: string, filename: string) {
     setLoadingPreset(filename)
-    const tid = toast.loading('Loading preset… this may take a minute')
+    const tid = toast.loading('Loading saved data… this may take a minute')
     try {
       const meta = await loadPreset(project, filename)
       toast.success('Object loaded!', { id: tid })
