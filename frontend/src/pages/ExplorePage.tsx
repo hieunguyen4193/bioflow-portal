@@ -52,7 +52,12 @@ function Sidebar({
 
       <div>
         <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Assay</label>
-        <select value={assay} onChange={e => setAssay(e.target.value)}
+        <select value={assay} onChange={e => {
+          const newAssay = e.target.value
+          setAssay(newAssay)
+          const available = meta.assay_slots?.[newAssay] ?? []
+          if (available.length > 0 && !available.includes(slot)) setSlot(available[0])
+        }}
           className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm">
           {meta.assays.map((a: string) => <option key={a}>{a}</option>)}
         </select>
@@ -62,7 +67,9 @@ function Sidebar({
         <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Data slot</label>
         <select value={slot} onChange={e => setSlot(e.target.value)}
           className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm">
-          {['data','counts','scale.data'].map(s => <option key={s}>{s}</option>)}
+          {(meta.assay_slots?.[assay] ?? ['data', 'counts', 'scale.data']).map((s: string) => (
+            <option key={s}>{s}</option>
+          ))}
         </select>
       </div>
 
@@ -2139,10 +2146,13 @@ export default function ExplorePage() {
     setReduction(reds.find(r => r.includes('umap')) ?? reds[0] ?? '')
     const cols = Object.keys(m.metadata)
     setColorBy(cols.find(c => c === 'seurat_clusters') ?? cols[0] ?? '')
-    setAssay(m.assays.find(a => a === 'RNA') ?? m.assays[0] ?? 'RNA')
+    const defaultAssay = m.assays.find(a => a === 'RNA') ?? m.assays[0] ?? 'RNA'
+    setAssay(defaultAssay)
+    const availableSlots = m.assay_slots?.[defaultAssay] ?? ['data']
+    setSlot(availableSlots.includes('data') ? 'data' : availableSlots[0] ?? 'data')
     const clVals = [...new Set(Object.values(m.metadata)[0] ?? [])]
     setSelectedClusters(clVals as string[])
-    // cache polling is started by the useEffect watching [assay, sessionId]
+    // cache polling is started by the useEffect watching [assay, slot, sessionId]
   }
 
   if (!meta) return <UploadScreen onLoad={handleLoad} />

@@ -1,14 +1,15 @@
 import api from './client'
 
 export interface SeuratMeta {
-  session_id: string
-  n_cells:    number
-  n_features: number
-  assays:     string[]
-  reductions: Record<string, { x: number[]; y: number[]; cells: string[] }>
-  metadata:   Record<string, string[]>
-  cells:      string[]
-  genes:      string[]
+  session_id:  string
+  n_cells:     number
+  n_features:  number
+  assays:      string[]
+  assay_slots: Record<string, string[]>
+  reductions:  Record<string, { x: number[]; y: number[]; cells: string[] }>
+  metadata:    Record<string, string[]>
+  cells:       string[]
+  genes:       string[]
 }
 
 export interface PresetFile {

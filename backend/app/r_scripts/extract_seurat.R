@@ -31,17 +31,33 @@ meta_out <- lapply(meta, function(col) as.character(col))
 # Gene list
 genes <- rownames(s.obj)
 
-# Assays
+# Assays and their available slots/layers
 assays <- names(s.obj@assays)
 
+get_assay_slots <- function(assay_name) {
+  assay_obj <- s.obj[[assay_name]]
+  # Seurat v5: layers are named (e.g. "counts", "data")
+  layers <- tryCatch(names(assay_obj@layers), error = function(e) NULL)
+  if (!is.null(layers) && length(layers) > 0)
+    return(sort(unique(as.character(layers))))
+  # Seurat v4: check standard slots for non-empty matrices
+  Filter(function(s) {
+    tryCatch(nrow(GetAssayData(s.obj, assay = assay_name, slot = s)) > 0,
+             error = function(e) FALSE)
+  }, c("counts", "data", "scale.data"))
+}
+
+assay_slots <- setNames(lapply(assays, get_assay_slots), assays)
+
 result <- list(
-  n_cells    = ncol(s.obj),
-  n_features = nrow(s.obj),
-  assays     = assays,
-  reductions = reductions,
-  metadata   = meta_out,
-  cells      = rownames(meta),
-  genes      = genes
+  n_cells     = ncol(s.obj),
+  n_features  = nrow(s.obj),
+  assays      = assays,
+  assay_slots = assay_slots,
+  reductions  = reductions,
+  metadata    = meta_out,
+  cells       = rownames(meta),
+  genes       = genes
 )
 
 cat(toJSON(result, auto_unbox = TRUE, null = "null"))
