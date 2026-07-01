@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, runDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -570,13 +570,29 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
   const [search,    setSearch]    = useState('')
   const [sortCol,   setSortCol]   = useState<string>('avg_log2FC')
   const [sortDir,   setSortDir]   = useState<1 | -1>(-1)
+  const [cacheList, setCacheList] = useState<DgeCacheEntry[]>(
+    (meta.dge_cache ?? []).filter((e: DgeCacheEntry) => e.mode === mode))
+  const [showCache, setShowCache] = useState(true)
+  const [loadedCacheKey, setLoadedCacheKey] = useState<string | null>(null)
+  const [deletingKey, setDeletingKey] = useState<string | null>(null)
 
   const results = dgeResult?.markers ?? []
 
   const groupVals = useMemo(() => [...new Set(meta.metadata[colorBy] ?? [])].sort(), [meta, colorBy])
 
+  async function refreshCacheList() {
+    try {
+      const list = await listDgeCache(sessionId)
+      setCacheList(list.filter(e => e.mode === mode))
+    } catch { /* non-fatal — cache panel just stays as-is */ }
+  }
+
+  // Cached runs for this Seurat object are available as soon as it's loaded,
+  // even before the user presses Run — refetch once the session is known.
+  useEffect(() => { refreshCacheList() }, [sessionId, mode])
+
   async function runAnalysis() {
-    setLoading(true); setLog('Running…'); setDgeResult(null)
+    setLoading(true); setLog('Running…'); setDgeResult(null); setLoadedCacheKey(null)
     try {
       const res = await runDGE({
         session_id: sessionId, mode, group_by: colorBy,
@@ -584,11 +600,13 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
         ident1: ident1.length ? ident1.join(',') : undefined,
         ident2: ident2.length ? ident2.join(',') : undefined,
         rm_tcr: rmTCR, rm_bcr: rmBCR,
+        pval_cutoff: pval, logfc_cutoff: logfc,
       })
       const filtered = res.markers.filter((r: any) =>
         r.p_val_adj <= pval && Math.abs(Number(r.avg_log2FC)) >= logfc)
       setDgeResult({ ...res, markers: filtered })
-      setLog(`Done — ${filtered.length} significant DEGs (${res.species} detected). TCR excluded: ${res.excluded_tcr.length}, BCR/Ig excluded: ${res.excluded_bcr.length}.`)
+      setLoadedCacheKey(res.cache_key ?? null)
+      setLog(`${res.cached ? 'Loaded from cache' : 'Done'} — ${filtered.length} significant DEGs (${res.species} detected). TCR excluded: ${res.excluded_tcr.length}, BCR/Ig excluded: ${res.excluded_bcr.length}.`)
       // Save to shared store so PathwayTab can pick it up
       if (onSaveDge && res.markers.length > 0) {
         const label = mode === 'clusters'
@@ -596,8 +614,45 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
           : `DGE Conditions (${ident1.join('+') || '?'} vs ${ident2.join('+') || 'others'}) — ${new Date().toLocaleTimeString()}`
         onSaveDge(label, res.markers)
       }
+      refreshCacheList()
     } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
     finally { setLoading(false) }
+  }
+
+  async function loadCachedEntry(entry: DgeCacheEntry) {
+    setLoading(true); setLog('Loading cached result…'); setDgeResult(null); setLoadedCacheKey(null)
+    try {
+      const cached = await loadDgeCacheEntry(sessionId, entry.cache_key)
+      setTest(cached.test_use)
+      setRmTCR(cached.rm_tcr); setRmBCR(cached.rm_bcr)
+      setPval(cached.pval_cutoff); setLogfc(cached.logfc_cutoff)
+      if (mode === 'conditions') {
+        setIdent1Raw(cached.ident1 ?? ''); setIdent2Raw(cached.ident2 ?? '')
+      }
+      const filtered = cached.result.markers.filter((r: any) =>
+        r.p_val_adj <= cached.pval_cutoff && Math.abs(Number(r.avg_log2FC)) >= cached.logfc_cutoff)
+      setDgeResult({ ...cached.result, markers: filtered })
+      setLoadedCacheKey(cached.cache_key)
+      setLog(`Loaded from cache (run at ${new Date(cached.created_at).toLocaleString()}) — ${filtered.length} significant DEGs (${cached.species} detected).`)
+      if (onSaveDge && filtered.length > 0) {
+        const label = mode === 'clusters'
+          ? `DGE Clusters (${cached.group_by}) — cached ${new Date(cached.created_at).toLocaleTimeString()}`
+          : `DGE Conditions (${cached.ident1 || '?'} vs ${cached.ident2 || 'others'}) — cached ${new Date(cached.created_at).toLocaleTimeString()}`
+        onSaveDge(label, filtered)
+      }
+    } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
+    finally { setLoading(false) }
+  }
+
+  async function deleteCachedEntry(entry: DgeCacheEntry) {
+    if (!window.confirm(`Delete cached result "${entry.source_label}"? This can't be undone — re-running the same settings will recompute it.`)) return
+    setDeletingKey(entry.cache_key)
+    try {
+      await deleteDgeCacheEntry(sessionId, entry.cache_key)
+      setCacheList(prev => prev.filter(e => e.cache_key !== entry.cache_key))
+      if (loadedCacheKey === entry.cache_key) setLoadedCacheKey(null)
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed to delete cached result') }
+    finally { setDeletingKey(null) }
   }
 
   const clusters    = useMemo(() => [...new Set(results.map((r: any) => r.cluster))].sort(), [results])
@@ -683,6 +738,58 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
         </div>
         {log && <p className="text-xs text-slate-500 font-mono">{log}</p>}
         <p className="text-xs text-slate-400 italic">ℹ {logfcNote}</p>
+      </div>
+
+      {/* Cached results — lets users load a previous run instead of re-running FindMarkers/FindAllMarkers */}
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <button onClick={() => setShowCache(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50">
+          <span>Cached results{cacheList.length > 0 ? ` (${cacheList.length})` : ''}</span>
+          <span className="text-slate-400">{showCache ? '▲' : '▼'}</span>
+        </button>
+        {showCache && (
+          <div className="border-t border-slate-200">
+            {cacheList.length === 0 ? (
+              <p className="px-4 py-3 text-xs text-slate-400 italic">
+                No cached {mode === 'clusters' ? 'FindAllMarkers' : 'FindMarkers'} runs yet for this data — run the analysis above to create one. Once run, it's cached here so it doesn't need to be re-run.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {cacheList.map(entry => (
+                  <div key={entry.cache_key}
+                    className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2.5 text-xs ${loadedCacheKey === entry.cache_key ? 'bg-indigo-50' : ''}`}>
+                    <span className="font-medium text-slate-700 truncate max-w-[220px]" title={entry.source_label}>
+                      {entry.source_label}
+                    </span>
+                    <span className="text-slate-400">{entry.assay} / {entry.slot}</span>
+                    {mode === 'clusters' ? (
+                      <span className="text-slate-500">Group by: <b>{entry.group_by}</b></span>
+                    ) : (
+                      <span className="text-slate-500">
+                        <b>{entry.group_by}</b>: {entry.ident1 || '(all)'} <span className="text-slate-400">vs</span> {entry.ident2 || 'others'}
+                      </span>
+                    )}
+                    <span className="text-slate-500">{entry.test_use}</span>
+                    {entry.rm_tcr && <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-full">TCR removed</span>}
+                    {entry.rm_bcr && <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full">BCR removed</span>}
+                    <span className="text-slate-500">p ≤ {entry.pval_cutoff}, |log2FC| ≥ {entry.logfc_cutoff}</span>
+                    <span className="text-slate-500">{entry.n_significant}/{entry.n_markers} sig.</span>
+                    <span className="text-slate-400">({entry.species})</span>
+                    <span className="text-slate-400">{new Date(entry.created_at).toLocaleString()}</span>
+                    <button onClick={() => loadCachedEntry(entry)} disabled={loading || deletingKey === entry.cache_key}
+                      className="ml-auto text-indigo-600 hover:underline font-medium disabled:opacity-50">
+                      {loadedCacheKey === entry.cache_key ? 'Loaded' : 'Load'}
+                    </button>
+                    <button onClick={() => deleteCachedEntry(entry)} disabled={loading || deletingKey === entry.cache_key}
+                      className="text-slate-400 hover:text-red-500 font-medium disabled:opacity-50">
+                      {deletingKey === entry.cache_key ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Tabset results */}
@@ -2062,6 +2169,7 @@ function GuideTab() {
         { label: 'p-val / logFC thresholds', text: 'Filter results shown in the table; the underlying test uses all genes.' },
         { label: 'Remove TCR/BCR genes', text: 'Strips TRAV/TRBV/IGHV/IGLV gene families to avoid V(D)J noise.' },
         { label: 'Save results', text: 'Click "Save to session" to pass the marker table directly to the Pathway tab.' },
+        { label: 'Cached results', text: 'Every combination of assay, slot, group-by, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run (with p-val/logFC thresholds used) — click Load to view the volcano plot and gene table instantly without re-running. Re-running with identical settings also returns the cached result instead of recomputing.' },
       ],
     },
     {
@@ -2073,6 +2181,7 @@ function GuideTab() {
         { label: 'Group 1 / Group 2', text: 'Comma-separated values for each side of the comparison (e.g. "ctrl,ctrl2" vs "treated"). Commas within a field are handled correctly.' },
         { label: 'Volcano plot', text: 'After the run, a volcano plot shows –log10(p-adj) vs log2FC; click points to highlight genes.' },
         { label: 'Save results', text: 'Results can be passed to the Pathway tab.' },
+        { label: 'Cached results', text: 'Every combination of assay, slot, group column, Group 1/2, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run — click Load to view the volcano plot and gene table instantly without re-running.' },
       ],
     },
     {
@@ -2148,7 +2257,7 @@ function GuideTab() {
         <ul className="list-disc list-inside space-y-0.5 text-indigo-600">
           <li>DGE results are automatically offered to the Pathway tab — no copy-paste needed.</li>
           <li>Pathway analysis and CellChat run as background jobs; you can switch tabs while they compute.</li>
-          <li>CellChat caches its output — re-running with the same settings is instant.</li>
+          <li>DGE and CellChat both cache their output — re-running with the same settings is instant, and cached DGE runs are visible in the "Cached results" panel as soon as the Seurat object is loaded, even from previous sessions on the same file.</li>
           <li>Species is auto-detected from gene name case; override it if auto-detection picks the wrong organism.</li>
         </ul>
       </div>

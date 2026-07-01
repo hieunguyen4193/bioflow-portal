@@ -10,6 +10,7 @@ export interface SeuratMeta {
   metadata:    Record<string, string[]>
   cells:       string[]
   genes:       string[]
+  dge_cache?:  DgeCacheEntry[]
 }
 
 export interface PresetFile {
@@ -55,6 +56,28 @@ export interface DGEResult {
   excluded_tcr: string[]
   excluded_bcr: string[]
   species:      string
+  cache_key?:   string
+  cached?:      boolean
+}
+
+export interface DgeCacheEntry {
+  cache_key:      string
+  created_at:     string
+  source_label:   string
+  mode:           'clusters' | 'conditions'
+  group_by:       string
+  assay:          string
+  slot:           string
+  test_use:       string
+  ident1:         string | null
+  ident2:         string | null
+  rm_tcr:         boolean
+  rm_bcr:         boolean
+  pval_cutoff:    number
+  logfc_cutoff:   number
+  species:        string
+  n_markers:      number
+  n_significant:  number
 }
 
 export async function runDGE(params: {
@@ -68,9 +91,27 @@ export async function runDGE(params: {
   ident2?: string
   rm_tcr: boolean
   rm_bcr: boolean
+  pval_cutoff: number
+  logfc_cutoff: number
 }): Promise<DGEResult> {
   const { data } = await api.post<DGEResult>('/explore/dge', params, { timeout: 600000 })
   return data
+}
+
+export async function listDgeCache(session_id: string): Promise<DgeCacheEntry[]> {
+  const { data } = await api.get<DgeCacheEntry[]>('/explore/dge-cache', { params: { session_id } })
+  return data
+}
+
+export async function loadDgeCacheEntry(
+  session_id: string, cache_key: string
+): Promise<DgeCacheEntry & { result: DGEResult }> {
+  const { data } = await api.get(`/explore/dge-cache/${cache_key}`, { params: { session_id } })
+  return data
+}
+
+export async function deleteDgeCacheEntry(session_id: string, cache_key: string): Promise<void> {
+  await api.delete(`/explore/dge-cache/${cache_key}`, { params: { session_id } })
 }
 
 export async function startPathwayAnalysis(params: {

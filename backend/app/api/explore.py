@@ -5,6 +5,7 @@ import os
 import subprocess
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -14,9 +15,10 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/explore", tags=["explore"])
 
-_sessions: dict[str, str] = {}      # session_id → rds_path
-_expr_caches: dict[str, dict] = {}  # rds_path → {(assay, slot): {mat, cells, gene_idx}}
-_cache_building: set[tuple] = set() # {(rds_path, assay, slot)} currently being built
+_sessions: dict[str, str] = {}        # session_id → rds_path
+_session_labels: dict[str, str] = {}  # session_id → human-readable source label (project/file)
+_expr_caches: dict[str, dict] = {}    # rds_path → {(assay, slot): {mat, cells, gene_idx}}
+_cache_building: set[tuple] = set()   # {(rds_path, assay, slot)} currently being built
 _pathway_tasks: dict[str, dict] = {}
 
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
@@ -143,6 +145,63 @@ def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list
         raise HTTPException(500, f"R parse error: {exc}\nstdout[:500]: {result.stdout[:500]}")
 
 
+# ── DGE result cache ──────────────────────────────────────────────────────────
+# Cached on disk per rds_path, keyed by the parameters that actually change the
+# FindMarkers/FindAllMarkers computation (assay, slot, group/idents, test, TCR/BCR
+# removal). p-val/logFC thresholds do NOT affect the R computation — they are
+# display-time filters — so they are stored as metadata only, not part of the key.
+def _dge_cache_dir_for(rds_path: str) -> str:
+    key = hashlib.md5(rds_path.encode()).hexdigest()[:16]
+    d = os.path.join(EXPLORE_DIR, f".dge_cache_{key}")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _dge_cache_key(mode: str, group_by: str, assay: str, slot: str, test_use: str,
+                    ident1: list[str], ident2: list[str], rm_tcr: bool, rm_bcr: bool) -> str:
+    payload = {
+        "mode": mode, "group_by": group_by, "assay": assay, "slot": slot,
+        "test_use": test_use, "ident1": sorted(ident1), "ident2": sorted(ident2),
+        "rm_tcr": rm_tcr, "rm_bcr": rm_bcr,
+    }
+    return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
+
+
+def _read_dge_cache_entry(rds_path: str, cache_key: str) -> Optional[dict]:
+    path = os.path.join(_dge_cache_dir_for(rds_path), f"{cache_key}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return None
+
+
+def _write_dge_cache_entry(rds_path: str, cache_key: str, entry: dict) -> None:
+    path = os.path.join(_dge_cache_dir_for(rds_path), f"{cache_key}.json")
+    Path(path).write_text(json.dumps(entry))
+
+
+def _list_dge_cache(rds_path: str) -> list[dict]:
+    entries = []
+    for p in sorted(Path(_dge_cache_dir_for(rds_path)).glob("*.json")):
+        try:
+            entry = json.loads(p.read_text())
+        except Exception:
+            continue
+        entries.append({k: v for k, v in entry.items() if k != "result"})
+    entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+    return entries
+
+
+def _delete_dge_cache_entry(rds_path: str, cache_key: str) -> bool:
+    path = os.path.join(_dge_cache_dir_for(rds_path), f"{cache_key}.json")
+    if not os.path.exists(path):
+        return False
+    os.remove(path)
+    return True
+
+
 # ── Presets ─────────────────────────────────────────────────────────────────
 @router.get("/presets")
 async def list_presets():
@@ -178,9 +237,11 @@ async def load_preset(req: PresetLoadRequest):
         raise HTTPException(400, "Preset file not found")
     session_id = str(uuid.uuid4())
     _sessions[session_id] = rds_path
+    _session_labels[session_id] = f"{req.project}/{req.filename}"
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
+    data["dge_cache"] = _list_dge_cache(rds_path)
     assays = data.get("assays") or []
     default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
     if default_assay:
@@ -259,9 +320,11 @@ async def upload_rds(file: UploadFile = File(...)):
         f.write(content)
 
     _sessions[session_id] = rds_path
+    _session_labels[session_id] = file.filename or os.path.basename(rds_path)
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
+    data["dge_cache"] = _list_dge_cache(rds_path)
     assays = data.get("assays") or []
     default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
     if default_assay:
@@ -323,6 +386,11 @@ class DGERequest(BaseModel):
     ident2:     Optional[str] = None
     rm_tcr:     bool = True
     rm_bcr:     bool = True
+    # Display-time filters only — do not affect the FindMarkers computation, so
+    # they are not part of the cache key. Stored alongside the result purely so
+    # the cached-results panel can show what thresholds were last used.
+    pval_cutoff:  float = 0.05
+    logfc_cutoff: float = 0.25
 
 
 @router.post("/dge")
@@ -330,19 +398,88 @@ async def run_dge(req: DGERequest):
     rds_path = _sessions.get(req.session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
-    args = [
-        rds_path, req.mode, req.group_by, req.assay, req.slot, req.test_use,
-        req.ident1 or "", req.ident2 or "",
-        "true" if req.rm_tcr else "false",
-        "true" if req.rm_bcr else "false",
-    ]
-    result = _run_r("run_dge.R", args, timeout=600)
-    return JSONResponse({
-        "markers":      result.get("markers", []),
-        "excluded_tcr": result.get("excluded_tcr", []),
-        "excluded_bcr": result.get("excluded_bcr", []),
-        "species":      result.get("species", "unknown"),
-    })
+
+    ident1_list = [s.strip() for s in (req.ident1 or "").split(",") if s.strip()]
+    ident2_list = [s.strip() for s in (req.ident2 or "").split(",") if s.strip()]
+    cache_key = _dge_cache_key(req.mode, req.group_by, req.assay, req.slot, req.test_use,
+                               ident1_list, ident2_list, req.rm_tcr, req.rm_bcr)
+
+    cached_entry = _read_dge_cache_entry(rds_path, cache_key)
+    if cached_entry:
+        result = cached_entry["result"]
+    else:
+        args = [
+            rds_path, req.mode, req.group_by, req.assay, req.slot, req.test_use,
+            req.ident1 or "", req.ident2 or "",
+            "true" if req.rm_tcr else "false",
+            "true" if req.rm_bcr else "false",
+        ]
+        r = _run_r("run_dge.R", args, timeout=600)
+        result = {
+            "markers":      r.get("markers", []),
+            "excluded_tcr": r.get("excluded_tcr", []),
+            "excluded_bcr": r.get("excluded_bcr", []),
+            "species":      r.get("species", "unknown"),
+        }
+
+    markers = result.get("markers", [])
+    n_significant = sum(
+        1 for m in markers
+        if m.get("p_val_adj") is not None and m.get("avg_log2FC") is not None
+        and float(m["p_val_adj"]) <= req.pval_cutoff and abs(float(m["avg_log2FC"])) >= req.logfc_cutoff
+    )
+    entry = {
+        "cache_key":     cache_key,
+        "created_at":    datetime.now(timezone.utc).isoformat(),
+        "source_label":  _session_labels.get(req.session_id, os.path.basename(rds_path)),
+        "mode":          req.mode,
+        "group_by":      req.group_by,
+        "assay":         req.assay,
+        "slot":          req.slot,
+        "test_use":      req.test_use,
+        "ident1":        req.ident1 or None,
+        "ident2":        req.ident2 or None,
+        "rm_tcr":        req.rm_tcr,
+        "rm_bcr":        req.rm_bcr,
+        "pval_cutoff":   req.pval_cutoff,
+        "logfc_cutoff":  req.logfc_cutoff,
+        "species":       result.get("species", "unknown"),
+        "n_markers":     len(markers),
+        "n_significant": n_significant,
+        "result":        result,
+    }
+    _write_dge_cache_entry(rds_path, cache_key, entry)
+
+    return JSONResponse({**result, "cache_key": cache_key, "cached": cached_entry is not None})
+
+
+@router.get("/dge-cache")
+async def list_dge_cache(session_id: str):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    return JSONResponse(_list_dge_cache(rds_path))
+
+
+@router.get("/dge-cache/{cache_key}")
+async def get_dge_cache_entry(cache_key: str, session_id: str):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    entry = _read_dge_cache_entry(rds_path, cache_key)
+    if not entry:
+        raise HTTPException(404, "Cache entry not found")
+    return JSONResponse(entry)
+
+
+@router.delete("/dge-cache/{cache_key}")
+async def delete_dge_cache_entry(cache_key: str, session_id: str):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    if not _delete_dge_cache_entry(rds_path, cache_key):
+        raise HTTPException(404, "Cache entry not found")
+    return JSONResponse({"status": "deleted"})
 
 
 # ── Pathway Analysis ─────────────────────────────────────────────────────────
