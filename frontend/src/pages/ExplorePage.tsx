@@ -222,37 +222,35 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
       }
     })
 
-    // Centroid label trace — one text annotation per cluster
-    const labelTrace: any = {
-      type: 'scatter',
-      mode: 'text',
-      name: '',
-      showlegend: false,
-      hoverinfo: 'skip',
-      x: groups.map((g: any) => {
-        const idx = red.cells.map((_: string, i: number) => i)
-          .filter((i: number) => mask[i] && colorVals[i] === g && (!grp || splitMeta[i] === grp))
-        return idx.length ? idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length : null
-      }),
-      y: groups.map((g: any) => {
-        const idx = red.cells.map((_: string, i: number) => i)
-          .filter((i: number) => mask[i] && colorVals[i] === g && (!grp || splitMeta[i] === grp))
-        return idx.length ? idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length : null
-      }),
-      text: groups.map((g: any) => String(g)),
-      textfont: { size: 13, color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
-      textposition: 'middle center',
-    }
+    // Centroid label — one boxed annotation per cluster (a plain text trace reads poorly
+    // against similarly-coloured points, so give each label a white pill background instead)
+    const clusterAnnotations = groups.map((g: any) => {
+      const idx = red.cells.map((_: string, i: number) => i)
+        .filter((i: number) => mask[i] && colorVals[i] === g && (!grp || splitMeta[i] === grp))
+      if (!idx.length) return null
+      return {
+        x: idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length,
+        y: idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length,
+        text: `<b>${String(g)}</b>`,
+        showarrow: false,
+        font: { size: 13, color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
+        bgcolor: 'rgba(255,255,255,0.85)',
+        bordercolor: '#94a3b8',
+        borderwidth: 1,
+        borderpad: 3,
+      }
+    }).filter(Boolean)
 
     return (
       <div key={grp ?? 'all'} style={{ width: 1120, flexShrink: 0 }}>
         {grp && <div className="text-center text-xs text-slate-500 mb-1">{grp}</div>}
-        <Plot key={`${reduction}-${grp ?? 'all'}-${colorBy}`} data={[...traces, labelTrace]} layout={{
+        <Plot key={`${reduction}-${grp ?? 'all'}-${colorBy}`} data={traces} layout={{
           width: 1120, height: 1040,
           title: grp ? undefined : { text: `${reduction} — ${colorBy}`, font: { size: 13 } },
           xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain' },
           yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1 },
           legend: { itemsizing: 'constant' },
+          annotations: clusterAnnotations,
           margin: { t: 40, l: 55, r: 20, b: 55 },
           paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
         }} config={{ responsive: false }} />
@@ -265,6 +263,46 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
       <div className="flex flex-wrap gap-2">{splitGroups.map(makePlot)}</div>
     </div>
   )
+}
+
+// ── Shared vector-PDF export for panel-grid plots (Feature/Violin/Box plots) ────
+// Tiles every gene's panel onto a single PDF page at its on-screen grid position,
+// embedding the Plotly SVG paths directly (via svg2pdf.js) rather than rasterizing —
+// matching what ggsave() would produce for a multi-panel ggplot, so the file opens
+// fully editable in Illustrator instead of as a flattened screenshot.
+async function downloadPlotGridPdf(
+  genes: string[], gridCols: number, panelW: number, panelH: number,
+  plotRefs: { current: Record<string, any> }, filenamePrefix: string,
+): Promise<void> {
+  if (genes.length === 0) return
+  const PlotlyLib = (window as any).Plotly
+  if (!PlotlyLib) { toast.error('Plotly not ready — try again in a moment'); return }
+  const { jsPDF } = await import('jspdf')
+  const { svg2pdf } = await import('svg2pdf.js')
+  const PX_TO_MM = 0.2646
+  const rows  = Math.ceil(genes.length / gridCols)
+  const pageW = gridCols * panelW * PX_TO_MM
+  const pageH = rows * panelH * PX_TO_MM
+  const doc = new jsPDF({ orientation: pageW > pageH ? 'landscape' : 'portrait', unit: 'mm', format: [pageW, pageH] })
+
+  for (let i = 0; i < genes.length; i++) {
+    const gd = plotRefs.current[genes[i]]
+    if (!gd) continue
+    const svgStr: string = await PlotlyLib.toImage(gd, { format: 'svg' })
+    // Plotly renders negative tick labels with the Unicode minus sign (U+2212), which
+    // jsPDF's built-in fonts (WinAnsi-encoded) can't represent — it falls back to an
+    // unrelated glyph (shows up as a stray "). Normalize to a plain ASCII hyphen first.
+    const svgText = decodeURIComponent(svgStr.replace(/^data:image\/svg\+xml,/, '')).replace(/−/g, '-')
+    const svgEl = new DOMParser().parseFromString(svgText, 'image/svg+xml').querySelector('svg')!
+    const col = i % gridCols
+    const row = Math.floor(i / gridCols)
+    await svg2pdf(svgEl, doc, {
+      x: col * panelW * PX_TO_MM, y: row * panelH * PX_TO_MM,
+      width: panelW * PX_TO_MM, height: panelH * PX_TO_MM,
+    })
+  }
+
+  doc.save(`${filenamePrefix}_${genes.join('_').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`)
 }
 
 // ── Feature plot ───────────────────────────────────────────────────────────────
@@ -337,22 +375,25 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
     const subX     = subIdx.map((i: number) => red.x[i])
     const subY     = subIdx.map((i: number) => red.y[i])
 
-    // Centroid traces use full cell list for accuracy
+    // Centroid label — one boxed annotation per cluster (full cell list for accuracy).
+    // A plain text trace reads poorly against similarly-coloured points, so give each
+    // label a white pill background instead.
     const fullIndices = red.cells.map((_: string, i: number) => i)
-    const clusterLabelTrace: any = {
-      type: 'scatter', mode: 'text', name: '', showlegend: false, hoverinfo: 'skip',
-      x: clusterGroups.map(g => {
-        const idx = fullIndices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
-        return idx.length ? idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length : null
-      }),
-      y: clusterGroups.map(g => {
-        const idx = fullIndices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
-        return idx.length ? idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length : null
-      }),
-      text: clusterGroups.map(g => String(g)),
-      textfont: { size: Math.max(9, fontSize - 2), color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
-      textposition: 'middle center',
-    }
+    const clusterAnnotations = clusterGroups.map(g => {
+      const idx = fullIndices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+      if (!idx.length) return null
+      return {
+        x: idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length,
+        y: idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length,
+        text: `<b>${String(g)}</b>`,
+        showarrow: false,
+        font: { size: Math.max(9, fontSize - 2), color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
+        bgcolor: 'rgba(255,255,255,0.85)',
+        bordercolor: '#94a3b8',
+        borderwidth: 1,
+        borderpad: 2,
+      }
+    }).filter(Boolean)
 
     return (
       <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
@@ -387,11 +428,12 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
           }
 
           return (
-            <Plot key={`fp-${gene}-${reduction}`} data={[markerTrace, clusterLabelTrace]} layout={{
+            <Plot key={`fp-${gene}-${reduction}`} data={[markerTrace]} layout={{
               width: w, height: h,
               title: { text: gene, font: { size: fontSize } },
               xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 } },
               yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
+              annotations: clusterAnnotations,
               margin: { t: 40, l: 50, r: 55, b: 45 },
               paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
             }} config={{ responsive: false }}
@@ -403,40 +445,11 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
     )
   }, [exprData, cells, red, meta, colorBy, reduction, validGenes, gridCols, panelW, panelH, panelDot, panelFontSize])
 
-  // Download the whole panel grid as one vector PDF (all genes tiled on a single page,
-  // matching what ggsave() would produce for a multi-panel Seurat FeaturePlot) — the SVG
-  // paths are embedded directly, so the file opens fully editable in Illustrator, not as
-  // a flattened raster image.
   const [pdfExporting, setPdfExporting] = useState(false)
   async function handleDownloadPdf() {
-    if (validGenes.length === 0) return
-    const PlotlyLib = (window as any).Plotly
-    if (!PlotlyLib) { toast.error('Plotly not ready — try again in a moment'); return }
     setPdfExporting(true)
     try {
-      const { jsPDF } = await import('jspdf')
-      const { svg2pdf } = await import('svg2pdf.js')
-      const PX_TO_MM = 0.2646
-      const rows   = Math.ceil(validGenes.length / gridCols)
-      const pageW  = gridCols * panelW * PX_TO_MM
-      const pageH  = rows * panelH * PX_TO_MM
-      const doc = new jsPDF({ orientation: pageW > pageH ? 'landscape' : 'portrait', unit: 'mm', format: [pageW, pageH] })
-
-      for (let i = 0; i < validGenes.length; i++) {
-        const gd = plotRefs.current[validGenes[i]]
-        if (!gd) continue
-        const svgStr: string = await PlotlyLib.toImage(gd, { format: 'svg' })
-        const svgText = decodeURIComponent(svgStr.replace(/^data:image\/svg\+xml,/, ''))
-        const svgEl = new DOMParser().parseFromString(svgText, 'image/svg+xml').querySelector('svg')!
-        const col = i % gridCols
-        const row = Math.floor(i / gridCols)
-        await svg2pdf(svgEl, doc, {
-          x: col * panelW * PX_TO_MM, y: row * panelH * PX_TO_MM,
-          width: panelW * PX_TO_MM, height: panelH * PX_TO_MM,
-        })
-      }
-
-      doc.save(`FeaturePlot_${validGenes.join('_').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`)
+      await downloadPlotGridPdf(validGenes, gridCols, panelW, panelH, plotRefs, 'FeaturePlot')
     } catch (e) {
       toast.error('Download failed: ' + String(e))
     } finally {
@@ -486,17 +499,32 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
 }
 
 // ── Violin plot ────────────────────────────────────────────────────────────────
-function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: any) {
+const DIST_PANEL_SIZES: Record<number, { w: number; h: number; fontSize: number }> = {
+  1: { w: 900, h: 420, fontSize: 13 },
+  2: { w: 540, h: 380, fontSize: 12 },
+  3: { w: 370, h: 340, fontSize: 11 },
+  4: { w: 280, h: 300, fontSize: 10 },
+}
+
+// Shared by the Violin Plot and Box Plot tabs — identical in every way except the
+// Plotly trace type and a couple of trace-only options, so both tabs are just this
+// component mounted with a different `plotType`.
+function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, sessionId, plotType }: any) {
   const [geneInput,      setGeneInput]      = useState('')
   const [exprData,       setExprData]       = useState<Record<string, number[]> | null>(null)
   const [cells,          setCells]          = useState<string[]>([])
   const [loading,        setLoading]        = useState(false)
   const [requestedGenes, setRequestedGenes] = useState<string[]>([])
   const [fetchError,     setFetchError]     = useState<string | null>(null)
+  const plotRefs = useRef<Record<string, any>>({})
 
   const colorVals = meta.metadata[colorBy] ?? []
   const colorMap  = catColorMap(colorVals)
   const groups    = ([...new Set(colorVals)] as string[]).sort()
+  const validGenes = exprData ? Object.keys(exprData) : []
+  const gridCols   = validGenes.length === 0 ? 1 : validGenes.length === 1 ? 1 : validGenes.length <= 4 ? 2 : validGenes.length <= 9 ? 3 : 4
+  const { w: panelW, h: panelH, fontSize: panelFontSize } = DIST_PANEL_SIZES[gridCols]
+  const filenamePrefix = plotType === 'box' ? 'BoxPlot' : 'ViolinPlot'
 
   async function fetchExpr() {
     const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
@@ -523,51 +551,61 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
 
   function clearResults() { setExprData(null); setCells([]); setGeneInput(''); setRequestedGenes([]); setFetchError(null) }
 
+  const [pdfExporting, setPdfExporting] = useState(false)
+  async function handleDownloadPdf() {
+    setPdfExporting(true)
+    try {
+      await downloadPlotGridPdf(validGenes, gridCols, panelW, panelH, plotRefs, filenamePrefix)
+    } catch (e) {
+      toast.error('Download failed: ' + String(e))
+    } finally {
+      setPdfExporting(false)
+    }
+  }
+
   const plotSection = useMemo(() => {
     if (!exprData) return null
-    const validGenes = Object.keys(exprData)
     if (validGenes.length === 0) return null
 
-    const n    = validGenes.length
-    const cols = n === 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4
-    const panelSizes: Record<number, { w: number; h: number; fontSize: number }> = {
-      1: { w: 900, h: 420, fontSize: 13 },
-      2: { w: 540, h: 380, fontSize: 12 },
-      3: { w: 370, h: 340, fontSize: 11 },
-      4: { w: 280, h: 300, fontSize: 10 },
-    }
-    const { w, h, fontSize } = panelSizes[cols]
+    const cols = gridCols
+    const w = panelW, h = panelH, fontSize = panelFontSize
     const idxMap = Object.fromEntries(cells.map((c, i) => [c, i]))
 
     return (
       <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
         {validGenes.map(gene => {
-          const traces = groups.map(grp => ({
-            type: 'violin' as const,
-            name: String(grp),
-            y: meta.cells
+          const traces = groups.map(grp => {
+            const y = meta.cells
               .filter((_: string, i: number) => colorVals[i] === grp)
-              .map((c: string) => exprData[gene][idxMap[c]] ?? 0),
-            box: { visible: true },
-            meanline: { visible: true },
-            marker: { color: colorMap[grp as string] },
-            points: false,
-          }))
+              .map((c: string) => exprData[gene][idxMap[c]] ?? 0)
+            // x0 gives each cluster its own category slot on the x-axis — without it, every
+            // trace defaults to the same position (x0 = 0) and all bodies get squeezed into
+            // one slot, rendering as near-invisible slivers instead of properly sized shapes.
+            return plotType === 'box'
+              ? { type: 'box' as const, name: String(grp), x0: String(grp), y, width: 0.7, boxmean: true, boxpoints: 'outliers' as const, marker: { color: colorMap[grp as string] } }
+              : { type: 'violin' as const, name: String(grp), x0: String(grp), y, width: 0.85, box: { visible: true }, meanline: { visible: true }, marker: { color: colorMap[grp as string] }, points: false }
+          })
           return (
-            <Plot key={`vln-${gene}`} data={traces} layout={{
+            <Plot key={`dist-${gene}`} data={traces} layout={{
               width: w, height: h,
               title: { text: gene, font: { size: fontSize } },
+              xaxis: { title: colorBy, type: 'category', tickangle: -45, tickfont: { size: fontSize - 2 } },
               yaxis: { title: 'Expression', zeroline: false, titlefont: { size: fontSize - 1 } },
               violinmode: 'group',
-              showlegend: cols === 1,
-              margin: { t: 40, l: 55, r: 15, b: 80 },
+              violingap: 0.15,
+              boxmode: 'group',
+              boxgap: 0.15,
+              showlegend: false,
+              margin: { t: 40, l: 55, r: 15, b: 90 },
               paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-            }} config={{ responsive: false }} />
+            }} config={{ responsive: false }}
+              onInitialized={(_: any, gd: any) => { plotRefs.current[gene] = gd }}
+              onUpdate={(_: any, gd: any) => { plotRefs.current[gene] = gd }} />
           )
         })}
       </div>
     )
-  }, [exprData, cells, meta, colorBy, colorVals, groups, colorMap])
+  }, [exprData, cells, meta, colorBy, colorVals, groups, colorMap, plotType, validGenes, gridCols, panelW, panelH, panelFontSize])
 
   return (
     <div className="p-4 space-y-4">
@@ -584,6 +622,12 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
           <button onClick={clearResults}
             className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded-lg transition-colors">
             Clear
+          </button>
+        )}
+        {validGenes.length > 0 && (
+          <button onClick={handleDownloadPdf} disabled={pdfExporting}
+            className="px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 disabled:opacity-50">
+            {pdfExporting ? 'Exporting…' : '↓ Download PDF (vector)'}
           </button>
         )}
         <CacheBuildButton sessionId={sessionId} assay={assay} slot={slot} />
@@ -1317,7 +1361,10 @@ function PathwayDotplot({ rows, label }: { rows: Record<string, unknown>[]; labe
 
       // Get SVG string from Plotly (vector, Illustrator-compatible)
       const svgStr: string = await PlotlyLib.toImage(graphDivRef.current, { format: 'svg' })
-      const svgText = decodeURIComponent(svgStr.replace(/^data:image\/svg\+xml,/, ''))
+      // Plotly renders negative tick labels with the Unicode minus sign (U+2212), which
+      // jsPDF's built-in fonts (WinAnsi-encoded) can't represent — it falls back to an
+      // unrelated glyph (shows up as a stray "). Normalize to a plain ASCII hyphen first.
+      const svgText = decodeURIComponent(svgStr.replace(/^data:image\/svg\+xml,/, '')).replace(/−/g, '-')
 
       // Parse dimensions from SVG viewBox / width / height
       const parser = new DOMParser()
@@ -2234,6 +2281,18 @@ function GuideTab() {
         { label: 'Genes', text: 'Comma-separated gene names — one violin group per gene per cluster.' },
         { label: 'Colour by', text: 'Controls which metadata column defines the x-axis grouping.' },
         { label: 'Subset', text: 'Restricts which clusters appear on the x-axis.' },
+        { label: 'Download PDF', text: 'Exports all gene panels tiled onto a single vector PDF page (like ggsave() in R) — paths stay fully editable when opened in Illustrator, unlike a flattened screenshot.' },
+      ],
+    },
+    {
+      tab: 'Box Plot',
+      icon: '📦',
+      summary: 'Show the distribution of gene expression across clusters as box plots (median, quartiles, outliers) — the same data as Violin Plot, in box-and-whisker form.',
+      details: [
+        { label: 'Genes', text: 'Comma-separated gene names — one box per gene per cluster.' },
+        { label: 'Colour by', text: 'Controls which metadata column defines the x-axis grouping.' },
+        { label: 'Subset', text: 'Restricts which clusters appear on the x-axis.' },
+        { label: 'Download PDF', text: 'Exports all gene panels tiled onto a single vector PDF page (like ggsave() in R) — paths stay fully editable when opened in Illustrator, unlike a flattened screenshot.' },
       ],
     },
     {
@@ -2342,7 +2401,7 @@ function GuideTab() {
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'CellChat', 'Metadata', 'Guide']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'CellChat', 'Metadata', 'Guide']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -2486,8 +2545,12 @@ export default function ExplorePage() {
               colorBy={colorBy} sessionId={meta.session_id} />
           </div>
           <div className={tab === 'Violin Plot' ? '' : 'hidden'}>
-            <ViolinTab meta={meta} assay={assay} slot={slot}
-              selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} />
+            <DistributionPlotTab meta={meta} assay={assay} slot={slot}
+              selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="violin" />
+          </div>
+          <div className={tab === 'Box Plot' ? '' : 'hidden'}>
+            <DistributionPlotTab meta={meta} assay={assay} slot={slot}
+              selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="box" />
           </div>
           <div className={tab === 'DGE — Clusters' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
