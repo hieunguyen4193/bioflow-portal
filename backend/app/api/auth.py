@@ -12,10 +12,15 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserOut, status_code=201)
 async def register(body: UserCreate, db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(select(User).where(User.email == body.email))
+    existing = await db.execute(select(User).where(User.username == body.username))
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user = User(email=body.email, full_name=body.full_name, hashed_password=hash_password(body.password))
+        raise HTTPException(status_code=400, detail="Username already taken")
+    if body.email:
+        existing_email = await db.execute(select(User).where(User.email == body.email))
+        if existing_email.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(username=body.username, email=body.email, full_name=body.full_name,
+                hashed_password=hash_password(body.password))
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -24,11 +29,11 @@ async def register(body: UserCreate, db: AsyncSession = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == form.username))
+    result = await db.execute(select(User).where(User.username == form.username))
     user = result.scalar_one_or_none()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    return Token(access_token=create_access_token(user.email))
+    return Token(access_token=create_access_token(user.username))
 
 
 @router.get("/me", response_model=UserOut)

@@ -270,6 +270,13 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
 // ── Feature plot ───────────────────────────────────────────────────────────────
 const MAX_FP_POINTS = 3000
 
+const FP_PANEL_SIZES: Record<number, { w: number; h: number; dot: number; fontSize: number }> = {
+  1: { w: 700, h: 660, dot: 6, fontSize: 14 },
+  2: { w: 520, h: 490, dot: 5, fontSize: 13 },
+  3: { w: 380, h: 360, dot: 4, fontSize: 12 },
+  4: { w: 300, h: 280, dot: 3, fontSize: 11 },
+}
+
 function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorBy, sessionId }: any) {
   const [geneInput,      setGeneInput]      = useState('')
   const [exprData,       setExprData]       = useState<Record<string, number[]> | null>(null)
@@ -277,8 +284,12 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
   const [loading,        setLoading]        = useState(false)
   const [requestedGenes, setRequestedGenes] = useState<string[]>([])
   const [fetchError,     setFetchError]     = useState<string | null>(null)
+  const plotRefs = useRef<Record<string, any>>({})
 
   const red = meta.reductions[reduction]
+  const validGenes = exprData ? Object.keys(exprData) : []
+  const gridCols = validGenes.length === 0 ? 1 : validGenes.length === 1 ? 1 : validGenes.length <= 4 ? 2 : validGenes.length <= 9 ? 3 : 4
+  const { w: panelW, h: panelH, dot: panelDot, fontSize: panelFontSize } = FP_PANEL_SIZES[gridCols]
 
   async function fetchExpr() {
     const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
@@ -308,18 +319,10 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
   // Memoize all heavy plot computation — only reruns when data/settings change, not on keystroke
   const plotSection = useMemo(() => {
     if (!exprData || !red) return null
-    const validGenes = Object.keys(exprData)
     if (validGenes.length === 0) return null
 
-    const n    = validGenes.length
-    const cols = n === 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4
-    const panelSizes: Record<number, { w: number; h: number; dot: number; fontSize: number }> = {
-      1: { w: 700, h: 660, dot: 6, fontSize: 14 },
-      2: { w: 520, h: 490, dot: 5, fontSize: 13 },
-      3: { w: 380, h: 360, dot: 4, fontSize: 12 },
-      4: { w: 300, h: 280, dot: 3, fontSize: 11 },
-    }
-    const { w, h, dot, fontSize } = panelSizes[cols]
+    const cols = gridCols
+    const w = panelW, h = panelH, dot = panelDot, fontSize = panelFontSize
 
     const idxMap        = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
     const colorVals     = meta.metadata[colorBy] ?? []
@@ -391,12 +394,55 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
               yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
               margin: { t: 40, l: 50, r: 55, b: 45 },
               paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-            }} config={{ responsive: false }} />
+            }} config={{ responsive: false }}
+              onInitialized={(_: any, gd: any) => { plotRefs.current[gene] = gd }}
+              onUpdate={(_: any, gd: any) => { plotRefs.current[gene] = gd }} />
           )
         })}
       </div>
     )
-  }, [exprData, cells, red, meta, colorBy, reduction])
+  }, [exprData, cells, red, meta, colorBy, reduction, validGenes, gridCols, panelW, panelH, panelDot, panelFontSize])
+
+  // Download the whole panel grid as one vector PDF (all genes tiled on a single page,
+  // matching what ggsave() would produce for a multi-panel Seurat FeaturePlot) — the SVG
+  // paths are embedded directly, so the file opens fully editable in Illustrator, not as
+  // a flattened raster image.
+  const [pdfExporting, setPdfExporting] = useState(false)
+  async function handleDownloadPdf() {
+    if (validGenes.length === 0) return
+    const PlotlyLib = (window as any).Plotly
+    if (!PlotlyLib) { toast.error('Plotly not ready — try again in a moment'); return }
+    setPdfExporting(true)
+    try {
+      const { jsPDF } = await import('jspdf')
+      const { svg2pdf } = await import('svg2pdf.js')
+      const PX_TO_MM = 0.2646
+      const rows   = Math.ceil(validGenes.length / gridCols)
+      const pageW  = gridCols * panelW * PX_TO_MM
+      const pageH  = rows * panelH * PX_TO_MM
+      const doc = new jsPDF({ orientation: pageW > pageH ? 'landscape' : 'portrait', unit: 'mm', format: [pageW, pageH] })
+
+      for (let i = 0; i < validGenes.length; i++) {
+        const gd = plotRefs.current[validGenes[i]]
+        if (!gd) continue
+        const svgStr: string = await PlotlyLib.toImage(gd, { format: 'svg' })
+        const svgText = decodeURIComponent(svgStr.replace(/^data:image\/svg\+xml,/, ''))
+        const svgEl = new DOMParser().parseFromString(svgText, 'image/svg+xml').querySelector('svg')!
+        const col = i % gridCols
+        const row = Math.floor(i / gridCols)
+        await svg2pdf(svgEl, doc, {
+          x: col * panelW * PX_TO_MM, y: row * panelH * PX_TO_MM,
+          width: panelW * PX_TO_MM, height: panelH * PX_TO_MM,
+        })
+      }
+
+      doc.save(`FeaturePlot_${validGenes.join('_').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`)
+    } catch (e) {
+      toast.error('Download failed: ' + String(e))
+    } finally {
+      setPdfExporting(false)
+    }
+  }
 
   return (
     <div className="p-4 space-y-4">
@@ -413,6 +459,12 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
           <button onClick={clearResults}
             className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded-lg transition-colors">
             Clear
+          </button>
+        )}
+        {validGenes.length > 0 && (
+          <button onClick={handleDownloadPdf} disabled={pdfExporting}
+            className="px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 disabled:opacity-50">
+            {pdfExporting ? 'Exporting…' : '↓ Download PDF (vector)'}
           </button>
         )}
         <CacheBuildButton sessionId={sessionId} assay={assay} slot={slot} />
@@ -553,7 +605,7 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
 }
 
 // ── DGE ───────────────────────────────────────────────────────────────────────
-function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any) {
+function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onDgeChanged }: any) {
   const [test,    setTest]    = useState('wilcox')
   const [ident1Raw, setIdent1Raw] = useState('')
   const [ident2Raw, setIdent2Raw] = useState('')
@@ -607,14 +659,8 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
       setDgeResult({ ...res, markers: filtered })
       setLoadedCacheKey(res.cache_key ?? null)
       setLog(`${res.cached ? 'Loaded from cache' : 'Done'} — ${filtered.length} significant DEGs (${res.species} detected). TCR excluded: ${res.excluded_tcr.length}, BCR/Ig excluded: ${res.excluded_bcr.length}.`)
-      // Save to shared store so PathwayTab can pick it up
-      if (onSaveDge && res.markers.length > 0) {
-        const label = mode === 'clusters'
-          ? `DGE Clusters (${colorBy}) — ${new Date().toLocaleTimeString()}`
-          : `DGE Conditions (${ident1.join('+') || '?'} vs ${ident2.join('+') || 'others'}) — ${new Date().toLocaleTimeString()}`
-        onSaveDge(label, res.markers)
-      }
       refreshCacheList()
+      onDgeChanged?.()
     } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
     finally { setLoading(false) }
   }
@@ -634,12 +680,6 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
       setDgeResult({ ...cached.result, markers: filtered })
       setLoadedCacheKey(cached.cache_key)
       setLog(`Loaded from cache (run at ${new Date(cached.created_at).toLocaleString()}) — ${filtered.length} significant DEGs (${cached.species} detected).`)
-      if (onSaveDge && filtered.length > 0) {
-        const label = mode === 'clusters'
-          ? `DGE Clusters (${cached.group_by}) — cached ${new Date(cached.created_at).toLocaleTimeString()}`
-          : `DGE Conditions (${cached.ident1 || '?'} vs ${cached.ident2 || 'others'}) — cached ${new Date(cached.created_at).toLocaleTimeString()}`
-        onSaveDge(label, filtered)
-      }
     } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
     finally { setLoading(false) }
   }
@@ -651,6 +691,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
       await deleteDgeCacheEntry(sessionId, entry.cache_key)
       setCacheList(prev => prev.filter(e => e.cache_key !== entry.cache_key))
       if (loadedCacheKey === entry.cache_key) setLoadedCacheKey(null)
+      onDgeChanged?.()
     } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed to delete cached result') }
     finally { setDeletingKey(null) }
   }
@@ -1562,10 +1603,25 @@ function PathwayMethodExplanation({ methodKey, rows }: {
   )
 }
 
-function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
+function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
   meta: SeuratMeta; sessionId: string
-  savedDgeResults?: { label: string; markers: Record<string, unknown>[] }[]
+  dgeVersion?: number  // bumped whenever a DGE run/load/delete happens elsewhere, to trigger a refetch
 }) {
+  // Pathway analysis compares two groups, which only maps cleanly to DGE — Conditions
+  // results (DGE — Clusters is one-vs-rest per cluster) — so only offer those here.
+  // Sourced directly from the backend's persisted DGE cache (not from in-session component
+  // state) so results already cached from a previous session — e.g. a preset that already
+  // has DGE runs — show up immediately, without needing to re-run or "Load" them first.
+  const [conditionsDgeResults, setConditionsDgeResults] = useState<DgeCacheEntry[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    listDgeCache(sessionId).then(list => {
+      if (!cancelled) setConditionsDgeResults(list.filter(e => e.mode === 'conditions'))
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [sessionId, dgeVersion])
+
   const [species,     setSpecies]     = useState<'auto' | 'hsa' | 'mmu'>('auto')
   const [pvalCutoff,  setPvalCutoff]  = useState(0.05)
   const [csvInput,    setCsvInput]    = useState<'session' | 'paste' | 'upload'>('session')
@@ -1581,15 +1637,15 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
   const logRef = useRef<HTMLPreElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Auto-switch to session tab and select newest result when DGE results arrive
+  // Auto-switch to session tab and select newest result when DGE — Conditions results arrive
   const prevSavedLen = useRef(0)
   useEffect(() => {
-    if (savedDgeResults.length > prevSavedLen.current) {
+    if (conditionsDgeResults.length > prevSavedLen.current) {
       setCsvInput('session')
       setSelectedSaved(0)
     }
-    prevSavedLen.current = savedDgeResults.length
-  }, [savedDgeResults.length])
+    prevSavedLen.current = conditionsDgeResults.length
+  }, [conditionsDgeResults.length])
 
   useEffect(() => {
     if (!taskId || status !== 'running') return
@@ -1623,10 +1679,19 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
     let csvData = ''
 
     if (csvInput === 'session') {
-      const saved = savedDgeResults[selectedSaved]
-      if (!saved || saved.markers.length === 0) { toast.error('No DGE result selected'); return }
+      const entry = conditionsDgeResults[selectedSaved]
+      if (!entry) { toast.error('No DGE result selected'); return }
+      let markers: Record<string, unknown>[]
+      try {
+        const cached = await loadDgeCacheEntry(sessionId, entry.cache_key)
+        markers = cached.result.markers
+      } catch (e: any) {
+        toast.error(e.response?.data?.detail || 'Failed to load cached DGE result')
+        return
+      }
+      if (markers.length === 0) { toast.error('Selected DGE result has no markers'); return }
       // Normalize column names: rename to standard format expected by the R script
-      const rows = saved.markers.map((r: any) => ({
+      const rows = markers.map((r: any) => ({
         gene:    r.gene,
         pval:    r.p_val    ?? r.pval    ?? 1,
         logFC:   r.avg_log2FC ?? r.logFC  ?? 0,
@@ -1715,21 +1780,24 @@ function PathwayTab({ meta, sessionId, savedDgeResults = [] }: {
 
         {csvInput === 'session' ? (
           <div className="space-y-2">
-            {savedDgeResults.length === 0 ? (
+            {conditionsDgeResults.length === 0 ? (
               <p className="text-xs text-slate-400 bg-slate-50 rounded p-3 border border-slate-200">
-                No DGE results yet. Run a DGE analysis in the <strong>DGE — Clusters</strong> or <strong>DGE — Conditions</strong> tab first — results will appear here automatically.
+                No DGE — Conditions results yet. Run a DGE analysis in the <strong>DGE — Conditions</strong> tab first — results will appear here automatically.
               </p>
             ) : (
               <div className="space-y-2">
-                {savedDgeResults.map((r, i) => (
-                  <label key={i} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors
+                {conditionsDgeResults.map((r, i) => (
+                  <label key={r.cache_key} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors
                     ${selectedSaved === i ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 hover:border-slate-300 bg-white'}`}>
                     <input type="radio" name="saved-dge" checked={selectedSaved === i}
                       onChange={() => setSelectedSaved(i)} className="mt-0.5 accent-indigo-600" />
                     <div>
-                      <div className="text-sm font-medium text-slate-700">{r.label}</div>
+                      <div className="text-sm font-medium text-slate-700">
+                        {r.source_label} — {r.group_by}: {r.ident1 || '(all)'} vs {r.ident2 || 'others'}
+                      </div>
                       <div className="text-xs text-slate-400 mt-0.5">
-                        {r.markers.length.toLocaleString()} genes · columns: {Object.keys(r.markers[0] ?? {}).join(', ')}
+                        {r.n_markers.toLocaleString()} genes ({r.n_significant.toLocaleString()} significant) ·
+                        {' '}{r.assay}/{r.slot} · {r.test_use} · {new Date(r.created_at).toLocaleString()}
                       </div>
                     </div>
                   </label>
@@ -2155,6 +2223,7 @@ function GuideTab() {
         { label: 'Genes', text: 'Type one or more comma-separated gene names (e.g. CD3E, CD8A). Expression is fetched from the selected assay and slot.' },
         { label: 'Assay / slot', text: 'Set in the sidebar. "data" (log-normalised) is the default; "counts" gives raw counts.' },
         { label: 'Subset', text: 'Only cells in the selected cluster subset are shown.' },
+        { label: 'Download PDF', text: 'Exports all gene panels tiled onto a single vector PDF page (like ggsave() in R) — paths stay fully editable when opened in Illustrator, unlike a flattened screenshot.' },
       ],
     },
     {
@@ -2176,8 +2245,7 @@ function GuideTab() {
         { label: 'Statistical test', text: 'wilcox (default), t, LR, or negbinom — each with different assumptions.' },
         { label: 'p-val / logFC thresholds', text: 'Filter results shown in the table; the underlying test uses all genes.' },
         { label: 'Remove TCR/BCR genes', text: 'Strips TRAV/TRBV/IGHV/IGLV gene families to avoid V(D)J noise.' },
-        { label: 'Save results', text: 'Click "Save to session" to pass the marker table directly to the Pathway tab.' },
-        { label: 'Cached results', text: 'Every combination of assay, slot, group-by, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run (with p-val/logFC thresholds used) — click Load to view the volcano plot and gene table instantly without re-running. Re-running with identical settings also returns the cached result instead of recomputing.' },
+        { label: 'Cached results', text: 'Every combination of assay, slot, group-by, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run (with p-val/logFC thresholds used) — click Load to view the volcano plot and gene table instantly without re-running, or Delete to free up storage. Re-running with identical settings also returns the cached result instead of recomputing. Note: unlike DGE — Conditions, results here are not offered to the Pathway tab (which expects a single two-group comparison, not one-vs-rest per cluster).' },
       ],
     },
     {
@@ -2188,8 +2256,8 @@ function GuideTab() {
         { label: 'Group by', text: 'Metadata column that separates conditions (e.g. sample, treatment).' },
         { label: 'Group 1 / Group 2', text: 'Comma-separated values for each side of the comparison (e.g. "ctrl,ctrl2" vs "treated"). Commas within a field are handled correctly.' },
         { label: 'Volcano plot', text: 'After the run, a volcano plot shows –log10(p-adj) vs log2FC; click points to highlight genes.' },
-        { label: 'Save results', text: 'Results can be passed to the Pathway tab.' },
-        { label: 'Cached results', text: 'Every combination of assay, slot, group column, Group 1/2, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run — click Load to view the volcano plot and gene table instantly without re-running.' },
+        { label: 'Save results', text: 'Results are automatically offered to the Pathway tab.' },
+        { label: 'Cached results', text: 'Every combination of assay, slot, group column, Group 1/2, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run — click Load to view the volcano plot and gene table instantly without re-running, or Delete to free up storage.' },
       ],
     },
     {
@@ -2197,7 +2265,7 @@ function GuideTab() {
       icon: '🛣️',
       summary: 'Run Over-Representation Analysis (ORA) and Gene Set Enrichment Analysis (GSEA) across GO, KEGG, WikiPathways, and MSigDB.',
       details: [
-        { label: 'Gene list source', text: 'Three modes — "From DGE session" auto-populates from a saved DGE run; "Paste" accepts a raw gene list; "Upload CSV" accepts a file with gene, logFC, pval, padj columns.' },
+        { label: 'Gene list source', text: 'Three modes — "From DGE" auto-populates from a saved DGE — Conditions run (DGE — Clusters results aren\'t offered here, since pathway analysis expects a single ranked two-group comparison); "Paste" accepts a raw gene list; "Upload CSV" accepts a file with gene, logFC, pval, padj columns.' },
         { label: 'Species', text: 'Auto-detected from gene name capitalisation (>50 % uppercase → human / hsa). Override to hsa or mmu if needed.' },
         { label: 'p-value cutoff', text: 'Applied to all ORA and GSEA results (default 0.05).' },
         { label: 'Methods run', text: 'GO BP/MF/CC (up/down/all), KEGG, WikiPathways, and all MSigDB collections (H + C1–C9 for human, H + M1–M8 for mouse) — both ORA and GSEA per collection.' },
@@ -2263,7 +2331,7 @@ function GuideTab() {
       <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 text-sm text-indigo-700 space-y-1">
         <p className="font-medium">Tips</p>
         <ul className="list-disc list-inside space-y-0.5 text-indigo-600">
-          <li>DGE results are automatically offered to the Pathway tab — no copy-paste needed.</li>
+          <li>DGE — Conditions results are automatically offered to the Pathway tab — no copy-paste needed.</li>
           <li>Pathway analysis and CellChat run as background jobs; you can switch tabs while they compute.</li>
           <li>DGE and CellChat both cache their output — re-running with the same settings is instant, and cached DGE runs are visible in the "Cached results" panel as soon as the Seurat object is loaded, even from previous sessions on the same file.</li>
           <li>Species is auto-detected from gene name case; override it if auto-detection picks the wrong organism.</li>
@@ -2285,7 +2353,9 @@ export default function ExplorePage() {
   const [slot,     setSlot]     = useState('data')
   const [splitBy,  setSplitBy]  = useState('')
   const [selectedClusters, setSelectedClusters] = useState<string[]>([])
-  const [savedDgeResults, setSavedDgeResults] = useState<{ label: string; markers: Record<string, unknown>[] }[]>([])
+  // Bumped whenever a DGE run/load/delete happens, so PathwayTab knows to refetch its
+  // cached-results list from the backend (which is the source of truth, not local state).
+  const [dgeVersion, setDgeVersion] = useState(0)
   const [cacheStatus, setCacheStatus] = useState<'building' | 'ready' | 'idle'>('idle')
   const cachePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -2328,11 +2398,8 @@ export default function ExplorePage() {
     startCachePolling(sessionId, assay, slot)
   }, [assay, slot, sessionId])
 
-  function handleSaveDge(label: string, markers: Record<string, unknown>[]) {
-    setSavedDgeResults(prev => {
-      const without = prev.filter(r => r.label !== label)
-      return [{ label, markers }, ...without]
-    })
+  function handleDgeChanged() {
+    setDgeVersion(v => v + 1)
   }
 
   function handleLoad(m: SeuratMeta) {
@@ -2424,14 +2491,14 @@ export default function ExplorePage() {
           </div>
           <div className={tab === 'DGE — Clusters' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
-              sessionId={meta.session_id} mode="clusters" onSaveDge={handleSaveDge} />
+              sessionId={meta.session_id} mode="clusters" onDgeChanged={handleDgeChanged} />
           </div>
           <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
             <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
-              sessionId={meta.session_id} mode="conditions" onSaveDge={handleSaveDge} />
+              sessionId={meta.session_id} mode="conditions" onDgeChanged={handleDgeChanged} />
           </div>
           <div className={tab === 'Pathway' ? '' : 'hidden'}>
-            <PathwayTab meta={meta} sessionId={meta.session_id} savedDgeResults={savedDgeResults} />
+            <PathwayTab meta={meta} sessionId={meta.session_id} dgeVersion={dgeVersion} />
           </div>
           <div className={tab === 'CellChat' ? '' : 'hidden'}>
             <CellChatTab meta={meta} sessionId={meta.session_id} />

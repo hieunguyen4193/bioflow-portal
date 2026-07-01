@@ -31,7 +31,7 @@ export default function Layout() {
           </nav>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <span className="opacity-80">{user?.email}</span>
+          <span className="opacity-80">{user?.username}</span>
           <button onClick={handleLogout} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded">
             Logout
           </button>

@@ -192,10 +192,10 @@ async def download_file(
     db: AsyncSession = Depends(get_db),
 ):
     # authenticate via query param token (needed for direct browser downloads)
-    email = decode_token(token)
-    if not email:
+    username = decode_token(token)
+    if not username:
         raise HTTPException(401, "Invalid token")
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(401, "User not found")
