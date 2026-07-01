@@ -122,6 +122,13 @@ export async function getCacheStatus(
   return data
 }
 
+export async function startCacheBuild(
+  session_id: string, assay: string, slot: string
+): Promise<{ status: 'exists' | 'building' | 'started'; message: string }> {
+  const { data } = await api.post('/explore/cache-build', { session_id, assay, slot })
+  return data
+}
+
 export async function getPathwayResult(task_id: string): Promise<{
   status: 'running' | 'done' | 'error'
   log?: string

@@ -209,6 +209,41 @@ async def get_cache_status(session_id: str, assay: Optional[str] = None, slot: O
     return JSONResponse({"status": "not_cached"})
 
 
+class CacheBuildRequest(BaseModel):
+    session_id: str
+    assay:      str
+    slot:       str
+
+
+@router.post("/cache-build")
+async def start_cache_build(req: CacheBuildRequest):
+    rds_path = _sessions.get(req.session_id)
+    if not rds_path or not os.path.exists(rds_path):
+        raise HTTPException(404, "Session not found — please re-upload your file")
+
+    label = f"{req.assay}/{req.slot}"
+
+    if _expr_caches.get(rds_path, {}).get((req.assay, req.slot)):
+        return JSONResponse({"status": "exists", "message": f"Cache for {label} already exists — not running again."})
+
+    cache_key = (rds_path, req.assay, req.slot)
+    if cache_key in _cache_building:
+        return JSONResponse({"status": "building", "message": f"Cache for {label} is already being built."})
+
+    cache_base = _cache_base_for(rds_path)
+    bin_path = Path(f"{cache_base}_{req.assay}_{req.slot}.bin")
+    if bin_path.exists():
+        _load_expr_cache(rds_path, cache_base)
+        return JSONResponse({"status": "exists", "message": f"Cache for {label} already exists — not running again."})
+
+    threading.Thread(
+        target=_build_expr_cache_bg,
+        args=(rds_path, cache_base, req.assay, req.slot),
+        daemon=True,
+    ).start()
+    return JSONResponse({"status": "started", "message": f"Started caching expression data for {label}…"})
+
+
 # ── Upload ──────────────────────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_rds(file: UploadFile = File(...)):

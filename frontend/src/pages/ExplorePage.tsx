@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, runDGE, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, SeuratMeta, DGEResult, PresetProject } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -14,6 +14,79 @@ const CAT_COLORS = [
 function catColorMap(vals: string[]): Record<string, string> {
   const unique = [...new Set(vals)]
   return Object.fromEntries(unique.map((v, i) => [v, CAT_COLORS[i % CAT_COLORS.length]]))
+}
+
+// ── Cache build button (Feature Plot / Violin Plot) ─────────────────────────
+function useCacheBuild(sessionId: string, assay: string, slot: string) {
+  const [building, setBuilding] = useState(false)
+  const [message,  setMessage]  = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Stale "ready"/"exists" messages must not survive a change of target pair —
+  // otherwise switching assay/slot after a successful cache leaves a misleading
+  // "already cached" message on screen for a pair that was never built.
+  useEffect(() => {
+    setBuilding(false)
+    setMessage(null)
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }, [sessionId, assay, slot])
+
+  async function start() {
+    setMessage(null)
+    try {
+      const res = await startCacheBuild(sessionId, assay, slot)
+      if (res.status === 'exists') {
+        setMessage(res.message)
+        toast(res.message, { icon: 'ℹ️' })
+        return
+      }
+      // 'started' (we kicked it off) or 'building' (someone else already did) — wait for it either way
+      setBuilding(true)
+      toast(res.message, { icon: '⏳' })
+      if (pollRef.current) clearInterval(pollRef.current)
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await getCacheStatus(sessionId, assay, slot)
+          if (s.status === 'ready') {
+            clearInterval(pollRef.current!)
+            pollRef.current = null
+            setBuilding(false)
+            const msg = `Cache for ${assay}/${slot} is ready.`
+            setMessage(msg)
+            toast.success(msg)
+          }
+        } catch {
+          clearInterval(pollRef.current!)
+          pollRef.current = null
+          setBuilding(false)
+        }
+      }, 5000)
+    } catch (e: any) {
+      setBuilding(false)
+      const msg = e.response?.data?.detail || 'Failed to start cache build'
+      setMessage(msg)
+      toast.error(msg)
+    }
+  }
+
+  return { building, message, start }
+}
+
+function CacheBuildButton({ sessionId, assay, slot }: { sessionId: string; assay: string; slot: string }) {
+  const { building, message, start } = useCacheBuild(sessionId, assay, slot)
+  return (
+    <>
+      <button onClick={start} disabled={building}
+        title={`Pre-compute and cache expression data for assay "${assay}", slot "${slot}"`}
+        className="text-sm text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg disabled:opacity-50 whitespace-nowrap">
+        {building ? 'Caching…' : `Cache ${assay}/${slot}`}
+      </button>
+      {message && <span className="text-xs text-slate-500">{message}</span>}
+    </>
+  )
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -55,7 +128,8 @@ function Sidebar({
         <select value={assay} onChange={e => {
           const newAssay = e.target.value
           setAssay(newAssay)
-          const available = meta.assay_slots?.[newAssay] ?? []
+          const raw = meta.assay_slots?.[newAssay]
+          const available: string[] = Array.isArray(raw) ? raw : raw ? [raw as string] : []
           if (available.length > 0 && !available.includes(slot)) setSlot(available[0])
         }}
           className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm">
@@ -67,9 +141,11 @@ function Sidebar({
         <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Data slot</label>
         <select value={slot} onChange={e => setSlot(e.target.value)}
           className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm">
-          {(meta.assay_slots?.[assay] ?? ['data', 'counts', 'scale.data']).map((s: string) => (
-            <option key={s}>{s}</option>
-          ))}
+          {(() => {
+            const raw = meta.assay_slots?.[assay]
+            const slots: string[] = Array.isArray(raw) ? raw : raw ? [raw as string] : ['data', 'counts', 'scale.data']
+            return slots.map((s: string) => <option key={s}>{s}</option>)
+          })()}
         </select>
       </div>
 
@@ -339,6 +415,7 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
             Clear
           </button>
         )}
+        <CacheBuildButton sessionId={sessionId} assay={assay} slot={slot} />
       </div>
 
       {exprData && Object.keys(exprData).length === 0 && (
@@ -457,6 +534,7 @@ function ViolinTab({ meta, assay, slot, selectedClusters, colorBy, sessionId }: 
             Clear
           </button>
         )}
+        <CacheBuildButton sessionId={sessionId} assay={assay} slot={slot} />
       </div>
 
       {exprData && Object.keys(exprData).length === 0 && (
@@ -2148,7 +2226,8 @@ export default function ExplorePage() {
     setColorBy(cols.find(c => c === 'seurat_clusters') ?? cols[0] ?? '')
     const defaultAssay = m.assays.find(a => a === 'RNA') ?? m.assays[0] ?? 'RNA'
     setAssay(defaultAssay)
-    const availableSlots = m.assay_slots?.[defaultAssay] ?? ['data']
+    const rawSlots = m.assay_slots?.[defaultAssay]
+    const availableSlots: string[] = Array.isArray(rawSlots) ? rawSlots : rawSlots ? [rawSlots as string] : ['data']
     setSlot(availableSlots.includes('data') ? 'data' : availableSlots[0] ?? 'data')
     const clVals = [...new Set(Object.values(m.metadata)[0] ?? [])]
     setSelectedClusters(clVals as string[])

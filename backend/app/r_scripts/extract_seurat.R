@@ -47,7 +47,7 @@ get_assay_slots <- function(assay_name) {
   }, c("counts", "data", "scale.data"))
 }
 
-assay_slots <- setNames(lapply(assays, get_assay_slots), assays)
+assay_slots <- setNames(lapply(assays, function(a) I(get_assay_slots(a))), assays)
 
 result <- list(
   n_cells     = ncol(s.obj),
