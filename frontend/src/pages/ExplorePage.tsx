@@ -669,8 +669,8 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
 
   function downloadCSV(rows: any[], filename: string) {
     const header = DGE_COLS.join(',')
-    const body   = rows.map(r => DGE_COLS.map(c => JSON.stringify(r[c] ?? '')).join(',')).join('\n')
-    const blob   = new Blob([`${header}\n${body}`], { type: 'text/csv' })
+    const body   = rows.map(r => DGE_COLS.map(c => JSON.stringify(r[c] ?? '')).join(',')).join('\r\n')
+    const blob   = new Blob([`${header}\r\n${body}`], { type: 'text/csv' })
     const a      = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename })
     a.click(); URL.revokeObjectURL(a.href)
   }
@@ -865,8 +865,10 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
         }
 
         const sorted    = [...allRows].sort((a: any, b: any) => Number(b.avg_log2FC) - Number(a.avg_log2FC))
-        const top10up   = sorted.slice(0, 10)
-        const top10down = [...sorted].reverse().slice(0, 10)
+        // Restrict to genes actually up/down (not just highest/lowest-ranked) so a gene
+        // can never appear in both lists and get double-labeled on the plot.
+        const top10up   = sorted.filter((r: any) => Number(r.avg_log2FC) > 0).slice(0, 10)
+        const top10down = [...sorted].reverse().filter((r: any) => Number(r.avg_log2FC) < 0).slice(0, 10)
 
         const x      = allRows.map((r: any) => Number(r.avg_log2FC))
         const y      = allRows.map(negLog10)
@@ -900,6 +902,12 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
           ...makeAnnotations(top10down, 'left'),
         ]
 
+        // Symmetric x-range around 0 so log2FC = 0 always sits in the middle of the plot,
+        // regardless of whether up- or down-regulated genes have larger fold changes.
+        const maxAbsX  = Math.max(...x.map(v => Math.abs(v)), 0.1)
+        const xPadding = maxAbsX * 0.15
+        const xRange: [number, number] = [-(maxAbsX + xPadding), maxAbsX + xPadding]
+
         return (
           <div className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col items-center">
             <h4 className="text-sm font-medium text-slate-700 mb-2">Volcano Plot</h4>
@@ -912,9 +920,9 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onSaveDge }: any)
               }]}
               layout={{
                 height: 750,
-                width: 560,
+                width: 950,
                 margin: { t: 20, r: 100, b: 50, l: 70 },
-                xaxis: { title: { text: 'avg_log2FC' }, zeroline: true, zerolinecolor: '#aaa', zerolinewidth: 1 },
+                xaxis: { title: { text: 'avg_log2FC' }, range: xRange, zeroline: true, zerolinecolor: '#aaa', zerolinewidth: 1 },
                 yaxis: { title: { text: '-log10(p)' } },
                 annotations,
                 shapes: [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, xref: 'x', yref: 'paper', line: { color: '#aaa', width: 1, dash: 'dash' } }],
@@ -1164,9 +1172,9 @@ function downloadCSVData(rows: Record<string, unknown>[], filename: string) {
   const cols = Object.keys(rows[0])
   const escape = (v: unknown) => {
     const s = String(v ?? '')
-    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+    return /[,"\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const csv = [cols.join(','), ...rows.map(r => cols.map(c => escape(r[c])).join(','))].join('\n')
+  const csv = [cols.join(','), ...rows.map(r => cols.map(c => escape(r[c])).join(','))].join('\r\n')
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
   const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
   URL.revokeObjectURL(url)
