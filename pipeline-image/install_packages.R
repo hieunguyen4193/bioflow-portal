@@ -27,9 +27,12 @@ install_cran(
 )
 
 # ── Bioconductor ─────────────────────────────────────────────────────────────
+# DESeq2 and MAST are FindMarkers/FindAllMarkers test.use options (run_dge.R) — baked
+# in here so a DGE run doesn't pay a ~30-60s on-demand install cost on every request.
 install_bioc(
   "clusterProfiler", "org.Hs.eg.db", "org.Mm.eg.db",
-  "BiocNeighbors", "ComplexHeatmap", "BiocParallel"
+  "BiocNeighbors", "ComplexHeatmap", "BiocParallel",
+  "DESeq2", "MAST"
 )
 
 # ── GitHub: CellChat ─────────────────────────────────────────────────────────
@@ -43,7 +46,7 @@ if (!already("CellChat")) {
 
 message("\nInstalled package versions:")
 pkgs <- c("CellChat", "clusterProfiler", "org.Hs.eg.db", "org.Mm.eg.db",
-          "msigdbr", "dplyr", "ggplot2", "rmarkdown")
+          "msigdbr", "dplyr", "ggplot2", "rmarkdown", "DESeq2", "MAST")
 for (p in pkgs) {
   v <- tryCatch(as.character(packageVersion(p)), error = function(e) "MISSING")
   message(sprintf("  %-25s %s", p, v))
