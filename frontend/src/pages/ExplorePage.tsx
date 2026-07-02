@@ -957,6 +957,21 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
   // is in flight; cached runs resolve immediately with no task to poll/cancel.
   const [taskId, setTaskId] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Live R stdout (streamed from the running container) plus a wall-clock timer —
+  // DESeq2/MAST can go quiet for a long stretch mid-fit with no new log lines, so the
+  // timer is what actually proves the run hasn't silently died vs. just being slow.
+  const [runLog,     setRunLog]     = useState('')
+  const [runFailed,  setRunFailed]  = useState(false)
+  const [elapsedSec, setElapsedSec] = useState(0)
+  const runLogRef = useRef<HTMLPreElement>(null)
+  const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (!taskId) { if (elapsedRef.current) clearInterval(elapsedRef.current); return }
+    setElapsedSec(0)
+    elapsedRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000)
+    return () => { if (elapsedRef.current) clearInterval(elapsedRef.current) }
+  }, [taskId])
 
   const results = dgeResult?.markers ?? []
 
@@ -978,7 +993,12 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
     pollRef.current = setInterval(async () => {
       try {
         const res = await getDgeStatus(taskId)
-        if (res.status === 'done') {
+        if (res.status === 'running') {
+          if (res.log) {
+            setRunLog(res.log)
+            setTimeout(() => { if (runLogRef.current) runLogRef.current.scrollTop = runLogRef.current.scrollHeight }, 50)
+          }
+        } else if (res.status === 'done') {
           clearInterval(pollRef.current!)
           setTaskId(null)
           const filtered = res.markers.filter((r: any) =>
@@ -992,6 +1012,8 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
         } else if (res.status === 'error') {
           clearInterval(pollRef.current!)
           setTaskId(null)
+          if (res.log) setRunLog(res.log)
+          setRunFailed(true)
           setLog('Error: ' + res.error)
           setLoading(false)
         } else if (res.status === 'cancelled') {
@@ -1005,7 +1027,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
   }, [taskId])
 
   async function runAnalysis() {
-    setLoading(true); setLog('Running…'); setDgeResult(null); setLoadedCacheKey(null); setTaskId(null)
+    setLoading(true); setLog('Running…'); setRunLog(''); setRunFailed(false); setDgeResult(null); setLoadedCacheKey(null); setTaskId(null)
     try {
       const res = await startDGE({
         session_id: sessionId, mode, group_by: colorBy,
@@ -1026,7 +1048,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
         setLoading(false)
       } else {
         setTaskId(res.task_id)
-        setLog('Running… (polling)')
+        setLog('Running…')
       }
     } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)); setLoading(false) }
   }
@@ -1150,7 +1172,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
           </div>
           <button onClick={runAnalysis} disabled={loading}
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
-            {loading ? 'Running…' : mode === 'clusters' ? 'FindAllMarkers' : 'FindMarkers'}
+            {taskId ? `Running… ${elapsedSec}s` : loading ? 'Running…' : mode === 'clusters' ? 'FindAllMarkers' : 'FindMarkers'}
           </button>
           {taskId && (
             <button onClick={cancelAnalysis}
@@ -1159,13 +1181,31 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
             </button>
           )}
           {dgeResult && (
-            <button onClick={() => { setDgeResult(null); setLog('') }}
+            <button onClick={() => { setDgeResult(null); setLog(''); setRunLog('') }}
               className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded transition-colors">
               Clear
             </button>
           )}
         </div>
-        {log && <p className="text-xs text-slate-500 font-mono">{log}</p>}
+        {/* Live R output — proves the run is actually progressing (not stuck) during
+            slow tests like DESeq2/MAST, which can go quiet for a long stretch mid-fit
+            with nothing but the elapsed timer above to go on between log lines. Stays
+            visible after a failure too, since that's exactly when it's most useful. */}
+        {(taskId || (runFailed && runLog)) && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-600">R log</span>
+              {taskId
+                ? <span className="text-xs text-amber-600 animate-pulse">● running… {elapsedSec}s elapsed</span>
+                : <span className="text-xs text-red-600">✗ error</span>}
+            </div>
+            <pre ref={runLogRef}
+              className="text-xs font-mono bg-slate-900 text-slate-100 rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap leading-relaxed">
+              {runLog || '(waiting for output…)'}
+            </pre>
+          </div>
+        )}
+        {!taskId && log && <p className="text-xs text-slate-500 font-mono">{log}</p>}
         <p className="text-xs text-slate-400 italic">ℹ {logfcNote}</p>
       </div>
 

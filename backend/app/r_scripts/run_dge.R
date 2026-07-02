@@ -141,15 +141,19 @@ if (test_use == "MAST") {
 # test failures as warnings rather than errors) so we can tell a genuine "no DEGs
 # passed the test" result apart from "the test itself failed for every cluster".
 de_warnings <- character(0)
+# verbose = TRUE so Seurat emits a "Calculating cluster X" message before each
+# cluster's fit (streamed live to the frontend's polling log) — otherwise, for a
+# slow test like DESeq2/MAST, the log stays completely silent for the entire run
+# and there's no way to tell it's progressing vs. stuck.
 run_markers <- function() {
   if (mode == "clusters") {
     FindAllMarkers(s.obj, assay = assay_name, group.by = group_by,
                     test.use = test_use, slot = effective_slot, min.pct = min_pct,
-                    features = features, verbose = FALSE)
+                    features = features, verbose = TRUE)
   } else {
     FindMarkers(s.obj, ident.1 = ident1, ident.2 = if (length(ident2) > 0) ident2 else NULL,
                 assay = assay_name, test.use = test_use, slot = effective_slot, min.pct = min_pct,
-                features = features, verbose = FALSE) %>%
+                features = features, verbose = TRUE) %>%
       tibble::rownames_to_column("gene") %>%
       mutate(cluster = paste(paste(ident1, collapse = "+"), "vs", if (length(ident2) > 0) paste(ident2, collapse = "+") else "others"))
   }
