@@ -13,6 +13,7 @@ ident1       <- if (length(args) >= 7 && nchar(args[7]) > 0) trimws(strsplit(arg
 ident2       <- if (length(args) >= 8 && nchar(args[8]) > 0) trimws(strsplit(args[8], ",")[[1]]) else character(0)
 rm_tcr       <- if (length(args) >= 9) args[9] == "true" else TRUE
 rm_bcr       <- if (length(args) >= 10) args[10] == "true" else TRUE
+min_pct      <- if (length(args) >= 11 && nchar(args[11]) > 0) as.numeric(args[11]) else 0.01
 
 s.obj <- readRDS(rds_path)
 if (inherits(s.obj[["RNA"]], "Assay5")) {
@@ -69,22 +70,79 @@ if (test_use == "DESeq2") {
   if (!requireNamespace("DESeq2", quietly = TRUE))
     BiocManager::install("DESeq2", ask = FALSE, update = FALSE)
   suppressPackageStartupMessages(library(DESeq2))
+
+  # Seurat's DESeq2 test (Seurat:::DESeq2DETest) calls DESeq2::estimateSizeFactors()
+  # with its default "ratio" (median-of-ratios) method, which requires every gene to
+  # have a nonzero count in every cell to compute a log geometric mean. Single-cell
+  # count matrices are sparse enough that this is essentially never true, so DESeq2
+  # errors with "every gene contains at least one zero, cannot compute log geometric
+  # means" for every cluster. FindAllMarkers catches that per-cluster error internally
+  # and just warns instead of failing, so the run used to silently come back with 0
+  # DEGs. Work around the sparsity issue by defaulting estimateSizeFactors() to the
+  # "poscounts" estimator (Anders & Huber 2010), which only requires a gene to be
+  # nonzero in *some* cells rather than all of them.
+  #
+  # estimateSizeFactors is an S4 generic owned by BiocGenerics (DESeq2 only supplies
+  # the DESeqDataSet method), so it must be overridden via setMethod, not
+  # assignInNamespace on DESeq2's own namespace bindings. This container is discarded
+  # after the script exits (docker run --rm), so there's no need to restore the
+  # original method afterward.
+  original_size_factor_method <- selectMethod("estimateSizeFactors", "DESeqDataSet")
+  setMethod("estimateSizeFactors", "DESeqDataSet", function(object, type = "poscounts", ...) {
+    original_size_factor_method(object, type = type, ...)
+  })
+
+  # Separately, Seurat:::DESeq2DETest calls CheckDots(..., fxns = "DESeq2::results")
+  # to validate any extra arguments forwarded down from FindMarkers/FindAllMarkers.
+  # CheckDots resolves `fxns` entries via utils::argsAnywhere(), which cannot resolve
+  # a namespace-qualified string like "DESeq2::results" (it looks for a literal object
+  # of that name on the search path) — so whenever any extra args reach DESeq2DETest,
+  # CheckDots throws "None of the functions passed could be found" even though the
+  # args themselves are perfectly valid. This is a real Seurat bug, independent of the
+  # sparsity issue above, that used to be swallowed the same silent way. Patch CheckDots
+  # to no-op specifically on that failure while still raising any other error it hits.
+  original_check_dots <- Seurat:::CheckDots
+  assignInNamespace("CheckDots", function(..., fxns = NULL) {
+    tryCatch(original_check_dots(..., fxns = fxns), error = function(e) {
+      if (!grepl("None of the functions passed could be found", conditionMessage(e), fixed = TRUE))
+        stop(e)
+      invisible(NULL)
+    })
+  }, ns = "Seurat")
 }
 
-if (mode == "clusters") {
-  markers <- FindAllMarkers(s.obj, assay = assay_name, group.by = group_by,
-                            test.use = test_use, slot = effective_slot,
-                            features = features, verbose = FALSE)
-} else {
-  markers <- FindMarkers(s.obj, ident.1 = ident1, ident.2 = if (length(ident2) > 0) ident2 else NULL,
-                         assay = assay_name, test.use = test_use, slot = effective_slot,
-                         features = features, verbose = FALSE) %>%
-    tibble::rownames_to_column("gene") %>%
-    mutate(cluster = paste(paste(ident1, collapse = "+"), "vs", if (length(ident2) > 0) paste(ident2, collapse = "+") else "others"))
+# Collect warnings raised during the marker search (Seurat re-raises per-cluster DE
+# test failures as warnings rather than errors) so we can tell a genuine "no DEGs
+# passed the test" result apart from "the test itself failed for every cluster".
+de_warnings <- character(0)
+run_markers <- function() {
+  if (mode == "clusters") {
+    FindAllMarkers(s.obj, assay = assay_name, group.by = group_by,
+                    test.use = test_use, slot = effective_slot, min.pct = min_pct,
+                    features = features, verbose = FALSE)
+  } else {
+    FindMarkers(s.obj, ident.1 = ident1, ident.2 = if (length(ident2) > 0) ident2 else NULL,
+                assay = assay_name, test.use = test_use, slot = effective_slot, min.pct = min_pct,
+                features = features, verbose = FALSE) %>%
+      tibble::rownames_to_column("gene") %>%
+      mutate(cluster = paste(paste(ident1, collapse = "+"), "vs", if (length(ident2) > 0) paste(ident2, collapse = "+") else "others"))
+  }
 }
+markers <- withCallingHandlers(
+  run_markers(),
+  warning = function(w) {
+    de_warnings <<- c(de_warnings, conditionMessage(w))
+    invokeRestart("muffleWarning")
+  }
+)
 
 if (nrow(markers) > 0 && "avg_log2FC" %in% colnames(markers)) {
   markers <- markers %>% mutate(abs_avg_log2FC = abs(avg_log2FC))
+} else if (test_use == "DESeq2" && length(de_warnings) > 0) {
+  # Every cluster's DESeq2 test failed rather than legitimately finding no DEGs —
+  # surface it as a real error instead of returning an empty, misleadingly-successful result.
+  stop("DESeq2 failed and returned no markers. Underlying error(s): ",
+       paste(unique(de_warnings), collapse = " | "))
 } else {
   markers <- data.frame()
 }

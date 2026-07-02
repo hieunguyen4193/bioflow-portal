@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef, memo } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
@@ -182,7 +182,19 @@ function Sidebar({
 }
 
 // ── UMAP plot ──────────────────────────────────────────────────────────────────
+// Same tiering as FP_PANEL_SIZES (Feature Plot) — panels shrink as split-by produces
+// more groups so they lay out in a 2x2 / 3x3 / 4-col grid instead of one giant row.
+const UMAP_PANEL_SIZES: Record<number, { w: number; h: number; dot: number; fontSize: number }> = {
+  1: { w: 1120, h: 1040, dot: 6, fontSize: 14 },
+  2: { w: 560, h: 520, dot: 5, fontSize: 13 },
+  3: { w: 420, h: 390, dot: 4, fontSize: 12 },
+  4: { w: 320, h: 300, dot: 3, fontSize: 11 },
+}
+
 function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
+  const plotRefs = useRef<Record<string, any>>({})
+  const [pdfExporting, setPdfExporting] = useState(false)
+
   const red  = meta.reductions[reduction]
   if (!red) return <p className="text-slate-400 p-8">Reduction not found.</p>
 
@@ -204,8 +216,28 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
     ? red.cells.map((c: string) => splitValsAll[metaIndex[c]] ?? '')
     : []
   const splitGroups  = splitBy ? [...new Set(splitMeta)] : [null]
+  const panelKeys    = splitGroups.map(g => (g ?? 'all') as string)
+
+  const gridCols = splitGroups.length === 1 ? 1 : splitGroups.length <= 4 ? 2 : splitGroups.length <= 9 ? 3 : 4
+  const { w: panelW, h: panelH, dot: panelDot, fontSize: panelFontSize } = UMAP_PANEL_SIZES[gridCols]
+
+  // Fix every split panel's axis range to the full (unsplit) selection's extent —
+  // otherwise each panel auto-scales to only its own points, so the same UMAP
+  // coordinates land at different pixel positions across panels, making them
+  // visually incomparable. Padded by 5% to match Plotly's default autorange margin.
+  const axisRange = useMemo(() => {
+    const xs = red.x.filter((_: number, i: number) => mask[i])
+    const ys = red.y.filter((_: number, i: number) => mask[i])
+    if (xs.length === 0) return null
+    const [xMin, xMax] = [Math.min(...xs), Math.max(...xs)]
+    const [yMin, yMax] = [Math.min(...ys), Math.max(...ys)]
+    const xPad = (xMax - xMin) * 0.05 || 1
+    const yPad = (yMax - yMin) * 0.05 || 1
+    return { x: [xMin - xPad, xMax + xPad], y: [yMin - yPad, yMax + yPad] }
+  }, [red, mask])
 
   const makePlot = (grp: string | null) => {
+    const panelKey = grp ?? 'all'
     const traces = groups.map((g: any) => {
       const idx = red.cells
         .map((_: string, i: number) => i)
@@ -216,7 +248,7 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
         name: String(g),
         x: idx.map((i: number) => red.x[i]),
         y: idx.map((i: number) => red.y[i]),
-        marker: { color: colorMap[g as string], size: 6, opacity: 0.85 },
+        marker: { color: colorMap[g as string], size: panelDot, opacity: 0.85 },
         text: idx.map((i: number) => `${red.cells[i]}<br>${colorBy}: ${g}`),
         hoverinfo: 'text' as const,
       }
@@ -233,7 +265,7 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
         y: idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length,
         text: `<b>${String(g)}</b>`,
         showarrow: false,
-        font: { size: 13, color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
+        font: { size: Math.max(9, panelFontSize - 1), color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
         bgcolor: 'rgba(255,255,255,0.85)',
         bordercolor: '#94a3b8',
         borderwidth: 1,
@@ -242,28 +274,52 @@ function UMAPTab({ meta, reduction, colorBy, splitBy, selectedClusters }: any) {
     }).filter(Boolean)
 
     return (
-      <div key={grp ?? 'all'} style={{ width: 1120, flexShrink: 0 }}>
+      <div key={panelKey}>
         {grp && <div className="text-center text-xs text-slate-500 mb-1">{grp}</div>}
-        <Plot key={`${reduction}-${grp ?? 'all'}-${colorBy}`} data={traces} layout={{
-          width: 1120, height: 1040,
-          title: grp ? undefined : { text: `${reduction} — ${colorBy}`, font: { size: 13 } },
-          xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain' },
-          yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1 },
+        <Plot key={`${reduction}-${panelKey}-${colorBy}`} data={traces} layout={{
+          width: panelW, height: panelH,
+          title: grp ? undefined : { text: `${reduction} — ${colorBy}`, font: { size: panelFontSize } },
+          xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: panelFontSize - 2 }, range: axisRange?.x },
+          yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: panelFontSize - 2 }, range: axisRange?.y },
           legend: { itemsizing: 'constant' },
           annotations: clusterAnnotations,
           margin: { t: 40, l: 55, r: 20, b: 55 },
           paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-        }} config={{ responsive: false }} />
+        }} config={{ responsive: false }}
+          onInitialized={(_: any, gd: any) => { plotRefs.current[panelKey] = gd }}
+          onUpdate={(_: any, gd: any) => { plotRefs.current[panelKey] = gd }} />
       </div>
     )
   }
 
+  async function handleDownloadPdf() {
+    setPdfExporting(true)
+    try {
+      await downloadPlotGridPdf(panelKeys, gridCols, panelW, panelH, plotRefs, 'UMAP')
+    } catch (e) {
+      toast.error('Download failed: ' + String(e))
+    } finally {
+      setPdfExporting(false)
+    }
+  }
+
   return (
-    <div className="p-4">
-      <div className="flex flex-wrap gap-2">{splitGroups.map(makePlot)}</div>
+    <div className="p-4 space-y-3">
+      <div className="flex items-center gap-3">
+        <button onClick={handleDownloadPdf} disabled={pdfExporting}
+          className="px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 disabled:opacity-50">
+          {pdfExporting ? 'Exporting…' : '↓ Download PDF (vector)'}
+        </button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${gridCols}, ${panelW}px)`, gap: 12 }}>
+        {splitGroups.map(makePlot)}
+      </div>
     </div>
   )
 }
+// Memoized so unrelated ExplorePage re-renders (sidebar tweaks, cache polling, other
+// tabs' state) don't cascade into this tab while it's mounted but inactive.
+const UMAPTabMemo = memo(UMAPTab)
 
 // ── Shared vector-PDF export for panel-grid plots (Feature/Violin/Box plots) ────
 // Tiles every gene's panel onto a single PDF page at its on-screen grid position,
@@ -497,6 +553,7 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
     </div>
   )
 }
+const FeaturePlotTabMemo = memo(FeaturePlotTab)
 
 // ── Violin plot ────────────────────────────────────────────────────────────────
 const DIST_PANEL_SIZES: Record<number, { w: number; h: number; fontSize: number }> = {
@@ -647,6 +704,7 @@ function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, ses
     </div>
   )
 }
+const DistributionPlotTabMemo = memo(DistributionPlotTab)
 
 // ── DGE cluster gene-panel plots ─────────────────────────────────────────────
 // Auto-fetches expression for a fixed gene list (the cluster's top markers) and
@@ -879,6 +937,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
   const ident2 = ident2Raw.split(',').map(s => s.trim()).filter(Boolean)
   const [rmTCR,   setRmTCR]   = useState(true)
   const [rmBCR,   setRmBCR]   = useState(true)
+  const [minPct,  setMinPct]  = useState(0.01)
   const [pval,    setPval]    = useState(0.05)
   const [logfc,   setLogfc]   = useState(0.25)
   const [dgeResult, setDgeResult] = useState<DGEResult | null>(null)
@@ -917,7 +976,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
         assay, slot, test_use: test,
         ident1: ident1.length ? ident1.join(',') : undefined,
         ident2: ident2.length ? ident2.join(',') : undefined,
-        rm_tcr: rmTCR, rm_bcr: rmBCR,
+        rm_tcr: rmTCR, rm_bcr: rmBCR, min_pct: minPct,
         pval_cutoff: pval, logfc_cutoff: logfc,
       })
       const filtered = res.markers.filter((r: any) =>
@@ -937,6 +996,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
       const cached = await loadDgeCacheEntry(sessionId, entry.cache_key)
       setTest(cached.test_use)
       setRmTCR(cached.rm_tcr); setRmBCR(cached.rm_bcr)
+      setMinPct(cached.min_pct)
       setPval(cached.pval_cutoff); setLogfc(cached.logfc_cutoff)
       if (mode === 'conditions') {
         setIdent1Raw(cached.ident1 ?? ''); setIdent2Raw(cached.ident2 ?? '')
@@ -993,6 +1053,12 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
               className="border border-slate-300 rounded px-2 py-1 text-sm">
               {['wilcox','t','MAST','DESeq2'].map(t => <option key={t}>{t}</option>)}
             </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1" title="Minimum fraction of cells expressing a gene in either group for it to be tested — passed straight through to FindMarkers/FindAllMarkers, so it changes which genes actually get tested (unlike the display-only filters below).">min.pct ≥</label>
+            <input type="number" value={minPct} step={0.01} min={0} max={1}
+              onChange={e => setMinPct(Number(e.target.value))}
+              className="border border-slate-300 rounded px-2 py-1 text-sm w-24" />
           </div>
           <div>
             <label className="text-xs text-slate-500 block mb-1">adj. p-val ≤</label>
@@ -1079,6 +1145,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
                     <span className="text-slate-500">{entry.test_use}</span>
                     {entry.rm_tcr && <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-full">TCR removed</span>}
                     {entry.rm_bcr && <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full">BCR removed</span>}
+                    <span className="text-slate-500">min.pct ≥ {entry.min_pct}</span>
                     <span className="text-slate-500">p ≤ {entry.pval_cutoff}, |log2FC| ≥ {entry.logfc_cutoff}</span>
                     <span className="text-slate-500">{entry.n_significant}/{entry.n_markers} sig.</span>
                     <span className="text-slate-400">({entry.species})</span>
@@ -1284,6 +1351,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
     </div>
   )
 }
+const DGETabMemo = memo(DGETab)
 
 // One cluster's DE-gene table, followed by Feature Plot / Violin Plot / Box Plot tabs
 // for that cluster's top 9 upregulated markers (mode === 'clusters' only).
@@ -1416,10 +1484,10 @@ function DgeClusterResultPanel({ cl, results, mode, search, setSearch, sortCol, 
 
 // ── Metadata table ─────────────────────────────────────────────────────────────
 function MetadataTab({ meta }: { meta: SeuratMeta }) {
-  const cols = Object.keys(meta.metadata)
-  const rows = meta.cells.map((cell, i) =>
-    Object.fromEntries([['cell', cell], ...cols.map(c => [c, meta.metadata[c]?.[i] ?? ''])]))
-  const allCols = ['cell', ...cols]
+  const cols = useMemo(() => Object.keys(meta.metadata), [meta])
+  const rows = useMemo(() => meta.cells.map((cell, i) =>
+    Object.fromEntries([['cell', cell], ...cols.map(c => [c, meta.metadata[c]?.[i] ?? ''])])), [meta, cols])
+  const allCols = useMemo(() => ['cell', ...cols], [cols])
   const [filter,  setFilter]  = useState('')
   const [sortCol, setSortCol] = useState('cell')
   const [sortDir, setSortDir] = useState<1 | -1>(1)
@@ -1429,14 +1497,14 @@ function MetadataTab({ meta }: { meta: SeuratMeta }) {
     else { setSortCol(col); setSortDir(1) }
   }
 
-  const visible = rows
+  const visible = useMemo(() => rows
     .filter(r => !filter || Object.values(r).some(v => String(v).toLowerCase().includes(filter.toLowerCase())))
     .sort((a, b) => {
       const av = a[sortCol]; const bv = b[sortCol]
       const an = Number(av); const bn = Number(bv)
       if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortDir
       return String(av).localeCompare(String(bv)) * sortDir
-    })
+    }), [rows, filter, sortCol, sortDir])
 
   return (
     <div className="p-4 space-y-3">
@@ -1483,6 +1551,7 @@ function MetadataTab({ meta }: { meta: SeuratMeta }) {
     </div>
   )
 }
+const MetadataTabMemo = memo(MetadataTab)
 
 // ── Pathway Analysis tab ───────────────────────────────────────────────────────
 const MSIGDB_CAT_LABEL: Record<string, string> = {
@@ -2212,6 +2281,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
     </div>
   )
 }
+const PathwayTabMemo = memo(PathwayTab)
 
 // ── CellChat tab ───────────────────────────────────────────────────────────────
 function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string }) {
@@ -2396,6 +2466,7 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
     </div>
   )
 }
+const CellChatTabMemo = memo(CellChatTab)
 
 // ── Upload screen ──────────────────────────────────────────────────────────────
 function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
@@ -2680,6 +2751,7 @@ function GuideTab() {
     </div>
   )
 }
+const GuideTabMemo = memo(GuideTab)
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'CellChat', 'Metadata', 'Guide']
@@ -2687,6 +2759,13 @@ const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'DGE — Cluste
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
   const [tab,      setTab]      = useState('UMAP')
+  // Tabs mount lazily on first visit (not all 10 up front) and then stay mounted —
+  // hidden via CSS rather than unmounted — so switching back preserves their state.
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(['UMAP']))
+  function switchTab(t: string) {
+    setTab(t)
+    setVisitedTabs(prev => (prev.has(t) ? prev : new Set(prev).add(t)))
+  }
   const [reduction, setReduction] = useState('')
   const [colorBy,  setColorBy]  = useState('')
   const [assay,    setAssay]    = useState('RNA')
@@ -2755,6 +2834,8 @@ export default function ExplorePage() {
     setSlot(availableSlots.includes('data') ? 'data' : availableSlots[0] ?? 'data')
     const clVals = [...new Set(Object.values(m.metadata)[0] ?? [])]
     setSelectedClusters(clVals as string[])
+    setTab('UMAP')
+    setVisitedTabs(new Set(['UMAP']))
     // cache polling is started by the useEffect watching [assay, slot, sessionId]
   }
 
@@ -2780,7 +2861,7 @@ export default function ExplorePage() {
         {/* Tab bar */}
         <div className="flex border-b border-slate-200 bg-white px-4 gap-1 shrink-0">
           {TABS.map(t => (
-            <button key={t} onClick={() => setTab(t)}
+            <button key={t} onClick={() => switchTab(t)}
               className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap
                 ${tab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
               {t}
@@ -2807,6 +2888,7 @@ export default function ExplorePage() {
               setCacheStatus('idle')
               setMeta(null)
               setTab('UMAP')
+              setVisitedTabs(new Set(['UMAP']))
             }}
               className="text-xs text-slate-400 hover:text-slate-600">
               ↩ Load new file
@@ -2814,45 +2896,68 @@ export default function ExplorePage() {
           </div>
         </div>
 
-        {/* Tab content — all tabs stay mounted to preserve state; inactive ones are hidden */}
+        {/* Tab content — each tab mounts lazily on first visit, then stays mounted
+            (hidden via CSS) to preserve its state; tabs never visited aren't in the
+            DOM at all, so switching tabs no longer fires every tab's data fetches
+            up front and unrelated re-renders don't cascade into unvisited tabs. */}
         <div className="flex-1 overflow-auto bg-slate-50">
-          <div className={tab === 'UMAP' ? '' : 'hidden'}>
-            <UMAPTab meta={meta} reduction={reduction} colorBy={colorBy}
-              splitBy={splitBy} selectedClusters={selectedClusters} />
-          </div>
-          <div className={tab === 'Feature Plot' ? '' : 'hidden'}>
-            <FeaturePlotTab meta={meta} reduction={reduction}
-              assay={assay} slot={slot} selectedClusters={selectedClusters}
-              colorBy={colorBy} sessionId={meta.session_id} />
-          </div>
-          <div className={tab === 'Violin Plot' ? '' : 'hidden'}>
-            <DistributionPlotTab meta={meta} assay={assay} slot={slot}
-              selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="violin" />
-          </div>
-          <div className={tab === 'Box Plot' ? '' : 'hidden'}>
-            <DistributionPlotTab meta={meta} assay={assay} slot={slot}
-              selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="box" />
-          </div>
-          <div className={tab === 'DGE — Clusters' ? '' : 'hidden'}>
-            <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy} reduction={reduction}
-              sessionId={meta.session_id} mode="clusters" onDgeChanged={handleDgeChanged} />
-          </div>
-          <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
-            <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
-              sessionId={meta.session_id} mode="conditions" onDgeChanged={handleDgeChanged} />
-          </div>
-          <div className={tab === 'Pathway' ? '' : 'hidden'}>
-            <PathwayTab meta={meta} sessionId={meta.session_id} dgeVersion={dgeVersion} />
-          </div>
-          <div className={tab === 'CellChat' ? '' : 'hidden'}>
-            <CellChatTab meta={meta} sessionId={meta.session_id} />
-          </div>
-          <div className={tab === 'Metadata' ? '' : 'hidden'}>
-            <MetadataTab meta={meta} />
-          </div>
-          <div className={tab === 'Guide' ? '' : 'hidden'}>
-            <GuideTab />
-          </div>
+          {visitedTabs.has('UMAP') && (
+            <div className={tab === 'UMAP' ? '' : 'hidden'}>
+              <UMAPTabMemo meta={meta} reduction={reduction} colorBy={colorBy}
+                splitBy={splitBy} selectedClusters={selectedClusters} />
+            </div>
+          )}
+          {visitedTabs.has('Feature Plot') && (
+            <div className={tab === 'Feature Plot' ? '' : 'hidden'}>
+              <FeaturePlotTabMemo meta={meta} reduction={reduction}
+                assay={assay} slot={slot} selectedClusters={selectedClusters}
+                colorBy={colorBy} sessionId={meta.session_id} />
+            </div>
+          )}
+          {visitedTabs.has('Violin Plot') && (
+            <div className={tab === 'Violin Plot' ? '' : 'hidden'}>
+              <DistributionPlotTabMemo meta={meta} assay={assay} slot={slot}
+                selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="violin" />
+            </div>
+          )}
+          {visitedTabs.has('Box Plot') && (
+            <div className={tab === 'Box Plot' ? '' : 'hidden'}>
+              <DistributionPlotTabMemo meta={meta} assay={assay} slot={slot}
+                selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="box" />
+            </div>
+          )}
+          {visitedTabs.has('DGE — Clusters') && (
+            <div className={tab === 'DGE — Clusters' ? '' : 'hidden'}>
+              <DGETabMemo meta={meta} assay={assay} slot={slot} colorBy={colorBy} reduction={reduction}
+                sessionId={meta.session_id} mode="clusters" onDgeChanged={handleDgeChanged} />
+            </div>
+          )}
+          {visitedTabs.has('DGE — Conditions') && (
+            <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
+              <DGETabMemo meta={meta} assay={assay} slot={slot} colorBy={colorBy}
+                sessionId={meta.session_id} mode="conditions" onDgeChanged={handleDgeChanged} />
+            </div>
+          )}
+          {visitedTabs.has('Pathway') && (
+            <div className={tab === 'Pathway' ? '' : 'hidden'}>
+              <PathwayTabMemo meta={meta} sessionId={meta.session_id} dgeVersion={dgeVersion} />
+            </div>
+          )}
+          {visitedTabs.has('CellChat') && (
+            <div className={tab === 'CellChat' ? '' : 'hidden'}>
+              <CellChatTabMemo meta={meta} sessionId={meta.session_id} />
+            </div>
+          )}
+          {visitedTabs.has('Metadata') && (
+            <div className={tab === 'Metadata' ? '' : 'hidden'}>
+              <MetadataTabMemo meta={meta} />
+            </div>
+          )}
+          {visitedTabs.has('Guide') && (
+            <div className={tab === 'Guide' ? '' : 'hidden'}>
+              <GuideTabMemo />
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -73,6 +73,7 @@ export interface DgeCacheEntry {
   ident2:         string | null
   rm_tcr:         boolean
   rm_bcr:         boolean
+  min_pct:        number
   pval_cutoff:    number
   logfc_cutoff:   number
   species:        string
@@ -91,6 +92,7 @@ export async function runDGE(params: {
   ident2?: string
   rm_tcr: boolean
   rm_bcr: boolean
+  min_pct: number
   pval_cutoff: number
   logfc_cutoff: number
 }): Promise<DGEResult> {

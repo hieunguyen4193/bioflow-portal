@@ -158,11 +158,12 @@ def _dge_cache_dir_for(rds_path: str) -> str:
 
 
 def _dge_cache_key(mode: str, group_by: str, assay: str, slot: str, test_use: str,
-                    ident1: list[str], ident2: list[str], rm_tcr: bool, rm_bcr: bool) -> str:
+                    ident1: list[str], ident2: list[str], rm_tcr: bool, rm_bcr: bool,
+                    min_pct: float) -> str:
     payload = {
         "mode": mode, "group_by": group_by, "assay": assay, "slot": slot,
         "test_use": test_use, "ident1": sorted(ident1), "ident2": sorted(ident2),
-        "rm_tcr": rm_tcr, "rm_bcr": rm_bcr,
+        "rm_tcr": rm_tcr, "rm_bcr": rm_bcr, "min_pct": min_pct,
     }
     return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
 
@@ -386,6 +387,9 @@ class DGERequest(BaseModel):
     ident2:     Optional[str] = None
     rm_tcr:     bool = True
     rm_bcr:     bool = True
+    # Real FindMarkers/FindAllMarkers parameter — affects which genes are tested,
+    # so (unlike pval/logfc below) it's part of the cache key.
+    min_pct:    float = 0.01
     # Display-time filters only — do not affect the FindMarkers computation, so
     # they are not part of the cache key. Stored alongside the result purely so
     # the cached-results panel can show what thresholds were last used.
@@ -402,7 +406,7 @@ async def run_dge(req: DGERequest):
     ident1_list = [s.strip() for s in (req.ident1 or "").split(",") if s.strip()]
     ident2_list = [s.strip() for s in (req.ident2 or "").split(",") if s.strip()]
     cache_key = _dge_cache_key(req.mode, req.group_by, req.assay, req.slot, req.test_use,
-                               ident1_list, ident2_list, req.rm_tcr, req.rm_bcr)
+                               ident1_list, ident2_list, req.rm_tcr, req.rm_bcr, req.min_pct)
 
     cached_entry = _read_dge_cache_entry(rds_path, cache_key)
     if cached_entry:
@@ -413,6 +417,7 @@ async def run_dge(req: DGERequest):
             req.ident1 or "", req.ident2 or "",
             "true" if req.rm_tcr else "false",
             "true" if req.rm_bcr else "false",
+            str(req.min_pct),
         ]
         r = _run_r("run_dge.R", args, timeout=600)
         result = {
@@ -441,6 +446,7 @@ async def run_dge(req: DGERequest):
         "ident2":        req.ident2 or None,
         "rm_tcr":        req.rm_tcr,
         "rm_bcr":        req.rm_bcr,
+        "min_pct":       req.min_pct,
         "pval_cutoff":   req.pval_cutoff,
         "logfc_cutoff":  req.logfc_cutoff,
         "species":       result.get("species", "unknown"),
