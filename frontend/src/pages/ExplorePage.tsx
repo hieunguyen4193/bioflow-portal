@@ -648,8 +648,230 @@ function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, ses
   )
 }
 
+// ── DGE cluster gene-panel plots ─────────────────────────────────────────────
+// Auto-fetches expression for a fixed gene list (the cluster's top markers) and
+// renders it the same way FeaturePlotTab does — no manual gene input/Plot button,
+// since the genes are already chosen for the user.
+function DgeFeaturePlotPanel({ meta, reduction, assay, slot, sessionId, genes }: any) {
+  const [exprData,   setExprData]   = useState<Record<string, number[]> | null>(null)
+  const [cells,      setCells]      = useState<string[]>([])
+  const [loading,    setLoading]    = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const plotRefs = useRef<Record<string, any>>({})
+  const geneKey = genes.join(',')
+
+  const red = meta.reductions[reduction]
+  const validGenes = exprData ? Object.keys(exprData) : []
+  const gridCols = validGenes.length === 0 ? 1 : validGenes.length === 1 ? 1 : validGenes.length <= 4 ? 2 : validGenes.length <= 9 ? 3 : 4
+  const { w: panelW, h: panelH, dot: panelDot, fontSize: panelFontSize } = FP_PANEL_SIZES[gridCols]
+
+  useEffect(() => {
+    if (!geneKey) { setExprData(null); setCells([]); return }
+    let cancelled = false
+    setLoading(true); setFetchError(null)
+    getGeneExpression(sessionId, geneKey, assay, slot)
+      .then(res => { if (!cancelled) { setExprData(res.expression); setCells(res.cells) } })
+      .catch((e: any) => { if (!cancelled) { setFetchError(e.response?.data?.detail || 'Failed to fetch expression'); setExprData(null) } })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [geneKey, assay, slot, sessionId])
+
+  const plotSection = useMemo(() => {
+    if (!exprData || !red) return null
+    if (validGenes.length === 0) return null
+
+    const cols = gridCols
+    const w = panelW, h = panelH, dot = panelDot, fontSize = panelFontSize
+
+    const idxMap        = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
+    const n_cells  = red.cells.length
+    const step     = n_cells > MAX_FP_POINTS ? n_cells / MAX_FP_POINTS : 1
+    const subIdx   = Array.from({ length: Math.min(n_cells, MAX_FP_POINTS) }, (_, i) => Math.floor(i * step))
+    const subX     = subIdx.map((i: number) => red.x[i])
+    const subY     = subIdx.map((i: number) => red.y[i])
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
+        {validGenes.map(gene => {
+          const exprVals = exprData[gene]
+          const allColor = red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0)
+          const subColor = subIdx.map((i: number) => allColor[i])
+          const cmin = Math.min(...allColor)
+          const cmax = Math.max(...allColor)
+
+          const order = Array.from({ length: subColor.length }, (_, i) => i)
+            .sort((a, b) => subColor[a] - subColor[b])
+          const sortedX     = order.map(i => subX[i])
+          const sortedY     = order.map(i => subY[i])
+          const sortedColor = order.map(i => subColor[i])
+
+          const markerTrace = {
+            type: 'scatter' as const,
+            mode: 'markers' as const,
+            x: sortedX, y: sortedY,
+            marker: {
+              color: sortedColor,
+              colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
+              cmin, cmax,
+              size: dot, opacity: 0.85,
+              showscale: true,
+              colorbar: { thickness: 10, len: 0.55, x: 1.02 },
+            },
+            hoverinfo: 'skip' as const,
+            name: gene,
+          }
+
+          return (
+            <Plot key={`dge-fp-${gene}-${reduction}`} data={[markerTrace]} layout={{
+              width: w, height: h,
+              title: { text: gene, font: { size: fontSize } },
+              xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 } },
+              yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
+              margin: { t: 40, l: 50, r: 55, b: 45 },
+              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+            }} config={{ responsive: false }}
+              onInitialized={(_: any, gd: any) => { plotRefs.current[gene] = gd }}
+              onUpdate={(_: any, gd: any) => { plotRefs.current[gene] = gd }} />
+          )
+        })}
+      </div>
+    )
+  }, [exprData, cells, red, reduction, validGenes, gridCols, panelW, panelH, panelDot, panelFontSize])
+
+  const [pdfExporting, setPdfExporting] = useState(false)
+  async function handleDownloadPdf() {
+    setPdfExporting(true)
+    try { await downloadPlotGridPdf(validGenes, gridCols, panelW, panelH, plotRefs, 'FeaturePlot') }
+    catch (e) { toast.error('Download failed: ' + String(e)) }
+    finally { setPdfExporting(false) }
+  }
+
+  return (
+    <div className="p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-slate-500">
+          Top {genes.length} upregulated genes by log2FC: <span className="font-mono">{genes.join(', ')}</span>
+        </p>
+        {validGenes.length > 0 && (
+          <button onClick={handleDownloadPdf} disabled={pdfExporting}
+            className="px-3 py-1.5 text-xs border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 disabled:opacity-50 whitespace-nowrap">
+            {pdfExporting ? 'Exporting…' : '↓ Download PDF (vector)'}
+          </button>
+        )}
+      </div>
+      {loading && <p className="text-sm text-slate-400">Loading expression…</p>}
+      {fetchError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 font-mono whitespace-pre-wrap">
+          <span className="font-semibold not-italic">Error: </span>{fetchError}
+        </div>
+      )}
+      {plotSection}
+    </div>
+  )
+}
+
+function DgeDistributionPlotPanel({ meta, assay, slot, colorBy, sessionId, genes, plotType }: any) {
+  const [exprData,   setExprData]   = useState<Record<string, number[]> | null>(null)
+  const [cells,      setCells]      = useState<string[]>([])
+  const [loading,    setLoading]    = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const plotRefs = useRef<Record<string, any>>({})
+  const geneKey = genes.join(',')
+
+  const colorVals = meta.metadata[colorBy] ?? []
+  const colorMap  = catColorMap(colorVals)
+  const groups    = ([...new Set(colorVals)] as string[]).sort()
+  const validGenes = exprData ? Object.keys(exprData) : []
+  const gridCols   = validGenes.length === 0 ? 1 : validGenes.length === 1 ? 1 : validGenes.length <= 4 ? 2 : validGenes.length <= 9 ? 3 : 4
+  const { w: panelW, h: panelH, fontSize: panelFontSize } = DIST_PANEL_SIZES[gridCols]
+  const filenamePrefix = plotType === 'box' ? 'BoxPlot' : 'ViolinPlot'
+
+  useEffect(() => {
+    if (!geneKey) { setExprData(null); setCells([]); return }
+    let cancelled = false
+    setLoading(true); setFetchError(null)
+    getGeneExpression(sessionId, geneKey, assay, slot)
+      .then(res => { if (!cancelled) { setExprData(res.expression); setCells(res.cells) } })
+      .catch((e: any) => { if (!cancelled) { setFetchError(e.response?.data?.detail || 'Failed to fetch expression'); setExprData(null) } })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [geneKey, assay, slot, sessionId])
+
+  const plotSection = useMemo(() => {
+    if (!exprData) return null
+    if (validGenes.length === 0) return null
+
+    const cols = gridCols
+    const w = panelW, h = panelH, fontSize = panelFontSize
+    const idxMap = Object.fromEntries(cells.map((c, i) => [c, i]))
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
+        {validGenes.map(gene => {
+          const traces = groups.map(grp => {
+            const y = meta.cells
+              .filter((_: string, i: number) => colorVals[i] === grp)
+              .map((c: string) => exprData[gene][idxMap[c]] ?? 0)
+            return plotType === 'box'
+              ? { type: 'box' as const, name: String(grp), x0: String(grp), y, width: 0.7, boxmean: true, boxpoints: 'outliers' as const, marker: { color: colorMap[grp as string] } }
+              : { type: 'violin' as const, name: String(grp), x0: String(grp), y, width: 0.85, box: { visible: true }, meanline: { visible: true }, marker: { color: colorMap[grp as string] }, points: false }
+          })
+          return (
+            <Plot key={`dge-dist-${gene}`} data={traces} layout={{
+              width: w, height: h,
+              title: { text: gene, font: { size: fontSize } },
+              xaxis: { title: colorBy, type: 'category', tickangle: -45, tickfont: { size: fontSize - 2 } },
+              yaxis: { title: 'Expression', zeroline: false, titlefont: { size: fontSize - 1 } },
+              violinmode: 'group',
+              violingap: 0.15,
+              boxmode: 'group',
+              boxgap: 0.15,
+              showlegend: false,
+              margin: { t: 40, l: 55, r: 15, b: 90 },
+              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+            }} config={{ responsive: false }}
+              onInitialized={(_: any, gd: any) => { plotRefs.current[gene] = gd }}
+              onUpdate={(_: any, gd: any) => { plotRefs.current[gene] = gd }} />
+          )
+        })}
+      </div>
+    )
+  }, [exprData, cells, meta, colorBy, colorVals, groups, colorMap, plotType, validGenes, gridCols, panelW, panelH, panelFontSize])
+
+  const [pdfExporting, setPdfExporting] = useState(false)
+  async function handleDownloadPdf() {
+    setPdfExporting(true)
+    try { await downloadPlotGridPdf(validGenes, gridCols, panelW, panelH, plotRefs, filenamePrefix) }
+    catch (e) { toast.error('Download failed: ' + String(e)) }
+    finally { setPdfExporting(false) }
+  }
+
+  return (
+    <div className="p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-slate-500">
+          Top {genes.length} upregulated genes by log2FC: <span className="font-mono">{genes.join(', ')}</span>
+        </p>
+        {validGenes.length > 0 && (
+          <button onClick={handleDownloadPdf} disabled={pdfExporting}
+            className="px-3 py-1.5 text-xs border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 disabled:opacity-50 whitespace-nowrap">
+            {pdfExporting ? 'Exporting…' : '↓ Download PDF (vector)'}
+          </button>
+        )}
+      </div>
+      {loading && <p className="text-sm text-slate-400">Loading expression…</p>}
+      {fetchError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 font-mono whitespace-pre-wrap">
+          <span className="font-semibold not-italic">Error: </span>{fetchError}
+        </div>
+      )}
+      {plotSection}
+    </div>
+  )
+}
+
 // ── DGE ───────────────────────────────────────────────────────────────────────
-function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onDgeChanged }: any) {
+function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeChanged }: any) {
   const [test,    setTest]    = useState('wilcox')
   const [ident1Raw, setIdent1Raw] = useState('')
   const [ident2Raw, setIdent2Raw] = useState('')
@@ -1049,84 +1271,143 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, onDgeChanged }: a
             </div>
           </div>
 
-          {/* Search + Active cluster table */}
-          {clusters.filter(cl => String(cl) === activeTab).map(cl => {
-            const COLS = [
-              { key: 'gene',        label: 'Gene',       numeric: false },
-              { key: 'p_val',       label: 'p_val',      numeric: true  },
-              { key: 'p_val_adj',   label: 'p_val_adj',  numeric: true  },
-              { key: 'avg_log2FC',     label: 'avg_log2FC',     numeric: true  },
-              { key: 'abs_avg_log2FC', label: '|avg_log2FC|',   numeric: true  },
-              { key: 'pct.1',          label: 'pct.1',          numeric: true  },
-              { key: 'pct.2',          label: 'pct.2',          numeric: true  },
-            ]
+          {/* Search + Active cluster table (+ Feature/Violin/Box plots for clusters mode) */}
+          {clusters.filter(cl => String(cl) === activeTab).map(cl => (
+            <DgeClusterResultPanel key={String(cl)} cl={cl} results={results} mode={mode}
+              search={search} setSearch={setSearch}
+              sortCol={sortCol} sortDir={sortDir} setSortCol={setSortCol} setSortDir={setSortDir}
+              downloadCSV={downloadCSV}
+              meta={meta} assay={assay} slot={slot} colorBy={colorBy} reduction={reduction} sessionId={sessionId} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
-            function toggleSort(col: string) {
-              if (sortCol === col) setSortDir(d => (d === 1 ? -1 : 1) as 1 | -1)
-              else { setSortCol(col); setSortDir(-1) }
-            }
+// One cluster's DE-gene table, followed by Feature Plot / Violin Plot / Box Plot tabs
+// for that cluster's top 9 upregulated markers (mode === 'clusters' only).
+function DgeClusterResultPanel({ cl, results, mode, search, setSearch, sortCol, sortDir, setSortCol, setSortDir,
+  downloadCSV, meta, assay, slot, colorBy, reduction, sessionId }: any) {
+  const [subTab, setSubTab] = useState<'feature' | 'violin' | 'box'>('feature')
 
-            const clRows = results
-              .filter((r: any) => r.cluster === cl)
-              .filter((r: any) => !search || String(r.gene).toLowerCase().includes(search.toLowerCase()))
-              .sort((a: any, b: any) => {
-                const av = COLS.find(c => c.key === sortCol)?.numeric ? Number(a[sortCol]) : String(a[sortCol])
-                const bv = COLS.find(c => c.key === sortCol)?.numeric ? Number(b[sortCol]) : String(b[sortCol])
-                return av < bv ? sortDir : av > bv ? -sortDir : 0
-              })
+  const COLS = [
+    { key: 'gene',        label: 'Gene',       numeric: false },
+    { key: 'p_val',       label: 'p_val',      numeric: true  },
+    { key: 'p_val_adj',   label: 'p_val_adj',  numeric: true  },
+    { key: 'avg_log2FC',     label: 'avg_log2FC',     numeric: true  },
+    { key: 'abs_avg_log2FC', label: '|avg_log2FC|',   numeric: true  },
+    { key: 'pct.1',          label: 'pct.1',          numeric: true  },
+    { key: 'pct.2',          label: 'pct.2',          numeric: true  },
+  ]
 
-            const SortIcon = ({ col }: { col: string }) => (
-              <span className="ml-1 text-slate-400">
-                {sortCol === col ? (sortDir === -1 ? '▼' : '▲') : '⇅'}
-              </span>
-            )
+  function toggleSort(col: string) {
+    if (sortCol === col) setSortDir((d: 1 | -1) => (d === 1 ? -1 : 1))
+    else { setSortCol(col); setSortDir(-1) }
+  }
 
-            return (
-              <div key={String(cl)}>
-                <div className="flex items-center justify-between px-4 py-2 border-b bg-slate-50 gap-3">
-                  <input
-                    value={search}
-                    onChange={e => setSearch(e.target.value)}
-                    placeholder="Search gene…"
-                    className="border border-slate-300 rounded px-2 py-1 text-xs w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-                  />
-                  <span className="text-xs text-slate-500">{clRows.length} DEGs</span>
-                  <button onClick={() => downloadCSV(clRows, `dge_cluster_${cl}.csv`)}
-                    className="text-xs text-indigo-500 hover:underline ml-auto">⬇ CSV</button>
-                </div>
-                <div className="overflow-auto max-h-[55vh]">
-                  <table className="w-full text-xs">
-                    <thead className="bg-slate-50 border-b sticky top-0">
-                      <tr>
-                        {COLS.map(c => (
-                          <th key={c.key}
-                            onClick={() => toggleSort(c.key)}
-                            className="text-left px-3 py-2 font-medium cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
-                            {c.label}<SortIcon col={c.key} />
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {clRows.map((r: any, i: number) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="px-3 py-1.5 font-semibold">{String(r.gene)}</td>
-                          <td className="px-3 py-1.5 text-slate-500 font-mono">{Number(r.p_val).toExponential(2)}</td>
-                          <td className="px-3 py-1.5 text-slate-500 font-mono">{Number(r.p_val_adj).toExponential(2)}</td>
-                          <td className={`px-3 py-1.5 font-mono font-medium ${Number(r.avg_log2FC) > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                            {Number(r.avg_log2FC) > 0 ? '+' : ''}{Number(r.avg_log2FC).toFixed(3)}
-                          </td>
-                          <td className="px-3 py-1.5 font-mono text-slate-600">{Math.abs(Number(r.avg_log2FC)).toFixed(3)}</td>
-                          <td className="px-3 py-1.5 text-slate-500">{Number(r['pct.1']).toFixed(2)}</td>
-                          <td className="px-3 py-1.5 text-slate-500">{Number(r['pct.2']).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )
-          })}
+  const clRows = results
+    .filter((r: any) => r.cluster === cl)
+    .filter((r: any) => !search || String(r.gene).toLowerCase().includes(search.toLowerCase()))
+    .sort((a: any, b: any) => {
+      const av = COLS.find(c => c.key === sortCol)?.numeric ? Number(a[sortCol]) : String(a[sortCol])
+      const bv = COLS.find(c => c.key === sortCol)?.numeric ? Number(b[sortCol]) : String(b[sortCol])
+      return av < bv ? sortDir : av > bv ? -sortDir : 0
+    })
+
+  const SortIcon = ({ col }: { col: string }) => (
+    <span className="ml-1 text-slate-400">
+      {sortCol === col ? (sortDir === -1 ? '▼' : '▲') : '⇅'}
+    </span>
+  )
+
+  const topGenes = useMemo(() => [...results]
+    .filter((r: any) => r.cluster === cl && Number(r.avg_log2FC) > 0)
+    .sort((a: any, b: any) => Number(b.avg_log2FC) - Number(a.avg_log2FC))
+    .slice(0, 9)
+    .map((r: any) => String(r.gene)), [results, cl])
+
+  return (
+    <div>
+      <div className="flex items-center justify-between px-4 py-2 border-b bg-slate-50 gap-3">
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search gene…"
+          className="border border-slate-300 rounded px-2 py-1 text-xs w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+        />
+        <span className="text-xs text-slate-500">{clRows.length} DEGs</span>
+        <button onClick={() => downloadCSV(clRows, `dge_cluster_${cl}.csv`)}
+          className="text-xs text-indigo-500 hover:underline ml-auto">⬇ CSV</button>
+      </div>
+      <div className="overflow-auto max-h-[55vh]">
+        <table className="w-full text-xs">
+          <thead className="bg-slate-50 border-b sticky top-0">
+            <tr>
+              {COLS.map(c => (
+                <th key={c.key}
+                  onClick={() => toggleSort(c.key)}
+                  className="text-left px-3 py-2 font-medium cursor-pointer hover:bg-slate-100 select-none whitespace-nowrap">
+                  {c.label}<SortIcon col={c.key} />
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {clRows.map((r: any, i: number) => (
+              <tr key={i} className="hover:bg-slate-50">
+                <td className="px-3 py-1.5 font-semibold">{String(r.gene)}</td>
+                <td className="px-3 py-1.5 text-slate-500 font-mono">{Number(r.p_val).toExponential(2)}</td>
+                <td className="px-3 py-1.5 text-slate-500 font-mono">{Number(r.p_val_adj).toExponential(2)}</td>
+                <td className={`px-3 py-1.5 font-mono font-medium ${Number(r.avg_log2FC) > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                  {Number(r.avg_log2FC) > 0 ? '+' : ''}{Number(r.avg_log2FC).toFixed(3)}
+                </td>
+                <td className="px-3 py-1.5 font-mono text-slate-600">{Math.abs(Number(r.avg_log2FC)).toFixed(3)}</td>
+                <td className="px-3 py-1.5 text-slate-500">{Number(r['pct.1']).toFixed(2)}</td>
+                <td className="px-3 py-1.5 text-slate-500">{Number(r['pct.2']).toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {mode === 'clusters' && (
+        <div className="border-t border-slate-200">
+          <div className="flex border-b border-slate-200 bg-slate-50">
+            {([
+              ['feature', 'Feature Plot'],
+              ['violin', 'Violin Plot'],
+              ['box', 'Box Plot'],
+            ] as const).map(([key, label]) => (
+              <button key={key} onClick={() => setSubTab(key)}
+                className={`px-4 py-2 text-xs font-medium whitespace-nowrap border-b-2 transition-colors
+                  ${subTab === key
+                    ? 'border-indigo-600 text-indigo-600 bg-white'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-white'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {topGenes.length === 0 ? (
+            <p className="px-4 py-3 text-xs text-slate-400 italic">
+              No upregulated genes (avg_log2FC &gt; 0) pass the current filters for this cluster.
+            </p>
+          ) : (
+            <>
+              {subTab === 'feature' && (
+                <DgeFeaturePlotPanel meta={meta} reduction={reduction} assay={assay} slot={slot}
+                  sessionId={sessionId} genes={topGenes} />
+              )}
+              {subTab === 'violin' && (
+                <DgeDistributionPlotPanel meta={meta} assay={assay} slot={slot} colorBy={colorBy}
+                  sessionId={sessionId} genes={topGenes} plotType="violin" />
+              )}
+              {subTab === 'box' && (
+                <DgeDistributionPlotPanel meta={meta} assay={assay} slot={slot} colorBy={colorBy}
+                  sessionId={sessionId} genes={topGenes} plotType="box" />
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -2553,7 +2834,7 @@ export default function ExplorePage() {
               selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="box" />
           </div>
           <div className={tab === 'DGE — Clusters' ? '' : 'hidden'}>
-            <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy}
+            <DGETab meta={meta} assay={assay} slot={slot} colorBy={colorBy} reduction={reduction}
               sessionId={meta.session_id} mode="clusters" onDgeChanged={handleDgeChanged} />
           </div>
           <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
