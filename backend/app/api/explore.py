@@ -20,6 +20,7 @@ _session_labels: dict[str, str] = {}  # session_id → human-readable source lab
 _expr_caches: dict[str, dict] = {}    # rds_path → {(assay, slot): {mat, cells, gene_idx}}
 _cache_building: set[tuple] = set()   # {(rds_path, assay, slot)} currently being built
 _pathway_tasks: dict[str, dict] = {}
+_dge_tasks: dict[str, dict] = {}
 
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
 
@@ -397,36 +398,7 @@ class DGERequest(BaseModel):
     logfc_cutoff: float = 0.25
 
 
-@router.post("/dge")
-async def run_dge(req: DGERequest):
-    rds_path = _sessions.get(req.session_id)
-    if not rds_path or not os.path.exists(rds_path):
-        raise HTTPException(404, "Session not found — please re-upload your file")
-
-    ident1_list = [s.strip() for s in (req.ident1 or "").split(",") if s.strip()]
-    ident2_list = [s.strip() for s in (req.ident2 or "").split(",") if s.strip()]
-    cache_key = _dge_cache_key(req.mode, req.group_by, req.assay, req.slot, req.test_use,
-                               ident1_list, ident2_list, req.rm_tcr, req.rm_bcr, req.min_pct)
-
-    cached_entry = _read_dge_cache_entry(rds_path, cache_key)
-    if cached_entry:
-        result = cached_entry["result"]
-    else:
-        args = [
-            rds_path, req.mode, req.group_by, req.assay, req.slot, req.test_use,
-            req.ident1 or "", req.ident2 or "",
-            "true" if req.rm_tcr else "false",
-            "true" if req.rm_bcr else "false",
-            str(req.min_pct),
-        ]
-        r = _run_r("run_dge.R", args, timeout=600)
-        result = {
-            "markers":      r.get("markers", []),
-            "excluded_tcr": r.get("excluded_tcr", []),
-            "excluded_bcr": r.get("excluded_bcr", []),
-            "species":      r.get("species", "unknown"),
-        }
-
+def _write_dge_result(req: "DGERequest", rds_path: str, cache_key: str, result: dict) -> None:
     markers = result.get("markers", [])
     n_significant = sum(
         1 for m in markers
@@ -456,7 +428,120 @@ async def run_dge(req: DGERequest):
     }
     _write_dge_cache_entry(rds_path, cache_key, entry)
 
-    return JSONResponse({**result, "cache_key": cache_key, "cached": cached_entry is not None})
+
+def _run_dge_background(task_id: str, req: "DGERequest", rds_path: str, cache_key: str) -> None:
+    # Named so cancel can `docker kill` the container directly — killing just the
+    # local `docker run` client process (proc.kill()) detaches from the log stream
+    # but does not reliably stop the container itself, since --rm/no -d means the
+    # CLI can't forward the signal to the daemon once its own process is gone.
+    container_name = f"dge-{task_id}"
+    container_script = os.path.join(R_SCRIPTS, "run_dge.R")
+    cmd = [
+        "docker", "run", "--rm", "--name", container_name,
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
+        DOCKER_IMAGE,
+        "Rscript", "--vanilla", container_script,
+        rds_path, req.mode, req.group_by, req.assay, req.slot, req.test_use,
+        req.ident1 or "", req.ident2 or "",
+        "true" if req.rm_tcr else "false",
+        "true" if req.rm_bcr else "false",
+        str(req.min_pct),
+    ]
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        _dge_tasks[task_id]["proc"] = proc
+        stdout_chunks = []
+        for line in proc.stdout:
+            if _dge_tasks[task_id].get("status") == "cancelled":
+                proc.kill()
+                return
+            stdout_chunks.append(line)
+            _dge_tasks[task_id]["log"] = "".join(stdout_chunks)
+        proc.wait(timeout=600)
+
+        if _dge_tasks[task_id].get("status") == "cancelled":
+            return
+        full_output = "".join(stdout_chunks)
+        json_line = next((l for l in full_output.splitlines() if l.strip().startswith(("{", "["))), None)
+        if proc.returncode != 0 or not json_line:
+            _dge_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
+            return
+        r = json.loads(json_line)
+        result = {
+            "markers":      r.get("markers", []),
+            "excluded_tcr": r.get("excluded_tcr", []),
+            "excluded_bcr": r.get("excluded_bcr", []),
+            "species":      r.get("species", "unknown"),
+        }
+        _write_dge_result(req, rds_path, cache_key, result)
+        _dge_tasks[task_id].update({"status": "done", "result": result, "cache_key": cache_key})
+    except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
+        _dge_tasks[task_id].update({"status": "error", "error": "DGE run timed out (10 min)"})
+    except Exception as exc:
+        _dge_tasks[task_id].update({"status": "error", "error": str(exc)})
+    finally:
+        _dge_tasks[task_id].pop("proc", None)
+
+
+@router.post("/dge/start")
+async def start_dge(req: DGERequest):
+    rds_path = _sessions.get(req.session_id)
+    if not rds_path or not os.path.exists(rds_path):
+        raise HTTPException(404, "Session not found — please re-upload your file")
+
+    ident1_list = [s.strip() for s in (req.ident1 or "").split(",") if s.strip()]
+    ident2_list = [s.strip() for s in (req.ident2 or "").split(",") if s.strip()]
+    cache_key = _dge_cache_key(req.mode, req.group_by, req.assay, req.slot, req.test_use,
+                               ident1_list, ident2_list, req.rm_tcr, req.rm_bcr, req.min_pct)
+
+    cached_entry = _read_dge_cache_entry(rds_path, cache_key)
+    if cached_entry:
+        result = cached_entry["result"]
+        _write_dge_result(req, rds_path, cache_key, result)  # refresh pval/logfc metadata
+        return JSONResponse({**result, "cache_key": cache_key, "cached": True})
+
+    task_id = str(uuid.uuid4())
+    _dge_tasks[task_id] = {"status": "running"}
+    thread = threading.Thread(target=_run_dge_background, args=(task_id, req, rds_path, cache_key), daemon=True)
+    thread.start()
+    return JSONResponse({"cached": False, "task_id": task_id})
+
+
+@router.get("/dge/{task_id}")
+async def get_dge_status(task_id: str):
+    task = _dge_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    response = {"status": task.get("status"), "log": task.get("log", "")}
+    if task.get("status") == "done":
+        response.update(task.get("result", {}))
+        response["cache_key"] = task.get("cache_key")
+    if task.get("status") == "error":
+        response["error"] = task.get("error")
+    return JSONResponse(response)
+
+
+@router.post("/dge/{task_id}/cancel")
+async def cancel_dge(task_id: str):
+    task = _dge_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    if task.get("status") != "running":
+        raise HTTPException(400, "Task is not running")
+    task.update({"status": "cancelled"})
+    proc = task.get("proc")
+    if proc:
+        proc.kill()
+    # proc.kill() only stops the local `docker run` client — separately kill the
+    # container itself (see the --name comment in _run_dge_background) so the R/
+    # DESeq2 process actually stops running server-side instead of continuing
+    # detached until it finishes on its own.
+    subprocess.run(["docker", "kill", f"dge-{task_id}"], capture_output=True)
+    return JSONResponse({"status": "cancelled"})
 
 
 @router.get("/dge-cache")

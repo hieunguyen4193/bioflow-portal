@@ -66,6 +66,20 @@ if (assay_name == "SCT") {
 
 # DESeq2 requires raw counts and the package loaded
 effective_slot <- if (test_use == "DESeq2") "counts" else slot_name
+
+# "scale.data" only holds scaled values for whatever feature subset ScaleData() was
+# last run on (typically just the ~2000 variable features used for PCA), not every
+# gene — but `features` above lists the assay's full gene universe. Seurat's
+# FoldChange.default does `object[features, cells.1]` against the scale.data matrix
+# unconditionally, so passing genes it doesn't contain throws "subscript out of
+# bounds" for every cluster. FindAllMarkers swallows that per-cluster error into a
+# warning just like the DESeq2/MAST failures above, so this used to silently return
+# 0 DEGs too. Restrict features to what's actually present in scale.data.
+if (effective_slot == "scale.data") {
+  scaled_genes <- rownames(GetAssayData(s.obj, assay = assay_name, layer = "scale.data"))
+  features <- intersect(features, scaled_genes)
+}
+
 if (test_use == "DESeq2") {
   if (!requireNamespace("DESeq2", quietly = TRUE))
     BiocManager::install("DESeq2", ask = FALSE, update = FALSE)
@@ -111,6 +125,18 @@ if (test_use == "DESeq2") {
   }, ns = "Seurat")
 }
 
+# MAST isn't in the pipeline image's base package set (unlike DESeq2, which happens
+# to be a transitive dependency of something else). Seurat:::MASTDETest immediately
+# stops with "Please install MAST..." when it's missing — that error gets caught by
+# FindAllMarkers' internal per-cluster tryCatch and demoted to a warning, so the run
+# used to come back with 0 DEGs and no visible cause, exactly like the DESeq2 issue
+# above. Install on demand so MAST actually works instead of just failing louder.
+if (test_use == "MAST") {
+  if (!requireNamespace("MAST", quietly = TRUE))
+    BiocManager::install("MAST", ask = FALSE, update = FALSE)
+  suppressPackageStartupMessages(library(MAST))
+}
+
 # Collect warnings raised during the marker search (Seurat re-raises per-cluster DE
 # test failures as warnings rather than errors) so we can tell a genuine "no DEGs
 # passed the test" result apart from "the test itself failed for every cluster".
@@ -138,10 +164,12 @@ markers <- withCallingHandlers(
 
 if (nrow(markers) > 0 && "avg_log2FC" %in% colnames(markers)) {
   markers <- markers %>% mutate(abs_avg_log2FC = abs(avg_log2FC))
-} else if (test_use == "DESeq2" && length(de_warnings) > 0) {
-  # Every cluster's DESeq2 test failed rather than legitimately finding no DEGs —
-  # surface it as a real error instead of returning an empty, misleadingly-successful result.
-  stop("DESeq2 failed and returned no markers. Underlying error(s): ",
+} else if (length(de_warnings) > 0) {
+  # Every cluster's test failed rather than legitimately finding no DEGs (FindAllMarkers
+  # demotes per-cluster failures — missing packages, numerical errors, etc. — to warnings
+  # instead of raising) — surface it as a real error instead of returning an empty,
+  # misleadingly-successful result. Not test-specific: applies to any test.use.
+  stop(test_use, " failed and returned no markers. Underlying error(s): ",
        paste(unique(de_warnings), collapse = " | "))
 } else {
   markers <- data.frame()

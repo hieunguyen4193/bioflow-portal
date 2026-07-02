@@ -81,7 +81,12 @@ export interface DgeCacheEntry {
   n_significant:  number
 }
 
-export async function runDGE(params: {
+// DGE runs in the background so it can be cancelled mid-run (a DESeq2 run can take
+// many minutes) — startDGE returns immediately: either the cached result (cached:
+// true, no task_id, same shape as before) or a task_id to poll/cancel (cached: false).
+export type DGEStartResponse = (DGEResult & { cached: true }) | { cached: false; task_id: string }
+
+export async function startDGE(params: {
   session_id: string
   mode: 'clusters' | 'conditions'
   group_by: string
@@ -95,9 +100,23 @@ export async function runDGE(params: {
   min_pct: number
   pval_cutoff: number
   logfc_cutoff: number
-}): Promise<DGEResult> {
-  const { data } = await api.post<DGEResult>('/explore/dge', params, { timeout: 600000 })
+}): Promise<DGEStartResponse> {
+  const { data } = await api.post<DGEStartResponse>('/explore/dge/start', params)
   return data
+}
+
+export async function getDgeStatus(task_id: string): Promise<
+  { status: 'running'; log?: string }
+  | (DGEResult & { status: 'done'; log?: string })
+  | { status: 'error'; error: string; log?: string }
+  | { status: 'cancelled'; log?: string }
+> {
+  const { data } = await api.get(`/explore/dge/${task_id}`)
+  return data
+}
+
+export async function cancelDGE(task_id: string): Promise<void> {
+  await api.post(`/explore/dge/${task_id}/cancel`)
 }
 
 export async function listDgeCache(session_id: string): Promise<DgeCacheEntry[]> {

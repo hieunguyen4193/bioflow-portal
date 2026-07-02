@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, runDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -952,6 +952,11 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
   const [showCache, setShowCache] = useState(true)
   const [loadedCacheKey, setLoadedCacheKey] = useState<string | null>(null)
   const [deletingKey, setDeletingKey] = useState<string | null>(null)
+  // DGE runs as a background task so it can be cancelled mid-run (DESeq2 in
+  // particular can take many minutes) — taskId is set while a fresh (non-cached) run
+  // is in flight; cached runs resolve immediately with no task to poll/cancel.
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const results = dgeResult?.markers ?? []
 
@@ -968,10 +973,41 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
   // even before the user presses Run — refetch once the session is known.
   useEffect(() => { refreshCacheList() }, [sessionId, mode])
 
+  useEffect(() => {
+    if (!taskId) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await getDgeStatus(taskId)
+        if (res.status === 'done') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          const filtered = res.markers.filter((r: any) =>
+            r.p_val_adj <= pval && Math.abs(Number(r.avg_log2FC)) >= logfc)
+          setDgeResult({ ...res, markers: filtered })
+          setLoadedCacheKey(res.cache_key ?? null)
+          setLog(`Done — ${filtered.length} significant DEGs (${res.species} detected). TCR excluded: ${res.excluded_tcr.length}, BCR/Ig excluded: ${res.excluded_bcr.length}.`)
+          setLoading(false)
+          refreshCacheList()
+          onDgeChanged?.()
+        } else if (res.status === 'error') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          setLog('Error: ' + res.error)
+          setLoading(false)
+        } else if (res.status === 'cancelled') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          setLoading(false)
+        }
+      } catch { /* transient poll failure — try again next tick */ }
+    }, 3000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [taskId])
+
   async function runAnalysis() {
-    setLoading(true); setLog('Running…'); setDgeResult(null); setLoadedCacheKey(null)
+    setLoading(true); setLog('Running…'); setDgeResult(null); setLoadedCacheKey(null); setTaskId(null)
     try {
-      const res = await runDGE({
+      const res = await startDGE({
         session_id: sessionId, mode, group_by: colorBy,
         assay, slot, test_use: test,
         ident1: ident1.length ? ident1.join(',') : undefined,
@@ -979,15 +1015,29 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
         rm_tcr: rmTCR, rm_bcr: rmBCR, min_pct: minPct,
         pval_cutoff: pval, logfc_cutoff: logfc,
       })
-      const filtered = res.markers.filter((r: any) =>
-        r.p_val_adj <= pval && Math.abs(Number(r.avg_log2FC)) >= logfc)
-      setDgeResult({ ...res, markers: filtered })
-      setLoadedCacheKey(res.cache_key ?? null)
-      setLog(`${res.cached ? 'Loaded from cache' : 'Done'} — ${filtered.length} significant DEGs (${res.species} detected). TCR excluded: ${res.excluded_tcr.length}, BCR/Ig excluded: ${res.excluded_bcr.length}.`)
-      refreshCacheList()
-      onDgeChanged?.()
-    } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
-    finally { setLoading(false) }
+      if (res.cached) {
+        const filtered = res.markers.filter((r: any) =>
+          r.p_val_adj <= pval && Math.abs(Number(r.avg_log2FC)) >= logfc)
+        setDgeResult({ ...res, markers: filtered })
+        setLoadedCacheKey(res.cache_key ?? null)
+        setLog(`Loaded from cache — ${filtered.length} significant DEGs (${res.species} detected). TCR excluded: ${res.excluded_tcr.length}, BCR/Ig excluded: ${res.excluded_bcr.length}.`)
+        refreshCacheList()
+        onDgeChanged?.()
+        setLoading(false)
+      } else {
+        setTaskId(res.task_id)
+        setLog('Running… (polling)')
+      }
+    } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)); setLoading(false) }
+  }
+
+  async function cancelAnalysis() {
+    if (!taskId) return
+    try { await cancelDGE(taskId) } catch { /* best-effort — poll loop will also stop on its own */ }
+    if (pollRef.current) clearInterval(pollRef.current)
+    setTaskId(null)
+    setLoading(false)
+    setLog(prev => prev + '\n[Cancelled by user]')
   }
 
   async function loadCachedEntry(entry: DgeCacheEntry) {
@@ -1102,6 +1152,12 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
             {loading ? 'Running…' : mode === 'clusters' ? 'FindAllMarkers' : 'FindMarkers'}
           </button>
+          {taskId && (
+            <button onClick={cancelAnalysis}
+              className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded hover:bg-red-50 transition-colors">
+              Cancel
+            </button>
+          )}
           {dgeResult && (
             <button onClick={() => { setDgeResult(null); setLog('') }}
               className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded transition-colors">
