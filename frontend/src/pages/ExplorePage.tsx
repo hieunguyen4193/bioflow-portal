@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, subclusterDownloadUrl, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -1578,6 +1578,340 @@ function DgeClusterResultPanel({ cl, results, mode, search, setSearch, sortCol, 
   )
 }
 
+// Preview UMAP for a re-clustered subset, coloured by its new seurat_clusters
+// assignment — a smaller self-contained version of UMAPTab (no split/reduction
+// picker) since this result isn't wired into the sidebar's reduction list. Kept
+// as a top-level component (not nested in SubclusterTab) so it isn't redefined
+// and remounted — losing Plotly zoom/pan state — on every keystroke in the form.
+function SubclusterResultUMAP({ r }: { r: SubclusterResult }) {
+  const red = r.reductions.umap
+  if (!red) return <p className="text-slate-400 text-sm">No UMAP reduction in the result.</p>
+  const colorVals = r.metadata.seurat_clusters ?? r.metadata[Object.keys(r.metadata)[0]] ?? []
+  const colorMap  = catColorMap(colorVals)
+  const groups    = [...new Set(colorVals)]
+  const traces = groups.map(g => {
+    const idx = red.cells.map((_, i) => i).filter(i => colorVals[i] === g)
+    return {
+      type: 'scatter' as const, mode: 'markers' as const, name: String(g),
+      x: idx.map(i => red.x[i]), y: idx.map(i => red.y[i]),
+      marker: { color: colorMap[g as string], size: 5, opacity: 0.85 },
+      text: idx.map(i => `${red.cells[i]}<br>cluster: ${g}`), hoverinfo: 'text' as const,
+    }
+  })
+  return (
+    <Plot data={traces} layout={{
+      width: 560, height: 500,
+      title: { text: 'Sub-cluster UMAP', font: { size: 14 } },
+      xaxis: { title: 'umap_1', showgrid: false, zeroline: false, constrain: 'domain' },
+      yaxis: { title: 'umap_2', showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1 },
+      legend: { itemsizing: 'constant' },
+      margin: { t: 40, l: 55, r: 20, b: 55 },
+      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+    }} config={{ responsive: false }} />
+  )
+}
+
+// ── Sub-cluster ────────────────────────────────────────────────────────────────
+// Re-uses the sidebar's global "Colour by" + "Subset clusters" controls as the
+// group-by column and the cluster selection to subset — the same two controls
+// UMAPTab already reads to decide what's shown, so picking clusters there and
+// switching to this tab is the whole "choose a cluster name, choose clusters"
+// workflow, with no separate selector duplicating that UI.
+function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }: any) {
+  const [useSctransform,    setUseSctransform]    = useState(false)
+  const [varsToRegress,     setVarsToRegress]     = useState('percent.mt')
+  const [numPCA,            setNumPCA]            = useState(30)
+  const [numPcsUmap,        setNumPcsUmap]        = useState(30)
+  const [numPcsCluster,     setNumPcsCluster]     = useState(30)
+  const [clusterResolution, setClusterResolution] = useState(0.5)
+  const [rmTCR, setRmTCR] = useState(true)
+  const [rmBCR, setRmBCR] = useState(true)
+
+  const [result,   setResult]   = useState<SubclusterResult | null>(null)
+  const [loading,  setLoading]  = useState(false)
+  const [log,      setLog]      = useState('')
+  const [taskId,   setTaskId]   = useState<string | null>(null)
+  const [runLog,     setRunLog]     = useState('')
+  const [runFailed,  setRunFailed]  = useState(false)
+  const [elapsedSec, setElapsedSec] = useState(0)
+  const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const runLogRef  = useRef<HTMLPreElement>(null)
+
+  const [cacheList, setCacheList] = useState<SubclusterCacheEntry[]>(meta.subcluster_cache ?? [])
+  const [showCache, setShowCache] = useState(true)
+  const [loadedCacheKey, setLoadedCacheKey] = useState<string | null>(null)
+  const [deletingKey,    setDeletingKey]    = useState<string | null>(null)
+
+  async function refreshCacheList() {
+    try { setCacheList(await listSubclusterCache(sessionId)) } catch { /* non-fatal */ }
+  }
+
+  useEffect(() => {
+    if (!taskId) { if (elapsedRef.current) clearInterval(elapsedRef.current); return }
+    setElapsedSec(0)
+    elapsedRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000)
+    return () => { if (elapsedRef.current) clearInterval(elapsedRef.current) }
+  }, [taskId])
+
+  useEffect(() => {
+    if (!taskId) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await getSubclusterStatus(taskId)
+        if (res.status === 'running') {
+          if (res.log) {
+            setRunLog(res.log)
+            setTimeout(() => { if (runLogRef.current) runLogRef.current.scrollTop = runLogRef.current.scrollHeight }, 50)
+          }
+        } else if (res.status === 'done') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          setResult(res)
+          setLoadedCacheKey(res.cache_key ?? null)
+          setLog(`Done — ${res.n_cells_before.toLocaleString()} → ${res.n_cells_after.toLocaleString()} cells (${res.species} detected).`)
+          setLoading(false)
+          refreshCacheList()
+          onChanged?.()
+        } else if (res.status === 'error') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          if (res.log) setRunLog(res.log)
+          setRunFailed(true)
+          setLog('Error: ' + res.error)
+          setLoading(false)
+        } else if (res.status === 'cancelled') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          setLoading(false)
+        }
+      } catch { /* transient poll failure — try again next tick */ }
+    }, 3000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [taskId])
+
+  async function runAnalysis() {
+    setLoading(true); setLog('Running…'); setRunLog(''); setRunFailed(false); setResult(null); setLoadedCacheKey(null); setTaskId(null)
+    try {
+      const res = await startSubcluster({
+        session_id: sessionId, group_by: colorBy, clusters: selectedClusters.join(','),
+        use_sctransform: useSctransform, vars_to_regress: varsToRegress,
+        num_pca: numPCA, num_pcs_umap: numPcsUmap, num_pcs_cluster: numPcsCluster,
+        cluster_resolution: clusterResolution, rm_tcr: rmTCR, rm_bcr: rmBCR,
+      })
+      if (res.cached) {
+        setResult(res)
+        setLoadedCacheKey(res.cache_key ?? null)
+        setLog(`Loaded from cache — ${res.n_cells_before.toLocaleString()} → ${res.n_cells_after.toLocaleString()} cells (${res.species} detected).`)
+        refreshCacheList()
+        onChanged?.()
+        setLoading(false)
+      } else {
+        setTaskId(res.task_id)
+        setLog('Running…')
+      }
+    } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)); setLoading(false) }
+  }
+
+  async function cancelAnalysis() {
+    if (!taskId) return
+    try { await cancelSubcluster(taskId) } catch { /* best-effort */ }
+    if (pollRef.current) clearInterval(pollRef.current)
+    setTaskId(null)
+    setLoading(false)
+    setLog(prev => prev + '\n[Cancelled by user]')
+  }
+
+  async function loadCachedEntry(entry: SubclusterCacheEntry) {
+    setLoading(true); setLog('Loading cached result…'); setResult(null); setLoadedCacheKey(null)
+    try {
+      const cached = await loadSubclusterCacheEntry(sessionId, entry.cache_key)
+      setUseSctransform(cached.use_sctransform)
+      setVarsToRegress(cached.vars_to_regress)
+      setNumPCA(cached.num_pca); setNumPcsUmap(cached.num_pcs_umap); setNumPcsCluster(cached.num_pcs_cluster)
+      setClusterResolution(cached.cluster_resolution)
+      setRmTCR(cached.rm_tcr); setRmBCR(cached.rm_bcr)
+      setResult(cached.result)
+      setLoadedCacheKey(cached.cache_key)
+      setLog(`Loaded from cache (run at ${new Date(cached.created_at).toLocaleString()}) — ${cached.result.n_cells_before.toLocaleString()} → ${cached.result.n_cells_after.toLocaleString()} cells.`)
+    } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
+    finally { setLoading(false) }
+  }
+
+  async function deleteCachedEntry(entry: SubclusterCacheEntry) {
+    if (!window.confirm(`Delete cached sub-clustering result "${entry.source_label}"? This can't be undone — re-running the same settings will recompute it.`)) return
+    setDeletingKey(entry.cache_key)
+    try {
+      await deleteSubclusterCacheEntry(sessionId, entry.cache_key)
+      setCacheList(prev => prev.filter(e => e.cache_key !== entry.cache_key))
+      if (loadedCacheKey === entry.cache_key) setLoadedCacheKey(null)
+      onChanged?.()
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed to delete cached result') }
+    finally { setDeletingKey(null) }
+  }
+
+  return (
+    <div className="p-4 space-y-4">
+      <div className="bg-slate-50 rounded-lg p-4 space-y-3">
+        <p className="text-sm text-slate-600">
+          Subsets the <b>{selectedClusters.length}</b> selected value{selectedClusters.length === 1 ? '' : 's'} of{' '}
+          <b>{colorBy}</b> (set in the sidebar's "Subset clusters" list) and re-runs normalisation, PCA, UMAP, and
+          clustering on just those cells.
+        </p>
+        {selectedClusters.length > 0 && (
+          <p className="text-xs text-slate-500 font-mono">{selectedClusters.join(', ')}</p>
+        )}
+        <div className="flex flex-wrap gap-4 items-end">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Normalisation</label>
+            <select value={useSctransform ? 'sct' : 'log'} onChange={e => setUseSctransform(e.target.value === 'sct')}
+              className="border border-slate-300 rounded px-2 py-1 text-sm">
+              <option value="log">LogNormalize</option>
+              <option value="sct">SCTransform</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Vars to regress (CSV)</label>
+            <input value={varsToRegress} onChange={e => setVarsToRegress(e.target.value)}
+              className="border border-slate-300 rounded px-2 py-1 text-sm w-36" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">PCs</label>
+            <input type="number" value={numPCA} min={2} onChange={e => setNumPCA(Number(e.target.value))}
+              className="border border-slate-300 rounded px-2 py-1 text-sm w-20" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">PCs in UMAP</label>
+            <input type="number" value={numPcsUmap} min={2} onChange={e => setNumPcsUmap(Number(e.target.value))}
+              className="border border-slate-300 rounded px-2 py-1 text-sm w-20" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">PCs in clustering</label>
+            <input type="number" value={numPcsCluster} min={2} onChange={e => setNumPcsCluster(Number(e.target.value))}
+              className="border border-slate-300 rounded px-2 py-1 text-sm w-20" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Cluster resolution</label>
+            <input type="number" value={clusterResolution} step={0.1} min={0} onChange={e => setClusterResolution(Number(e.target.value))}
+              className="border border-slate-300 rounded px-2 py-1 text-sm w-20" />
+          </div>
+          <div className="flex gap-4 items-center text-sm">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={rmTCR} onChange={e => setRmTCR(e.target.checked)} />
+              <span>Remove TCR genes</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={rmBCR} onChange={e => setRmBCR(e.target.checked)} />
+              <span>Remove BCR/Ig genes</span>
+            </label>
+          </div>
+          <button onClick={runAnalysis} disabled={loading || selectedClusters.length === 0}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
+            {taskId ? `Running… ${elapsedSec}s` : loading ? 'Running…' : 'Run sub-clustering'}
+          </button>
+          {taskId && (
+            <button onClick={cancelAnalysis}
+              className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded hover:bg-red-50 transition-colors">
+              Cancel
+            </button>
+          )}
+          {result && (
+            <button onClick={() => { setResult(null); setLog(''); setRunLog('') }}
+              className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded transition-colors">
+              Clear
+            </button>
+          )}
+        </div>
+        {(taskId || (runFailed && runLog)) && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-600">R log</span>
+              {taskId
+                ? <span className="text-xs text-amber-600 animate-pulse">● running… {elapsedSec}s elapsed</span>
+                : <span className="text-xs text-red-600">✗ error</span>}
+            </div>
+            <pre ref={runLogRef}
+              className="text-xs font-mono bg-slate-900 text-slate-100 rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap leading-relaxed">
+              {runLog || '(waiting for output…)'}
+            </pre>
+          </div>
+        )}
+        {!taskId && log && <p className="text-xs text-slate-500 font-mono">{log}</p>}
+      </div>
+
+      {result && (
+        <div className="bg-white rounded-lg border border-slate-200 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-slate-600">
+              <b>{result.n_cells_before.toLocaleString()}</b> → <b>{result.n_cells_after.toLocaleString()}</b> cells
+              · {result.species} detected
+              · TCR excluded: {result.excluded_tcr.length}, BCR/Ig excluded: {result.excluded_bcr.length}
+            </p>
+            {result.cache_key && (
+              <a href={subclusterDownloadUrl(sessionId, result.cache_key)} download
+                className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-100 text-slate-600">
+                ↓ Download .rds
+              </a>
+            )}
+          </div>
+          <SubclusterResultUMAP r={result} />
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <button onClick={() => setShowCache(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50">
+          <span>Cached results{cacheList.length > 0 ? ` (${cacheList.length})` : ''}</span>
+          <span className="text-slate-400">{showCache ? '▲' : '▼'}</span>
+        </button>
+        {showCache && (
+          <div className="border-t border-slate-200">
+            {cacheList.length === 0 ? (
+              <p className="px-4 py-3 text-xs text-slate-400 italic">
+                No cached sub-clustering runs yet for this data — run the analysis above to create one.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {cacheList.map(entry => (
+                  <div key={entry.cache_key}
+                    className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2.5 text-xs ${loadedCacheKey === entry.cache_key ? 'bg-indigo-50' : ''}`}>
+                    <span className="font-medium text-slate-700 truncate max-w-[220px]" title={entry.source_label}>
+                      {entry.source_label}
+                    </span>
+                    <span className="text-slate-500">
+                      <b>{entry.group_by}</b>: {entry.clusters.join(', ')}
+                    </span>
+                    <span className="text-slate-500">{entry.use_sctransform ? 'SCTransform' : 'LogNormalize'}</span>
+                    <span className="text-slate-500">res {entry.cluster_resolution}</span>
+                    {entry.rm_tcr && <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-full">TCR removed</span>}
+                    {entry.rm_bcr && <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full">BCR removed</span>}
+                    <span className="text-slate-500">{entry.n_cells_before.toLocaleString()} → {entry.n_cells_after.toLocaleString()} cells</span>
+                    <span className="text-slate-400">({entry.species})</span>
+                    <span className="text-slate-400">{new Date(entry.created_at).toLocaleString()}</span>
+                    <button onClick={() => loadCachedEntry(entry)} disabled={loading || deletingKey === entry.cache_key}
+                      className="ml-auto text-indigo-600 hover:underline font-medium disabled:opacity-50">
+                      {loadedCacheKey === entry.cache_key ? 'Loaded' : 'Load'}
+                    </button>
+                    <a href={subclusterDownloadUrl(sessionId, entry.cache_key)} download
+                      className="text-indigo-600 hover:underline font-medium">
+                      Download
+                    </a>
+                    <button onClick={() => deleteCachedEntry(entry)} disabled={loading || deletingKey === entry.cache_key}
+                      className="text-slate-400 hover:text-red-500 font-medium disabled:opacity-50">
+                      {deletingKey === entry.cache_key ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+const SubclusterTabMemo = memo(SubclusterTab)
+
 // ── Metadata table ─────────────────────────────────────────────────────────────
 function MetadataTab({ meta }: { meta: SeuratMeta }) {
   const cols = useMemo(() => Object.keys(meta.metadata), [meta])
@@ -2770,6 +3104,19 @@ function GuideTab() {
       ],
     },
     {
+      tab: 'Sub-cluster',
+      icon: '🔬',
+      summary: 'Subset the clusters currently selected in the sidebar and re-run normalisation, PCA, UMAP, and clustering on just those cells.',
+      details: [
+        { label: 'Which cells', text: 'Uses the sidebar\'s "Colour by" column and "Subset clusters" checkboxes directly — pick the clusters there first, then switch to this tab and run.' },
+        { label: 'Normalisation', text: 'LogNormalize (default) or SCTransform, with an optional comma-separated list of variables to regress out (e.g. percent.mt).' },
+        { label: 'PCs / resolution', text: 'Number of principal components, how many of them feed UMAP vs. the neighbour graph, and the clustering resolution — all re-computed from scratch on the subset, independent of the original object\'s settings.' },
+        { label: 'Remove TCR/BCR genes', text: 'Excludes TRAV/TRBV/IGHV/IGLV gene families from the PCA feature set, same as the DGE tabs.' },
+        { label: 'Result', text: 'A live R log and elapsed timer show progress (this re-runs the full PCA/UMAP/clustering pipeline, so it can take a few minutes); when done, a preview UMAP shows the new cluster assignments and a "Download .rds" link saves the re-clustered Seurat object.' },
+        { label: 'Cached results', text: 'Every combination of clusters, normalisation, PCs, resolution, and TCR/BCR removal is cached against this Seurat object — the "Cached results" panel lists past runs so you can reload or download them instantly without re-running, or delete them to free up storage.' },
+      ],
+    },
+    {
       tab: 'Pathway',
       icon: '🛣️',
       summary: 'Run Over-Representation Analysis (ORA) and Gene Set Enrichment Analysis (GSEA) across GO, KEGG, WikiPathways, and MSigDB.',
@@ -2852,7 +3199,7 @@ function GuideTab() {
 const GuideTabMemo = memo(GuideTab)
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'DGE — Clusters', 'DGE — Conditions', 'Pathway', 'CellChat', 'Metadata', 'Guide']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'DGE — Clusters', 'DGE — Conditions', 'Sub-cluster', 'Pathway', 'CellChat', 'Metadata', 'Guide']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -3034,6 +3381,11 @@ export default function ExplorePage() {
             <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
               <DGETabMemo meta={meta} assay={assay} slot={slot} colorBy={colorBy}
                 sessionId={meta.session_id} mode="conditions" onDgeChanged={handleDgeChanged} />
+            </div>
+          )}
+          {visitedTabs.has('Sub-cluster') && (
+            <div className={tab === 'Sub-cluster' ? '' : 'hidden'}>
+              <SubclusterTabMemo meta={meta} sessionId={meta.session_id} colorBy={colorBy} selectedClusters={selectedClusters} />
             </div>
           )}
           {visitedTabs.has('Pathway') && (

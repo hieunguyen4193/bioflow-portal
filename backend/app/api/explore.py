@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/explore", tags=["explore"])
@@ -21,6 +21,7 @@ _expr_caches: dict[str, dict] = {}    # rds_path → {(assay, slot): {mat, cells
 _cache_building: set[tuple] = set()   # {(rds_path, assay, slot)} currently being built
 _pathway_tasks: dict[str, dict] = {}
 _dge_tasks: dict[str, dict] = {}
+_subcluster_tasks: dict[str, dict] = {}
 
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
 
@@ -204,6 +205,72 @@ def _delete_dge_cache_entry(rds_path: str, cache_key: str) -> bool:
     return True
 
 
+# ── Sub-clustering result cache ────────────────────────────────────────────────
+# Same filesystem-JSON pattern as the DGE cache above, but each entry also owns a
+# sibling .rds file (the re-clustered Seurat subset) that "Load" and "Download"
+# both point back to — unlike DGE, the whole point here is to hand the user back
+# a Seurat object, not just a results table.
+def _subcluster_cache_dir_for(rds_path: str) -> str:
+    key = hashlib.md5(rds_path.encode()).hexdigest()[:16]
+    d = os.path.join(EXPLORE_DIR, f".subcluster_cache_{key}")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _subcluster_cache_key(group_by: str, clusters: list[str], use_sctransform: bool,
+                          vars_to_regress: str, num_pca: int, num_pcs_umap: int,
+                          num_pcs_cluster: int, cluster_resolution: float,
+                          rm_tcr: bool, rm_bcr: bool) -> str:
+    payload = {
+        "group_by": group_by, "clusters": sorted(clusters),
+        "use_sctransform": use_sctransform, "vars_to_regress": vars_to_regress,
+        "num_pca": num_pca, "num_pcs_umap": num_pcs_umap, "num_pcs_cluster": num_pcs_cluster,
+        "cluster_resolution": cluster_resolution, "rm_tcr": rm_tcr, "rm_bcr": rm_bcr,
+    }
+    return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
+
+
+def _read_subcluster_cache_entry(rds_path: str, cache_key: str) -> Optional[dict]:
+    path = os.path.join(_subcluster_cache_dir_for(rds_path), f"{cache_key}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return None
+
+
+def _write_subcluster_cache_entry(rds_path: str, cache_key: str, entry: dict) -> None:
+    path = os.path.join(_subcluster_cache_dir_for(rds_path), f"{cache_key}.json")
+    Path(path).write_text(json.dumps(entry))
+
+
+def _list_subcluster_cache(rds_path: str) -> list[dict]:
+    entries = []
+    for p in sorted(Path(_subcluster_cache_dir_for(rds_path)).glob("*.json")):
+        try:
+            entry = json.loads(p.read_text())
+        except Exception:
+            continue
+        entries.append({k: v for k, v in entry.items() if k != "result"})
+    entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+    return entries
+
+
+def _delete_subcluster_cache_entry(rds_path: str, cache_key: str) -> bool:
+    path = os.path.join(_subcluster_cache_dir_for(rds_path), f"{cache_key}.json")
+    if not os.path.exists(path):
+        return False
+    entry = _read_subcluster_cache_entry(rds_path, cache_key)
+    os.remove(path)
+    if entry and entry.get("rds_path") and os.path.exists(entry["rds_path"]):
+        try:
+            os.remove(entry["rds_path"])
+        except OSError:
+            pass
+    return True
+
+
 # ── Presets ─────────────────────────────────────────────────────────────────
 @router.get("/presets")
 async def list_presets():
@@ -244,6 +311,7 @@ async def load_preset(req: PresetLoadRequest):
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
     data["dge_cache"] = _list_dge_cache(rds_path)
+    data["subcluster_cache"] = _list_subcluster_cache(rds_path)
     assays = data.get("assays") or []
     default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
     if default_assay:
@@ -327,6 +395,7 @@ async def upload_rds(file: UploadFile = File(...)):
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
     data["dge_cache"] = _list_dge_cache(rds_path)
+    data["subcluster_cache"] = _list_subcluster_cache(rds_path)
     assays = data.get("assays") or []
     default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
     if default_assay:
@@ -573,6 +642,202 @@ async def delete_dge_cache_entry(cache_key: str, session_id: str):
     return JSONResponse({"status": "deleted"})
 
 
+# ── Sub-clustering ────────────────────────────────────────────────────────────
+class SubclusterRequest(BaseModel):
+    session_id:         str
+    group_by:           str
+    clusters:           str    # comma-separated values of group_by to keep
+    use_sctransform:    bool = False
+    vars_to_regress:    str = "percent.mt"
+    num_pca:            int = 30
+    num_pcs_umap:       int = 30
+    num_pcs_cluster:    int = 30
+    cluster_resolution: float = 0.5
+    rm_tcr:             bool = True
+    rm_bcr:             bool = True
+
+
+def _write_subcluster_result(req: "SubclusterRequest", rds_path: str, cache_key: str,
+                             out_rds_path: str, result: dict) -> None:
+    entry = {
+        "cache_key":          cache_key,
+        "created_at":         datetime.now(timezone.utc).isoformat(),
+        "source_label":       _session_labels.get(req.session_id, os.path.basename(rds_path)),
+        "group_by":           req.group_by,
+        "clusters":           [c.strip() for c in req.clusters.split(",") if c.strip()],
+        "use_sctransform":    req.use_sctransform,
+        "vars_to_regress":    req.vars_to_regress,
+        "num_pca":            req.num_pca,
+        "num_pcs_umap":       req.num_pcs_umap,
+        "num_pcs_cluster":    req.num_pcs_cluster,
+        "cluster_resolution": req.cluster_resolution,
+        "rm_tcr":             req.rm_tcr,
+        "rm_bcr":             req.rm_bcr,
+        "species":            result.get("species", "unknown"),
+        "n_cells_before":     result.get("n_cells_before"),
+        "n_cells_after":      result.get("n_cells_after"),
+        "rds_path":           out_rds_path,
+        "result":             result,
+    }
+    _write_subcluster_cache_entry(rds_path, cache_key, entry)
+
+
+def _run_subcluster_background(task_id: str, req: "SubclusterRequest", rds_path: str,
+                                cache_key: str, out_rds_path: str) -> None:
+    # Named for the same reason as the DGE container: proc.kill() alone only stops
+    # the local `docker run` CLI client, not the detached --rm container, so cancel
+    # has to `docker kill` this name directly too.
+    container_name = f"subcluster-{task_id}"
+    container_script = os.path.join(R_SCRIPTS, "run_subcluster.R")
+    cmd = [
+        "docker", "run", "--rm", "--name", container_name,
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
+        DOCKER_IMAGE,
+        "Rscript", "--vanilla", container_script,
+        rds_path, req.group_by, req.clusters,
+        "true" if req.use_sctransform else "false", req.vars_to_regress,
+        str(req.num_pca), str(req.num_pcs_umap), str(req.num_pcs_cluster),
+        str(req.cluster_resolution),
+        "true" if req.rm_tcr else "false", "true" if req.rm_bcr else "false",
+        out_rds_path,
+    ]
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        _subcluster_tasks[task_id]["proc"] = proc
+        stdout_chunks = []
+        for line in proc.stdout:
+            if _subcluster_tasks[task_id].get("status") == "cancelled":
+                proc.kill()
+                return
+            stdout_chunks.append(line)
+            _subcluster_tasks[task_id]["log"] = "".join(stdout_chunks)
+        proc.wait(timeout=1800)
+
+        if _subcluster_tasks[task_id].get("status") == "cancelled":
+            return
+        full_output = "".join(stdout_chunks)
+        json_line = next((l for l in full_output.splitlines() if l.strip().startswith(("{", "["))), None)
+        if proc.returncode != 0 or not json_line:
+            _subcluster_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
+            return
+        result = json.loads(json_line)
+        _write_subcluster_result(req, rds_path, cache_key, out_rds_path, result)
+        _subcluster_tasks[task_id].update({"status": "done", "result": result, "cache_key": cache_key})
+    except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
+        _subcluster_tasks[task_id].update({"status": "error", "error": "Sub-clustering run timed out (30 min)"})
+    except Exception as exc:
+        _subcluster_tasks[task_id].update({"status": "error", "error": str(exc)})
+    finally:
+        _subcluster_tasks[task_id].pop("proc", None)
+
+
+@router.post("/subcluster/start")
+async def start_subcluster(req: SubclusterRequest):
+    rds_path = _sessions.get(req.session_id)
+    if not rds_path or not os.path.exists(rds_path):
+        raise HTTPException(404, "Session not found — please re-upload your file")
+
+    clusters_list = [c.strip() for c in req.clusters.split(",") if c.strip()]
+    if not clusters_list:
+        raise HTTPException(400, "Select at least one cluster to sub-cluster")
+
+    cache_key = _subcluster_cache_key(
+        req.group_by, clusters_list, req.use_sctransform, req.vars_to_regress,
+        req.num_pca, req.num_pcs_umap, req.num_pcs_cluster, req.cluster_resolution,
+        req.rm_tcr, req.rm_bcr,
+    )
+
+    cached_entry = _read_subcluster_cache_entry(rds_path, cache_key)
+    if cached_entry and os.path.exists(cached_entry.get("rds_path", "")):
+        return JSONResponse({**cached_entry["result"], "cache_key": cache_key, "cached": True})
+
+    task_id      = str(uuid.uuid4())
+    cache_dir    = _subcluster_cache_dir_for(rds_path)
+    out_rds_path = os.path.join(cache_dir, f"{cache_key}.rds")
+    _subcluster_tasks[task_id] = {"status": "running"}
+    thread = threading.Thread(
+        target=_run_subcluster_background,
+        args=(task_id, req, rds_path, cache_key, out_rds_path),
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse({"cached": False, "task_id": task_id})
+
+
+@router.get("/subcluster/{task_id}")
+async def get_subcluster_status(task_id: str):
+    task = _subcluster_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    response = {"status": task.get("status"), "log": task.get("log", "")}
+    if task.get("status") == "done":
+        response.update(task.get("result", {}))
+        response["cache_key"] = task.get("cache_key")
+    if task.get("status") == "error":
+        response["error"] = task.get("error")
+    return JSONResponse(response)
+
+
+@router.post("/subcluster/{task_id}/cancel")
+async def cancel_subcluster(task_id: str):
+    task = _subcluster_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    if task.get("status") != "running":
+        raise HTTPException(400, "Task is not running")
+    task.update({"status": "cancelled"})
+    proc = task.get("proc")
+    if proc:
+        proc.kill()
+    subprocess.run(["docker", "kill", f"subcluster-{task_id}"], capture_output=True)
+    return JSONResponse({"status": "cancelled"})
+
+
+@router.get("/subcluster-cache")
+async def list_subcluster_cache(session_id: str):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    return JSONResponse(_list_subcluster_cache(rds_path))
+
+
+@router.get("/subcluster-cache/{cache_key}")
+async def get_subcluster_cache_entry(cache_key: str, session_id: str):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    entry = _read_subcluster_cache_entry(rds_path, cache_key)
+    if not entry:
+        raise HTTPException(404, "Cache entry not found")
+    return JSONResponse(entry)
+
+
+@router.delete("/subcluster-cache/{cache_key}")
+async def delete_subcluster_cache_entry(cache_key: str, session_id: str):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    if not _delete_subcluster_cache_entry(rds_path, cache_key):
+        raise HTTPException(404, "Cache entry not found")
+    return JSONResponse({"status": "deleted"})
+
+
+@router.get("/subcluster-cache/{cache_key}/download")
+async def download_subcluster_rds(cache_key: str, session_id: str):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    entry = _read_subcluster_cache_entry(rds_path, cache_key)
+    if not entry or not entry.get("rds_path") or not os.path.exists(entry["rds_path"]):
+        raise HTTPException(404, "Sub-clustered file not found")
+    return FileResponse(entry["rds_path"], media_type="application/octet-stream",
+                        filename=f"subcluster_{cache_key}.rds")
+
+
 # ── Pathway Analysis ─────────────────────────────────────────────────────────
 class PathwayRequest(BaseModel):
     session_id:  str
@@ -701,8 +966,6 @@ HOST_CELLCHAT_RMD = os.environ.get(
 )
 
 # Serve rendered HTML files from the explore dir
-from fastapi.responses import FileResponse
-
 @router.get("/cellchat/html/{task_id}")
 async def get_cellchat_html(task_id: str):
     task = _cellchat_tasks.get(task_id)

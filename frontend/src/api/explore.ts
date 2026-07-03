@@ -11,6 +11,7 @@ export interface SeuratMeta {
   cells:       string[]
   genes:       string[]
   dge_cache?:  DgeCacheEntry[]
+  subcluster_cache?: SubclusterCacheEntry[]
 }
 
 export interface PresetFile {
@@ -199,4 +200,94 @@ export async function getPathwayResult(task_id: string): Promise<{
 }> {
   const { data } = await api.get(`/explore/pathway/${task_id}`)
   return data
+}
+
+// ── Sub-clustering ────────────────────────────────────────────────────────────
+export interface SubclusterResult {
+  n_cells_before: number
+  n_cells_after:  number
+  species:        string
+  excluded_tcr:   string[]
+  excluded_bcr:   string[]
+  reductions:     Record<string, { x: number[]; y: number[]; cells: string[] }>
+  metadata:       Record<string, string[]>
+  cells:          string[]
+  cache_key?:     string
+  cached?:        boolean
+}
+
+export interface SubclusterCacheEntry {
+  cache_key:          string
+  created_at:         string
+  source_label:       string
+  group_by:           string
+  clusters:           string[]
+  use_sctransform:    boolean
+  vars_to_regress:    string
+  num_pca:            number
+  num_pcs_umap:       number
+  num_pcs_cluster:    number
+  cluster_resolution: number
+  rm_tcr:             boolean
+  rm_bcr:             boolean
+  species:            string
+  n_cells_before:     number
+  n_cells_after:      number
+}
+
+// Sub-clustering re-runs SCTransform/PCA/UMAP/clustering on the subset, which can
+// take minutes — same cancellable background-task shape as startDGE.
+export type SubclusterStartResponse = (SubclusterResult & { cached: true }) | { cached: false; task_id: string }
+
+export async function startSubcluster(params: {
+  session_id: string
+  group_by: string
+  clusters: string
+  use_sctransform: boolean
+  vars_to_regress: string
+  num_pca: number
+  num_pcs_umap: number
+  num_pcs_cluster: number
+  cluster_resolution: number
+  rm_tcr: boolean
+  rm_bcr: boolean
+}): Promise<SubclusterStartResponse> {
+  const { data } = await api.post<SubclusterStartResponse>('/explore/subcluster/start', params)
+  return data
+}
+
+export async function getSubclusterStatus(task_id: string): Promise<
+  { status: 'running'; log?: string }
+  | (SubclusterResult & { status: 'done'; log?: string })
+  | { status: 'error'; error: string; log?: string }
+  | { status: 'cancelled'; log?: string }
+> {
+  const { data } = await api.get(`/explore/subcluster/${task_id}`)
+  return data
+}
+
+export async function cancelSubcluster(task_id: string): Promise<void> {
+  await api.post(`/explore/subcluster/${task_id}/cancel`)
+}
+
+export async function listSubclusterCache(session_id: string): Promise<SubclusterCacheEntry[]> {
+  const { data } = await api.get<SubclusterCacheEntry[]>('/explore/subcluster-cache', { params: { session_id } })
+  return data
+}
+
+export async function loadSubclusterCacheEntry(
+  session_id: string, cache_key: string
+): Promise<SubclusterCacheEntry & { result: SubclusterResult }> {
+  const { data } = await api.get(`/explore/subcluster-cache/${cache_key}`, { params: { session_id } })
+  return data
+}
+
+export async function deleteSubclusterCacheEntry(session_id: string, cache_key: string): Promise<void> {
+  await api.delete(`/explore/subcluster-cache/${cache_key}`, { params: { session_id } })
+}
+
+// Direct <a href> download link (not routed through the axios client) — mirrors
+// the CellChat HTML report link, which the backend also serves outside /api.
+export function subclusterDownloadUrl(session_id: string, cache_key: string): string {
+  return `/explore/subcluster-cache/${cache_key}/download?session_id=${encodeURIComponent(session_id)}`
 }

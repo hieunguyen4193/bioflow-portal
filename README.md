@@ -48,6 +48,7 @@ The **Explore** tab lets you upload a Seurat `.rds` file (or load a preset) and 
 | Box Plot | Same per-cluster expression data as Violin Plot, shown as box-and-whisker plots |
 | DGE — Clusters | FindAllMarkers — one cluster vs. all others, for every cluster |
 | DGE — Conditions | FindMarkers — two user-defined groups within a metadata column |
+| Sub-cluster | Subset the sidebar-selected clusters and re-run normalisation/PCA/UMAP/clustering on just those cells |
 | Pathway | ORA + GSEA across GO, KEGG, WikiPathways, MSigDB (C1–C8 human; mouse subset + C1–C8 ortholog fallback) |
 | CellChat | Cell–cell communication analysis; downloadable HTML report |
 | Metadata | Browse/filter/sort the full per-cell metadata table |
@@ -58,6 +59,12 @@ The **Explore** tab lets you upload a Seurat `.rds` file (or load a preset) and 
 - MAST and DESeq2 run as a cancellable background task with a live R log, since both can take several minutes
 - Optional TCR/BCR gene removal (V(D)J gene families) applies to both tabs
 - Every run is cached by its full parameter set; DGE — Conditions results are auto-offered to the Pathway tab
+
+### Sub-cluster
+- Reuses the sidebar's "Colour by" column and "Subset clusters" checkboxes as the cluster selection to subset — no separate picker
+- Re-runs LogNormalize or SCTransform, PCA, UMAP, and graph-based clustering from scratch on just the selected cells
+- Runs as a cancellable background task with a live R log (a few minutes, similar to MAST/DESeq2)
+- Cached by its full parameter set (clusters, normalisation, PCs, resolution, TCR/BCR removal); each cached run's re-clustered `.rds` can be downloaded
 
 ### Pathway
 - Runs ORA and GSEA using clusterProfiler
