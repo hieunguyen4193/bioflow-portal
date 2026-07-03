@@ -1578,39 +1578,6 @@ function DgeClusterResultPanel({ cl, results, mode, search, setSearch, sortCol, 
   )
 }
 
-// Preview UMAP for a re-clustered subset, coloured by its new seurat_clusters
-// assignment — a smaller self-contained version of UMAPTab (no split/reduction
-// picker) since this result isn't wired into the sidebar's reduction list. Kept
-// as a top-level component (not nested in SubclusterTab) so it isn't redefined
-// and remounted — losing Plotly zoom/pan state — on every keystroke in the form.
-function SubclusterResultUMAP({ r }: { r: SubclusterResult }) {
-  const red = r.reductions.umap
-  if (!red) return <p className="text-slate-400 text-sm">No UMAP reduction in the result.</p>
-  const colorVals = r.metadata.seurat_clusters ?? r.metadata[Object.keys(r.metadata)[0]] ?? []
-  const colorMap  = catColorMap(colorVals)
-  const groups    = [...new Set(colorVals)]
-  const traces = groups.map(g => {
-    const idx = red.cells.map((_, i) => i).filter(i => colorVals[i] === g)
-    return {
-      type: 'scatter' as const, mode: 'markers' as const, name: String(g),
-      x: idx.map(i => red.x[i]), y: idx.map(i => red.y[i]),
-      marker: { color: colorMap[g as string], size: 5, opacity: 0.85 },
-      text: idx.map(i => `${red.cells[i]}<br>cluster: ${g}`), hoverinfo: 'text' as const,
-    }
-  })
-  return (
-    <Plot data={traces} layout={{
-      width: 560, height: 500,
-      title: { text: 'Sub-cluster UMAP', font: { size: 14 } },
-      xaxis: { title: 'umap_1', showgrid: false, zeroline: false, constrain: 'domain' },
-      yaxis: { title: 'umap_2', showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1 },
-      legend: { itemsizing: 'constant' },
-      margin: { t: 40, l: 55, r: 20, b: 55 },
-      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-    }} config={{ responsive: false }} />
-  )
-}
-
 // ── Sub-cluster ────────────────────────────────────────────────────────────────
 // Re-uses the sidebar's global "Colour by" + "Subset clusters" controls as the
 // group-by column and the cluster selection to subset — the same two controls
@@ -1642,6 +1609,20 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
   const [showCache, setShowCache] = useState(true)
   const [loadedCacheKey, setLoadedCacheKey] = useState<string | null>(null)
   const [deletingKey,    setDeletingKey]    = useState<string | null>(null)
+
+  // Rendered through the same UMAPTab used by the main UMAP tab (centroid labels,
+  // PDF export, panel sizing all come for free) by wrapping the result in a
+  // minimal SeuratMeta-shaped object — reductions/cells/metadata are the only
+  // fields UMAPTab actually reads.
+  const subclusterMeta = useMemo(() => (
+    result ? { reductions: result.reductions, cells: result.cells, metadata: result.metadata } : null
+  ), [result])
+  const subclusterColorBy = result?.metadata.seurat_clusters
+    ? 'seurat_clusters'
+    : Object.keys(result?.metadata ?? {})[0] ?? ''
+  const subclusterClusterVals = useMemo(() => (
+    result ? [...new Set(result.metadata[subclusterColorBy] ?? [])] : []
+  ), [result, subclusterColorBy])
 
   async function refreshCacheList() {
     try { setCacheList(await listSubclusterCache(sessionId)) } catch { /* non-fatal */ }
@@ -1854,7 +1835,10 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
               </a>
             )}
           </div>
-          <SubclusterResultUMAP r={result} />
+          {subclusterMeta && (
+            <UMAPTabMemo meta={subclusterMeta} reduction="umap" colorBy={subclusterColorBy}
+              splitBy="" selectedClusters={subclusterClusterVals} />
+          )}
         </div>
       )}
 
