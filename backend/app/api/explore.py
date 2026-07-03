@@ -718,7 +718,12 @@ def _run_subcluster_background(task_id: str, req: "SubclusterRequest", rds_path:
         if _subcluster_tasks[task_id].get("status") == "cancelled":
             return
         full_output = "".join(stdout_chunks)
-        json_line = next((l for l in full_output.splitlines() if l.strip().startswith(("{", "["))), None)
+        # Scan from the end and only match "{" (never "["): FindClusters(verbose = TRUE)
+        # prints Seurat/igraph's Louvain progress bar, one line of which is literally
+        # "[----|----|...|" — starting from the front and accepting "[" would grab that
+        # stray line instead of the real result, which is always a JSON object emitted
+        # as the script's last line. Same approach as the Pathway/CellChat handlers below.
+        json_line = next((l for l in reversed(full_output.splitlines()) if l.strip().startswith("{")), None)
         if proc.returncode != 0 or not json_line:
             _subcluster_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
             return
