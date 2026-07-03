@@ -123,6 +123,23 @@ if (test_use == "DESeq2") {
       invisible(NULL)
     })
   }, ns = "Seurat")
+
+  # The CheckDots patch above only stops Seurat from *rejecting* stray forwarded
+  # args — it doesn't strip them, so they still reach DESeq2::results() itself.
+  # Newer Seurat versions forward a `norm.method = NULL` arg (added for SCT
+  # support in FindMarkers) all the way down through Seurat:::DESeq2DETest into
+  # DESeq2::results(object = dds1, contrast = ...), which has never had a
+  # norm.method parameter and errors with "unused argument (norm.method =
+  # NULL)". Patch DESeq2::results() to silently drop any named argument it
+  # doesn't actually declare, so unrelated Seurat-forwarded args (norm.method
+  # today, possibly others in future Seurat releases) don't cause a hard
+  # failure.
+  original_results <- DESeq2::results
+  assignInNamespace("results", function(object, ...) {
+    dots <- list(...)
+    dots <- dots[names(dots) %in% names(formals(original_results))]
+    do.call(original_results, c(list(object = object), dots))
+  }, ns = "DESeq2")
 }
 
 # MAST isn't in the pipeline image's base package set (unlike DESeq2, which happens
