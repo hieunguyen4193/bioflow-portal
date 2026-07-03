@@ -2749,7 +2749,8 @@ function GuideTab() {
       summary: 'Run FindAllMarkers to find marker genes for every cluster versus all other clusters.',
       details: [
         { label: 'Group by', text: 'The metadata column that defines clusters (usually seurat_clusters).' },
-        { label: 'Statistical test', text: 'wilcox (default), t, LR, or negbinom — each with different assumptions.' },
+        { label: 'Statistical test', text: 'wilcox (default), t, MAST, or DESeq2 — each with different assumptions. MAST and DESeq2 can take several minutes; a live R log and elapsed timer show progress while the run is in flight.' },
+        { label: 'min.pct', text: 'Minimum fraction of cells expressing a gene in either group for it to be tested — changes which genes are actually tested, unlike the p-val/logFC filters below which only affect display.' },
         { label: 'p-val / logFC thresholds', text: 'Filter results shown in the table; the underlying test uses all genes.' },
         { label: 'Remove TCR/BCR genes', text: 'Strips TRAV/TRBV/IGHV/IGLV gene families to avoid V(D)J noise.' },
         { label: 'Cached results', text: 'Every combination of assay, slot, group-by, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run (with p-val/logFC thresholds used) — click Load to view the volcano plot and gene table instantly without re-running, or Delete to free up storage. Re-running with identical settings also returns the cached result instead of recomputing. Note: unlike DGE — Conditions, results here are not offered to the Pathway tab (which expects a single two-group comparison, not one-vs-rest per cluster).' },
@@ -2762,6 +2763,7 @@ function GuideTab() {
       details: [
         { label: 'Group by', text: 'Metadata column that separates conditions (e.g. sample, treatment).' },
         { label: 'Group 1 / Group 2', text: 'Comma-separated values for each side of the comparison (e.g. "ctrl,ctrl2" vs "treated"). Commas within a field are handled correctly.' },
+        { label: 'Statistical test', text: 'wilcox (default), t, MAST, or DESeq2 — same options as DGE — Clusters, since both tabs run through the same FindMarkers/FindAllMarkers backend.' },
         { label: 'Volcano plot', text: 'After the run, a volcano plot shows –log10(p-adj) vs log2FC; click points to highlight genes.' },
         { label: 'Save results', text: 'Results are automatically offered to the Pathway tab.' },
         { label: 'Cached results', text: 'Every combination of assay, slot, group column, Group 1/2, test, and TCR/BCR removal is cached against this Seurat object. The "Cached results" panel shows what has already been run — click Load to view the volcano plot and gene table instantly without re-running, or Delete to free up storage.' },
@@ -2775,7 +2777,7 @@ function GuideTab() {
         { label: 'Gene list source', text: 'Three modes — "From DGE" auto-populates from a saved DGE — Conditions run (DGE — Clusters results aren\'t offered here, since pathway analysis expects a single ranked two-group comparison); "Paste" accepts a raw gene list; "Upload CSV" accepts a file with gene, logFC, pval, padj columns.' },
         { label: 'Species', text: 'Auto-detected from gene name capitalisation (>50 % uppercase → human / hsa). Override to hsa or mmu if needed.' },
         { label: 'p-value cutoff', text: 'Applied to all ORA and GSEA results (default 0.05).' },
-        { label: 'Methods run', text: 'GO BP/MF/CC (up/down/all), KEGG, WikiPathways, and all MSigDB collections (H + C1–C9 for human, H + M1–M8 for mouse) — both ORA and GSEA per collection.' },
+        { label: 'Methods run', text: 'GO BP/MF/CC (up/down/all), KEGG, WikiPathways, and all available MSigDB collections — H + C1–C8 for human; for mouse, H + a mouse-specific subset (M1, M2, M3, M5, M8) plus C1–C8 via ortholog mapping — both ORA and GSEA per collection.' },
         { label: 'Live log', text: 'A terminal panel shows R output in real time so you can track progress.' },
         { label: 'Results', text: 'Each method appears as a collapsible section with a paginated table of enriched terms.' },
       ],

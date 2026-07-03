@@ -43,19 +43,26 @@ The **Explore** tab lets you upload a Seurat `.rds` file (or load a preset) and 
 | Tab | Description |
 |-----|-------------|
 | UMAP | Colour by any metadata column; cluster labels at centroids |
-| Feature Plot | Expression of one or more genes (2×2 / 3×3 multi-panel) |
-| Violin Plot | Per-cluster expression distribution |
-| Dot Plot | Dot size = % expressing, colour = average expression |
-| Heatmap | Top marker genes per cluster |
-| DGE | Differential gene expression (clusters or conditions) |
-| Pathway Analysis | ORA + GSEA across GO, KEGG, WikiPathways, MSigDB (C1–C8 human; M1–M8 mouse) |
+| Feature Plot | Expression of one or more genes (2×2 / 3×3 multi-panel), downloadable as a vector PDF |
+| Violin Plot | Per-cluster expression distribution, downloadable as a vector PDF |
+| Box Plot | Same per-cluster expression data as Violin Plot, shown as box-and-whisker plots |
+| DGE — Clusters | FindAllMarkers — one cluster vs. all others, for every cluster |
+| DGE — Conditions | FindMarkers — two user-defined groups within a metadata column |
+| Pathway | ORA + GSEA across GO, KEGG, WikiPathways, MSigDB (C1–C8 human; mouse subset + C1–C8 ortholog fallback) |
 | CellChat | Cell–cell communication analysis; downloadable HTML report |
+| Metadata | Browse/filter/sort the full per-cell metadata table |
 | Guide | Built-in documentation for every tab |
 
-### Pathway Analysis
+### DGE
+- Both DGE tabs share the same backend (Seurat `FindMarkers`/`FindAllMarkers`) and test options: `wilcox` (default), `t`, `MAST`, `DESeq2`
+- MAST and DESeq2 run as a cancellable background task with a live R log, since both can take several minutes
+- Optional TCR/BCR gene removal (V(D)J gene families) applies to both tabs
+- Every run is cached by its full parameter set; DGE — Conditions results are auto-offered to the Pathway tab
+
+### Pathway
 - Runs ORA and GSEA using clusterProfiler
 - **Human:** H, C1–C8 MSigDB collections + GO + KEGG + WikiPathways
-- **Mouse:** H, M1–M8, C1–C8 MSigDB collections (with ortholog mapping fallback) + GO + KEGG + WikiPathways
+- **Mouse:** H, mouse-specific subset (M1, M2, M3, M5, M8), plus C1–C8 MSigDB collections via ortholog mapping + GO + KEGG + WikiPathways
 - Results shown as a clusterProfiler-style dot plot (x = GeneRatio, size = gene count, colour = p.adjust)
 - Download results as CSV or vector PDF (Illustrator-compatible)
 
