@@ -1896,67 +1896,117 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
 }
 const SubclusterTabMemo = memo(SubclusterTab)
 
-// ── Metadata table ─────────────────────────────────────────────────────────────
-function MetadataTab({ meta }: { meta: SeuratMeta }) {
-  const cols = useMemo(() => Object.keys(meta.metadata), [meta])
-  const rows = useMemo(() => meta.cells.map((cell, i) =>
-    Object.fromEntries([['cell', cell], ...cols.map(c => [c, meta.metadata[c]?.[i] ?? ''])])), [meta, cols])
-  const allCols = useMemo(() => ['cell', ...cols], [cols])
-  const [filter,  setFilter]  = useState('')
-  const [sortCol, setSortCol] = useState('cell')
-  const [sortDir, setSortDir] = useState<1 | -1>(1)
+// ── Metadata summary ───────────────────────────────────────────────────────────
+interface ColumnStats {
+  name: string
+  type: 'numeric' | 'categorical'
+  nMissing: number
+  nUnique?: number
+  mean?: number
+  sd?: number
+  min?: number
+  max?: number
+  median?: number
+  q1?: number
+  q3?: number
+  levels?: { value: string; count: number }[]
+}
 
-  function toggleSort(col: string) {
-    if (sortCol === col) setSortDir(d => (d === 1 ? -1 : 1) as 1 | -1)
-    else { setSortCol(col); setSortDir(1) }
+function summarizeColumn(name: string, values: string[]): ColumnStats {
+  const nonMissing = values.filter(v => v !== '' && v != null && v !== 'NA')
+  const nMissing = values.length - nonMissing.length
+  const nums = nonMissing.map(Number)
+  const isNumeric = nonMissing.length > 0 && nums.every(n => !isNaN(n))
+
+  if (isNumeric) {
+    const sorted = [...nums].sort((a, b) => a - b)
+    const n = sorted.length
+    const mean = sorted.reduce((s, v) => s + v, 0) / n
+    const variance = n > 1 ? sorted.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1) : 0
+    const quantile = (p: number) => {
+      const idx = p * (n - 1)
+      const lo = Math.floor(idx); const hi = Math.ceil(idx)
+      return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo)
+    }
+    return {
+      name, type: 'numeric', nMissing,
+      mean, sd: Math.sqrt(variance),
+      min: sorted[0], max: sorted[n - 1],
+      median: quantile(0.5), q1: quantile(0.25), q3: quantile(0.75),
+    }
   }
 
-  const visible = useMemo(() => rows
-    .filter(r => !filter || Object.values(r).some(v => String(v).toLowerCase().includes(filter.toLowerCase())))
-    .sort((a, b) => {
-      const av = a[sortCol]; const bv = b[sortCol]
-      const an = Number(av); const bn = Number(bv)
-      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortDir
-      return String(av).localeCompare(String(bv)) * sortDir
-    }), [rows, filter, sortCol, sortDir])
+  const counts = new Map<string, number>()
+  for (const v of nonMissing) counts.set(v, (counts.get(v) ?? 0) + 1)
+  const levels = [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count)
+  return { name, type: 'categorical', nMissing, nUnique: levels.length, levels }
+}
+
+function fmtStat(v?: number) {
+  if (v === undefined || isNaN(v)) return '–'
+  return (Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0)) ? v.toExponential(2) : v.toFixed(2)
+}
+
+function MetadataTab({ meta }: { meta: SeuratMeta }) {
+  const cols  = useMemo(() => Object.keys(meta.metadata), [meta])
+  const stats = useMemo(() => cols.map(c => summarizeColumn(c, meta.metadata[c] ?? [])), [cols, meta])
+
+  function downloadMetadataCsv() {
+    const rows = meta.cells.map((cell, i) =>
+      Object.fromEntries([['cell', cell], ...cols.map(c => [c, meta.metadata[c]?.[i] ?? ''])]))
+    downloadCSVData(rows, 'metadata.csv')
+  }
 
   return (
-    <div className="p-4 space-y-3">
-      <div className="flex items-center gap-3">
-        <input value={filter} onChange={e => setFilter(e.target.value)}
-          placeholder="Search across all columns…"
-          className="border border-slate-300 rounded px-3 py-1.5 text-sm w-72 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
-        {filter && (
-          <button onClick={() => setFilter('')}
-            className="text-xs text-slate-400 hover:text-red-500">✕ Clear</button>
-        )}
-        <span className="text-xs text-slate-400 ml-auto">
-          Showing {Math.min(visible.length, 500)} of {visible.length} cells
-        </span>
+    <div className="p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-slate-500">
+          {meta.n_cells.toLocaleString()} cells &middot; {cols.length} metadata columns
+        </div>
+        <button onClick={downloadMetadataCsv}
+          className="text-xs font-medium text-indigo-600 border border-indigo-200 rounded px-3 py-1.5 hover:bg-indigo-50">
+          ⬇ Download metadata CSV
+        </button>
       </div>
-      <div className="overflow-auto rounded-lg border border-slate-200 max-h-[60vh]">
+
+      <div className="overflow-auto rounded-lg border border-slate-200 max-h-[70vh]">
         <table className="text-xs w-full">
           <thead className="bg-slate-50 border-b sticky top-0">
             <tr>
-              {allCols.map(c => (
-                <th key={c} onClick={() => toggleSort(c)}
-                  className="text-left px-3 py-2 font-medium whitespace-nowrap cursor-pointer hover:bg-slate-100 select-none">
-                  {c}
-                  <span className="ml-1 text-slate-400">
-                    {sortCol === c ? (sortDir === 1 ? '▲' : '▼') : '⇅'}
-                  </span>
-                </th>
-              ))}
+              <th className="text-left px-3 py-2 font-medium whitespace-nowrap">Column</th>
+              <th className="text-left px-3 py-2 font-medium whitespace-nowrap">Type</th>
+              <th className="text-left px-3 py-2 font-medium whitespace-nowrap">Missing</th>
+              <th className="text-left px-3 py-2 font-medium">Summary</th>
             </tr>
           </thead>
           <tbody className="divide-y">
-            {visible.slice(0, 500).map((row, i) => (
-              <tr key={i} className="hover:bg-slate-50">
-                {allCols.map(c => (
-                  <td key={c} className="px-3 py-1.5 whitespace-nowrap text-slate-600 max-w-xs truncate">
-                    {String(row[c])}
-                  </td>
-                ))}
+            {stats.map(s => (
+              <tr key={s.name} className="align-top hover:bg-slate-50">
+                <td className="px-3 py-2 font-medium text-slate-700 whitespace-nowrap">{s.name}</td>
+                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{s.type}</td>
+                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{s.nMissing}</td>
+                <td className="px-3 py-2 text-slate-600">
+                  {s.type === 'numeric' ? (
+                    <span>
+                      mean {fmtStat(s.mean)} &plusmn; {fmtStat(s.sd)} &middot; median {fmtStat(s.median)} [{fmtStat(s.q1)}–{fmtStat(s.q3)}]
+                      &middot; range [{fmtStat(s.min)}–{fmtStat(s.max)}]
+                    </span>
+                  ) : (
+                    <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="text-slate-400 whitespace-nowrap">{s.nUnique} levels</span>
+                      {s.levels?.slice(0, 8).map(l => (
+                        <span key={l.value} className="whitespace-nowrap">
+                          <span className="font-medium">{l.value}</span>: {l.count}
+                        </span>
+                      ))}
+                      {s.levels && s.levels.length > 8 && (
+                        <span className="text-slate-400 whitespace-nowrap">+{s.levels.length - 8} more</span>
+                      )}
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -3129,11 +3179,12 @@ function GuideTab() {
     {
       tab: 'Metadata',
       icon: '📋',
-      summary: 'Browse and filter the full per-cell metadata table from the Seurat object.',
+      summary: 'Per-column statistical summary of the Seurat object metadata, with a CSV export of the full per-cell table.',
       details: [
-        { label: 'Filter', text: 'Type in any column header search box to filter rows by value.' },
-        { label: 'Sort', text: 'Click any column header to sort ascending (▲) or descending (▼).' },
-        { label: 'Rows shown', text: 'Up to 500 cells are displayed for performance; apply filters to narrow the view.' },
+        { label: 'Numeric columns', text: 'Shows mean ± SD, median [Q1–Q3], and range.' },
+        { label: 'Categorical columns', text: 'Shows the number of levels and per-level cell counts (top 8, with a "+N more" overflow).' },
+        { label: 'Missing', text: 'Count of empty/NA values per column.' },
+        { label: 'Download', text: '"Download metadata CSV" exports the full per-cell metadata table (all columns, one row per cell) as a .csv file.' },
       ],
     },
   ]

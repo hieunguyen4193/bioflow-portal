@@ -51,7 +51,7 @@ The **Explore** tab lets you upload a Seurat `.rds` file (or load a preset) and 
 | Sub-cluster | Subset the sidebar-selected clusters and re-run normalisation/PCA/UMAP/clustering on just those cells |
 | Pathway | ORA + GSEA across GO, KEGG, WikiPathways, MSigDB (C1–C8 human; mouse subset + C1–C8 ortholog fallback) |
 | CellChat | Cell–cell communication analysis; downloadable HTML report |
-| Metadata | Browse/filter/sort the full per-cell metadata table |
+| Metadata | Per-column statistical summary of the metadata, with a CSV download of the full per-cell table |
 | Guide | Built-in documentation for every tab |
 
 ### DGE
