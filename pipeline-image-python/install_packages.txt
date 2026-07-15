@@ -1,0 +1,18 @@
+# Baked into the pipeline_python Docker image at build time.
+# Kept in sync with nextflow/pipelines/single_cell_data_analysis_with_python/src/requirements.txt
+
+scanpy>=1.10
+anndata>=0.10
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+leidenalg
+python-igraph
+scrublet
+harmonypy
+scanorama
+bbknn
+mygene
+jinja2
