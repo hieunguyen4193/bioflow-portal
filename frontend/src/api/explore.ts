@@ -202,6 +202,42 @@ export async function getPathwayResult(task_id: string): Promise<{
   return data
 }
 
+// ── Gene module score ─────────────────────────────────────────────────────────
+// Runs AddModuleScore in the pipeline image (same background-task shape as
+// pathway analysis) and returns {cells, expression} — one array of per-cell
+// scores per module, exactly like getGeneExpression's per-gene shape — so the
+// UMAP/violin plotting code that already exists for genes can be reused as-is.
+export async function startModuleScore(params: {
+  session_id: string
+  assay: string
+  ctrl: number
+  file: File
+}): Promise<{ task_id: string }> {
+  const form = new FormData()
+  form.append('session_id', params.session_id)
+  form.append('assay', params.assay)
+  form.append('ctrl', String(params.ctrl))
+  form.append('file', params.file)
+  const { data } = await api.post('/explore/module-score/start', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data
+}
+
+export async function getModuleScoreStatus(task_id: string): Promise<
+  { status: 'running'; log?: string }
+  | { status: 'done'; log?: string; cells: string[]; expression: Record<string, number[]> }
+  | { status: 'error'; error: string; log?: string }
+  | { status: 'cancelled'; log?: string }
+> {
+  const { data } = await api.get(`/explore/module-score/${task_id}`)
+  return data
+}
+
+export async function cancelModuleScore(task_id: string): Promise<void> {
+  await api.post(`/explore/module-score/${task_id}/cancel`)
+}
+
 // ── Sub-clustering ────────────────────────────────────────────────────────────
 export interface SubclusterResult {
   n_cells_before: number

@@ -21,9 +21,11 @@ install_bioc <- function(...) {
 }
 
 # ── CRAN ─────────────────────────────────────────────────────────────────────
+# readxl/tidyr/matrixStats: module_score.R (gene-list upload + AddModuleScore)
 install_cran(
   "dplyr", "jsonlite", "rmarkdown", "ggplot2", "patchwork",
-  "stringr", "tibble", "DT", "hash", "msigdbr"
+  "stringr", "tibble", "DT", "hash", "msigdbr",
+  "readxl", "tidyr", "matrixStats"
 )
 
 # ── Bioconductor ─────────────────────────────────────────────────────────────

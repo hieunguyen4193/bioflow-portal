@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -22,6 +22,7 @@ _cache_building: set[tuple] = set()   # {(rds_path, assay, slot)} currently bein
 _pathway_tasks: dict[str, dict] = {}
 _dge_tasks: dict[str, dict] = {}
 _subcluster_tasks: dict[str, dict] = {}
+_module_score_tasks: dict[str, dict] = {}
 
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
 
@@ -944,6 +945,123 @@ async def get_pathway_result(task_id: str):
 @router.post("/pathway/{task_id}/cancel")
 async def cancel_pathway(task_id: str):
     task = _pathway_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    if task.get("status") != "running":
+        raise HTTPException(400, "Task is not running")
+    proc = task.get("proc")
+    if proc:
+        proc.kill()
+    task.update({"status": "cancelled"})
+    return JSONResponse({"status": "cancelled"})
+
+
+# ── Gene Module Score ─────────────────────────────────────────────────────────
+# AddModuleScore runs inside the pipeline image (same as DGE/pathway), so this
+# follows the same upload-then-poll-a-background-task shape as pathway analysis,
+# but the R side only returns {cells, expression} — one array of per-cell scores
+# per module, exactly like get_expression.R's per-gene output — so the frontend
+# can reuse the existing per-cell UMAP/violin plotting code, and derive the
+# per-cluster z-scored heatmap client-side from whichever metadata column is
+# currently selected as "colour by".
+def _run_module_score_background(task_id: str, rds_path: str, gene_list_path: str,
+                                 assay: str, ctrl: int):
+    container_script = os.path.join(R_SCRIPTS, "module_score.R")
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
+        DOCKER_IMAGE,
+        "Rscript", "--vanilla", container_script,
+        rds_path, gene_list_path, assay, str(ctrl),
+    ]
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        _module_score_tasks[task_id]["proc"] = proc
+        stdout_chunks = []
+        for line in proc.stdout:
+            if _module_score_tasks[task_id].get("status") == "cancelled":
+                proc.kill()
+                return
+            stdout_chunks.append(line)
+            _module_score_tasks[task_id]["log"] = "".join(stdout_chunks)
+        proc.wait(timeout=600)
+
+        if _module_score_tasks[task_id].get("status") == "cancelled":
+            return
+        full_output = "".join(stdout_chunks)
+        json_line = next((l for l in full_output.splitlines() if l.strip().startswith("{")), None)
+        if proc.returncode != 0 or not json_line:
+            _module_score_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
+            return
+        result = json.loads(json_line)
+        if not result.get("expression"):
+            _module_score_tasks[task_id].update({
+                "status": "error",
+                "error": "None of the uploaded gene modules matched genes in this dataset.",
+            })
+            return
+        _module_score_tasks[task_id].update({"status": "done", "result": result})
+    except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
+        _module_score_tasks[task_id].update({"status": "error", "error": "Module score run timed out (10 min)"})
+    except Exception as exc:
+        _module_score_tasks[task_id].update({"status": "error", "error": str(exc)})
+    finally:
+        _module_score_tasks[task_id].pop("proc", None)
+
+
+@router.post("/module-score/start")
+async def start_module_score(
+    session_id: str = Form(...),
+    assay:      str = Form("SCT"),
+    ctrl:       int = Form(50),
+    file:       UploadFile = File(...),
+):
+    rds_path = _sessions.get(session_id)
+    if not rds_path or not os.path.exists(rds_path):
+        raise HTTPException(404, "Session not found — please re-upload your file")
+
+    ext = os.path.splitext(file.filename or "")[1].lower().lstrip(".")
+    if ext not in ("csv", "xls", "xlsx"):
+        raise HTTPException(400, "Gene list must be a .csv, .xls, or .xlsx file")
+
+    task_id  = str(uuid.uuid4())
+    task_dir = os.path.join(EXPLORE_DIR, f"module_score_{task_id}")
+    os.makedirs(task_dir, exist_ok=True)
+    gene_list_path = os.path.join(task_dir, f"gene_list.{ext}")
+    content = await file.read()
+    with open(gene_list_path, "wb") as f:
+        f.write(content)
+
+    _module_score_tasks[task_id] = {"status": "running"}
+    thread = threading.Thread(
+        target=_run_module_score_background,
+        args=(task_id, rds_path, gene_list_path, assay, ctrl),
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse({"task_id": task_id})
+
+
+@router.get("/module-score/{task_id}")
+async def get_module_score_status(task_id: str):
+    task = _module_score_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    response = {"status": task.get("status"), "log": task.get("log", "")}
+    if task.get("status") == "done":
+        response.update(task.get("result", {}))
+    if task.get("status") == "error":
+        response["error"] = task.get("error")
+    return JSONResponse(response)
+
+
+@router.post("/module-score/{task_id}/cancel")
+async def cancel_module_score(task_id: str):
+    task = _module_score_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
     if task.get("status") != "running":

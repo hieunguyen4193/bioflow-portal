@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, subclusterDownloadUrl, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, subclusterDownloadUrl, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -705,6 +705,332 @@ function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, ses
   )
 }
 const DistributionPlotTabMemo = memo(DistributionPlotTab)
+
+// ── Gene module score ────────────────────────────────────────────────────────
+// Upload a gene-list file (one column per module) → AddModuleScore runs server-side
+// and returns per-cell scores shaped exactly like getGeneExpression's per-gene
+// output, so the heatmap/feature-plot/violin-plot views below reuse the same
+// UMAP-coordinate and colour-by-metadata plumbing as the Feature Plot / Violin
+// Plot tabs — just fed from uploaded module scores instead of fetched gene expression.
+function ModuleScoreTab({ meta, reduction, assay, colorBy, sessionId }: any) {
+  const [file,           setFile]           = useState<File | null>(null)
+  const [ctrl,           setCtrl]           = useState(50)
+  const [taskId,         setTaskId]         = useState<string | null>(null)
+  const [status,         setStatus]         = useState<'idle' | 'running' | 'done' | 'error' | 'cancelled'>('idle')
+  const [errorMsg,       setErrorMsg]       = useState<string | null>(null)
+  const [log,            setLog]            = useState('')
+  const [exprData,       setExprData]       = useState<Record<string, number[]> | null>(null)
+  const [cells,          setCells]          = useState<string[]>([])
+  const [modules,        setModules]        = useState<string[]>([])
+  const [selectedModules, setSelectedModules] = useState<string[]>([])
+  const [subTab,         setSubTab]         = useState<'heatmap' | 'feature' | 'violin'>('heatmap')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const featureRefs = useRef<Record<string, any>>({})
+  const violinRefs   = useRef<Record<string, any>>({})
+  const heatmapRefs  = useRef<Record<string, any>>({})
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+
+  async function handleRun() {
+    if (!file) { toast.error('Choose a gene-list file (.csv, .xls, .xlsx)'); return }
+    setStatus('running'); setErrorMsg(null); setLog('')
+    try {
+      const res = await startModuleScore({ session_id: sessionId, assay, ctrl, file })
+      setTaskId(res.task_id)
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await getModuleScoreStatus(res.task_id)
+          setLog(s.log ?? '')
+          if (s.status === 'running') return
+          clearInterval(pollRef.current!); pollRef.current = null
+          if (s.status === 'done') {
+            setExprData(s.expression); setCells(s.cells)
+            const mods = Object.keys(s.expression)
+            setModules(mods); setSelectedModules(mods)
+            setStatus('done')
+          } else if (s.status === 'error') {
+            setErrorMsg(s.error); setStatus('error')
+          } else {
+            setStatus('cancelled')
+          }
+        } catch {
+          clearInterval(pollRef.current!); pollRef.current = null
+          setErrorMsg('Lost connection while polling status'); setStatus('error')
+        }
+      }, 3000)
+    } catch (e: any) {
+      setStatus('error')
+      setErrorMsg(e.response?.data?.detail || 'Failed to start module score computation')
+    }
+  }
+
+  async function handleCancel() {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    if (taskId) { try { await cancelModuleScore(taskId) } catch { /* best effort */ } }
+    setStatus('cancelled')
+  }
+
+  function clearResults() {
+    setExprData(null); setCells([]); setModules([]); setSelectedModules([])
+    setStatus('idle'); setErrorMsg(null); setTaskId(null); setLog(''); setFile(null)
+  }
+
+  // ── Heatmap: mean module score per cluster, row (module) z-scored ──────────
+  const heatmapData = useMemo(() => {
+    if (!exprData || modules.length === 0) return null
+    const idxMap    = Object.fromEntries(cells.map((c, i) => [c, i]))
+    const colorVals = meta.metadata[colorBy] ?? []
+    const metaIndex = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
+    const clusters  = ([...new Set(cells.map(c => colorVals[metaIndex[c]]))] as string[]).sort()
+
+    const matrix = modules.map(mod => {
+      const means = clusters.map(cl => {
+        const vals = cells.filter(c => colorVals[metaIndex[c]] === cl).map(c => exprData[mod][idxMap[c]])
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0
+      })
+      const mean = means.reduce((a, b) => a + b, 0) / means.length
+      const variance = means.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(means.length - 1, 1)
+      const sd = Math.sqrt(variance) || 1
+      return means.map(m => (m - mean) / sd)
+    })
+    return { clusters, matrix }
+  }, [exprData, modules, cells, meta, colorBy])
+
+  async function handleDownloadHeatmapPdf() {
+    try { await downloadPlotGridPdf(['heatmap'], 1, 900, Math.max(320, modules.length * 32 + 140), heatmapRefs, 'ModuleScore_Heatmap') }
+    catch (e) { toast.error('Download failed: ' + String(e)) }
+  }
+  async function handleDownloadFeaturePdf() {
+    try { await downloadPlotGridPdf(selectedModules, fpGridCols, FP_PANEL_SIZES[fpGridCols].w, FP_PANEL_SIZES[fpGridCols].h, featureRefs, 'ModuleScore_FeaturePlot') }
+    catch (e) { toast.error('Download failed: ' + String(e)) }
+  }
+  async function handleDownloadViolinPdf() {
+    try { await downloadPlotGridPdf(selectedModules, vGridCols, DIST_PANEL_SIZES[vGridCols].w, DIST_PANEL_SIZES[vGridCols].h, violinRefs, 'ModuleScore_ViolinPlot') }
+    catch (e) { toast.error('Download failed: ' + String(e)) }
+  }
+
+  const red = meta.reductions[reduction]
+  const fpGridCols = selectedModules.length <= 1 ? 1 : selectedModules.length <= 4 ? 2 : selectedModules.length <= 9 ? 3 : 4
+  const vGridCols  = fpGridCols
+
+  const featureSection = useMemo(() => {
+    if (!exprData || !red || selectedModules.length === 0) return null
+    const { w, h, dot, fontSize } = FP_PANEL_SIZES[fpGridCols]
+    const idxMap    = Object.fromEntries(cells.map((c, i) => [c, i]))
+    const colorVals = meta.metadata[colorBy] ?? []
+    const metaIndex = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
+    const clusterGroups = [...new Set(colorVals)] as string[]
+    const fullIndices = red.cells.map((_: string, i: number) => i)
+    const clusterAnnotations = clusterGroups.map(g => {
+      const idx = fullIndices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+      if (!idx.length) return null
+      return {
+        x: idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length,
+        y: idx.reduce((s: number, i: number) => s + red.y[i], 0) / idx.length,
+        text: `<b>${String(g)}</b>`, showarrow: false,
+        font: { size: Math.max(9, fontSize - 2), color: '#1e293b', family: 'Arial Black, Arial, sans-serif' },
+        bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#94a3b8', borderwidth: 1, borderpad: 2,
+      }
+    }).filter(Boolean)
+
+    // Subsample indices for rendering — evenly spaced to preserve spatial coverage
+    const n_cells = red.cells.length
+    const step    = n_cells > MAX_FP_POINTS ? n_cells / MAX_FP_POINTS : 1
+    const subIdx  = Array.from({ length: Math.min(n_cells, MAX_FP_POINTS) }, (_, i) => Math.floor(i * step))
+    const subX    = subIdx.map((i: number) => red.x[i])
+    const subY    = subIdx.map((i: number) => red.y[i])
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${fpGridCols}, ${w}px)`, gap: 12 }}>
+        {selectedModules.map(mod => {
+          const allColor = red.cells.map((c: string) => exprData[mod][idxMap[c]] ?? 0)
+          const subColor = subIdx.map((i: number) => allColor[i])
+          const cmin = Math.min(...allColor)
+          const cmax = Math.max(...allColor)
+          const order = Array.from({ length: subColor.length }, (_, i) => i).sort((a, b) => subColor[a] - subColor[b])
+          const sortedX = order.map(i => subX[i])
+          const sortedY = order.map(i => subY[i])
+          const sortedColor = order.map(i => subColor[i])
+          const markerTrace = {
+            type: 'scatter' as const, mode: 'markers' as const,
+            x: sortedX, y: sortedY,
+            marker: {
+              color: sortedColor,
+              colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
+              cmin, cmax, size: dot, opacity: 0.85, showscale: true, colorbar: { thickness: 10, len: 0.55, x: 1.02 },
+            },
+            hoverinfo: 'skip' as const, name: mod,
+          }
+          return (
+            <Plot key={`ms-fp-${mod}`} data={[markerTrace]} layout={{
+              width: w, height: h,
+              title: { text: mod, font: { size: fontSize } },
+              xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 } },
+              yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
+              annotations: clusterAnnotations,
+              margin: { t: 40, l: 50, r: 55, b: 45 },
+              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+            }} config={{ responsive: false }}
+              onInitialized={(_: any, gd: any) => { featureRefs.current[mod] = gd }}
+              onUpdate={(_: any, gd: any) => { featureRefs.current[mod] = gd }} />
+          )
+        })}
+      </div>
+    )
+  }, [exprData, cells, red, meta, colorBy, reduction, selectedModules, fpGridCols])
+
+  const violinSection = useMemo(() => {
+    if (!exprData || selectedModules.length === 0) return null
+    const { w, h, fontSize } = DIST_PANEL_SIZES[vGridCols]
+    const idxMap    = Object.fromEntries(cells.map((c, i) => [c, i]))
+    const colorVals = meta.metadata[colorBy] ?? []
+    const colorMap  = catColorMap(colorVals)
+    const groups    = ([...new Set(colorVals)] as string[]).sort()
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${vGridCols}, ${w}px)`, gap: 12 }}>
+        {selectedModules.map(mod => {
+          const traces = groups.map(grp => {
+            const y = meta.cells
+              .filter((_: string, i: number) => colorVals[i] === grp)
+              .map((c: string) => exprData[mod][idxMap[c]] ?? 0)
+            return { type: 'violin' as const, name: String(grp), x0: String(grp), y, width: 0.85,
+              box: { visible: true }, meanline: { visible: true }, marker: { color: colorMap[grp as string] }, points: false }
+          })
+          return (
+            <Plot key={`ms-vln-${mod}`} data={traces} layout={{
+              width: w, height: h,
+              title: { text: mod, font: { size: fontSize } },
+              xaxis: { title: colorBy, type: 'category', tickangle: -45, tickfont: { size: fontSize - 2 } },
+              yaxis: { title: 'Module score', zeroline: false, titlefont: { size: fontSize - 1 } },
+              violinmode: 'group', violingap: 0.15, showlegend: false,
+              margin: { t: 40, l: 55, r: 15, b: 90 },
+              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+            }} config={{ responsive: false }}
+              onInitialized={(_: any, gd: any) => { violinRefs.current[mod] = gd }}
+              onUpdate={(_: any, gd: any) => { violinRefs.current[mod] = gd }} />
+          )
+        })}
+      </div>
+    )
+  }, [exprData, cells, meta, colorBy, selectedModules, vGridCols])
+
+  return (
+    <div className="p-4 space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <input type="file" accept=".csv,.xls,.xlsx"
+          onChange={e => setFile(e.target.files?.[0] ?? null)}
+          className="text-sm border border-slate-300 rounded-lg px-3 py-1.5 file:mr-3 file:py-1 file:px-2 file:rounded file:border-0 file:bg-indigo-50 file:text-indigo-600 file:text-sm" />
+        <label className="text-xs text-slate-500 flex items-center gap-1.5">
+          Ctrl genes
+          <input type="number" min={1} value={ctrl} onChange={e => setCtrl(Number(e.target.value))}
+            className="w-16 border border-slate-300 rounded px-2 py-1 text-sm" />
+        </label>
+        <button onClick={handleRun} disabled={status === 'running'}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50">
+          {status === 'running' ? 'Running…' : 'Compute module scores'}
+        </button>
+        {status === 'running' && (
+          <button onClick={handleCancel} className="text-sm text-red-500 border border-red-200 hover:bg-red-50 px-3 py-2 rounded-lg">
+            Cancel
+          </button>
+        )}
+        {exprData && (
+          <button onClick={clearResults}
+            className="text-sm text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-300 px-3 py-2 rounded-lg transition-colors">
+            Clear
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-slate-400">
+        Upload a .csv/.xls/.xlsx file with one column per gene module (column header = module name, cells = gene symbols).
+        Scores are computed on assay <strong>{assay}</strong> via Seurat's AddModuleScore.
+      </p>
+
+      {status === 'running' && log && (
+        <pre className="p-3 bg-slate-900 text-slate-200 text-xs rounded-lg max-h-40 overflow-auto whitespace-pre-wrap">{log}</pre>
+      )}
+      {status === 'error' && errorMsg && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 font-mono whitespace-pre-wrap">
+          <span className="font-semibold not-italic">Error: </span>{errorMsg}
+        </div>
+      )}
+
+      {modules.length > 0 && (
+        <div className="border border-slate-200 rounded-lg">
+          <div className="flex border-b border-slate-200 bg-slate-50">
+            {([['heatmap', 'Heatmap'], ['feature', 'Feature Plot'], ['violin', 'Violin Plot']] as const).map(([key, label]) => (
+              <button key={key} onClick={() => setSubTab(key)}
+                className={`px-4 py-2 text-xs font-medium whitespace-nowrap border-b-2 transition-colors
+                  ${subTab === key ? 'border-indigo-600 text-indigo-600 bg-white' : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-white'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {subTab !== 'heatmap' && (
+            <div className="px-4 pt-3 flex items-start gap-2 flex-wrap">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mr-1 mt-1">
+                Modules
+                <button onClick={() => setSelectedModules(modules)} className="ml-2 text-indigo-500 hover:underline font-normal normal-case">all</button>
+                <button onClick={() => setSelectedModules([])} className="ml-1 text-indigo-500 hover:underline font-normal normal-case">none</button>
+              </div>
+              {modules.map(m => (
+                <label key={m} className="flex items-center gap-1 text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 cursor-pointer">
+                  <input type="checkbox" checked={selectedModules.includes(m)}
+                    onChange={e => setSelectedModules(prev => e.target.checked ? [...prev, m] : prev.filter(x => x !== m))} />
+                  {m}
+                </label>
+              ))}
+            </div>
+          )}
+
+          <div className="p-4 space-y-3">
+            {subTab === 'heatmap' && heatmapData && (
+              <>
+                <button onClick={handleDownloadHeatmapPdf}
+                  className="px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600">
+                  ↓ Download PDF (vector)
+                </button>
+                <Plot data={[{
+                  type: 'heatmap' as const, x: heatmapData.clusters, y: modules, z: heatmapData.matrix,
+                  colorscale: 'RdBu', reversescale: true, zmid: 0, colorbar: { title: 'z-score', thickness: 12 },
+                }]} layout={{
+                  width: 900, height: Math.max(320, modules.length * 32 + 140),
+                  xaxis: { title: colorBy, type: 'category', tickangle: -45 },
+                  yaxis: { title: 'Module', automargin: true },
+                  margin: { t: 20, l: 160, r: 20, b: 100 },
+                  paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+                }} config={{ responsive: false }}
+                  onInitialized={(_: any, gd: any) => { heatmapRefs.current['heatmap'] = gd }}
+                  onUpdate={(_: any, gd: any) => { heatmapRefs.current['heatmap'] = gd }} />
+              </>
+            )}
+            {subTab === 'feature' && selectedModules.length > 0 && (
+              <>
+                <button onClick={handleDownloadFeaturePdf}
+                  className="px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600">
+                  ↓ Download PDF (vector)
+                </button>
+                {featureSection}
+              </>
+            )}
+            {subTab === 'violin' && selectedModules.length > 0 && (
+              <>
+                <button onClick={handleDownloadViolinPdf}
+                  className="px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600">
+                  ↓ Download PDF (vector)
+                </button>
+                {violinSection}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+const ModuleScoreTabMemo = memo(ModuleScoreTab)
 
 // ── DGE cluster gene-panel plots ─────────────────────────────────────────────
 // Auto-fetches expression for a fixed gene list (the cluster's top markers) and
@@ -3234,7 +3560,7 @@ function GuideTab() {
 const GuideTabMemo = memo(GuideTab)
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'DGE — Clusters', 'DGE — Conditions', 'Sub-cluster', 'Pathway', 'CellChat', 'Metadata', 'Guide']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'Module Score', 'DGE — Clusters', 'DGE — Conditions', 'Sub-cluster', 'Pathway', 'CellChat', 'Metadata', 'Guide']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -3404,6 +3730,12 @@ export default function ExplorePage() {
             <div className={tab === 'Box Plot' ? '' : 'hidden'}>
               <DistributionPlotTabMemo meta={meta} assay={assay} slot={slot}
                 selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="box" />
+            </div>
+          )}
+          {visitedTabs.has('Module Score') && (
+            <div className={tab === 'Module Score' ? '' : 'hidden'}>
+              <ModuleScoreTabMemo meta={meta} reduction={reduction} assay={assay}
+                colorBy={colorBy} sessionId={meta.session_id} />
             </div>
           )}
           {visitedTabs.has('DGE — Clusters') && (
