@@ -1,0 +1,132 @@
+---
+title: "BCR repertoire report — Immcantation"
+date: "Last update on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    keep_md: no
+    df_print: paged
+    toc: true
+    toc_float:
+      toc_collapsed: false
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+params:
+  subject:          NA
+  shm_table:        NA
+  abundance_table:  NA
+  diversity_table:  NA
+  v_gene_usage:     NA
+  j_gene_usage:     NA
+  threshold_txt:    NA
+---
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(DT)
+})
+
+read_tsv_safe <- function(path) {
+  if (is.na(path) || !file.exists(path)) return(NULL)
+  df <- tryCatch(read.delim(path, sep = "\t", stringsAsFactors = FALSE), error = function(e) NULL)
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+  df
+}
+
+shm       <- read_tsv_safe(params$shm_table)
+abundance <- read_tsv_safe(params$abundance_table)
+diversity <- read_tsv_safe(params$diversity_table)
+v_usage   <- read_tsv_safe(params$v_gene_usage)
+j_usage   <- read_tsv_safe(params$j_gene_usage)
+threshold <- if (!is.na(params$threshold_txt) && file.exists(params$threshold_txt)) readLines(params$threshold_txt) else NA
+```
+
+# Subject: `r params$subject`
+
+Clonal assignment distance threshold used: **`r threshold`**
+
+# Somatic hypermutation
+
+```{r shm-table}
+if (!is.null(shm)) {
+  DT::datatable(shm %>% select(any_of(c("sequence_id", "clone_id", "v_call", "j_call", "c_call", "mu_freq", "mu_freq_seq_r", "mu_freq_seq_s"))), options = list(scrollX = TRUE))
+} else {
+  cat("No SHM table available.")
+}
+```
+
+```{r shm-plot, fig.width=8, fig.height=5}
+if (!is.null(shm) && "mu_freq" %in% colnames(shm)) {
+  if ("c_call" %in% colnames(shm)) {
+    ggplot(shm %>% filter(!is.na(c_call)), aes(x = c_call, y = mu_freq, fill = c_call)) +
+      geom_boxplot(outlier.size = 0.5) +
+      theme_bw() +
+      theme(legend.position = "none") +
+      xlab("Isotype (c_call)") + ylab("Mutation frequency")
+  } else {
+    ggplot(shm, aes(x = mu_freq)) +
+      geom_histogram(bins = 30, fill = "steelblue") +
+      theme_bw() + xlab("Mutation frequency")
+  }
+}
+```
+
+# Clonal abundance
+
+```{r abundance-table}
+if (!is.null(abundance)) {
+  DT::datatable(abundance, options = list(scrollX = TRUE))
+} else {
+  cat("No clonal abundance table available.")
+}
+```
+
+```{r abundance-plot, fig.width=9, fig.height=5}
+if (!is.null(abundance) && "seq_count" %in% colnames(abundance)) {
+  top <- head(abundance[order(-abundance$seq_count), ], 30)
+  ggplot(top, aes(x = reorder(clone_id, -seq_count), y = seq_count)) +
+    geom_col(fill = "steelblue") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 6)) +
+    xlab("Clone ID") + ylab("Sequence count")
+}
+```
+
+# Clonal diversity (Hill numbers)
+
+```{r diversity-plot, fig.width=7, fig.height=5}
+if (!is.null(diversity) && all(c("q", "d") %in% colnames(diversity))) {
+  ggplot(diversity, aes(x = q, y = d)) +
+    geom_line(color = "darkorange") +
+    geom_ribbon(aes(ymin = d_lower, ymax = d_upper), alpha = 0.2, fill = "darkorange") +
+    theme_bw() +
+    xlab("q") + ylab("Diversity (D)")
+} else {
+  cat("No diversity curve available (requires >= 2 clones).")
+}
+```
+
+# V / J gene usage
+
+```{r v-usage-plot, fig.width=9, fig.height=5}
+if (!is.null(v_usage) && "seq_freq" %in% colnames(v_usage)) {
+  ggplot(v_usage, aes(x = reorder(gene, -seq_freq), y = seq_freq)) +
+    geom_col(fill = "darkorange") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 6)) +
+    xlab("V gene") + ylab("Frequency")
+}
+```
+
+```{r j-usage-plot, fig.width=6, fig.height=5}
+if (!is.null(j_usage) && "seq_freq" %in% colnames(j_usage)) {
+  ggplot(j_usage, aes(x = reorder(gene, -seq_freq), y = seq_freq)) +
+    geom_col(fill = "seagreen") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8)) +
+    xlab("J gene") + ylab("Frequency")
+}
+```

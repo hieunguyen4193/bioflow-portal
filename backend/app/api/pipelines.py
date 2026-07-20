@@ -164,6 +164,254 @@ PIPELINE_REGISTRY = {
             },
         ],
     },
+    "bcr_immcantation_pipeline": {
+        "name": "BCR Repertoire — Immcantation",
+        "description": "Runs the Immcantation framework (IgBLAST, Change-O, SHazaM, Alakazam, dowser) on single-cell BCR data from 10x Genomics cellranger vdj: V(D)J reannotation, clonal clustering, germline reconstruction, somatic hypermutation, clonal diversity, gene usage, and optional lineage trees.",
+        "readme": "bcr_immcantation_pipeline/README.md",
+        "input_mode": "samplesheet",
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv  (SampleID, contig_fasta, contig_annotations, subject columns)"},
+        ],
+        "steps": [
+            {
+                "key": "s1",
+                "label": "S1 — IgBLAST V(D)J Reannotation",
+                "run_key": None,   # always runs
+                "params": [
+                    {"key": "species", "label": "Species", "type": "select", "default": "human", "options": ["human", "mouse"]},
+                ],
+            },
+            {
+                "key": "s3",
+                "label": "S3 — Clonal Distance Threshold (SHazaM)",
+                "run_key": None,
+                "params": [
+                    {"key": "auto_threshold", "label": "Auto-detect threshold (density method)", "type": "bool",  "default": True},
+                    {"key": "dist_threshold", "label": "Manual/fallback threshold",               "type": "float", "default": 0.15},
+                ],
+            },
+            {
+                "key": "s4",
+                "label": "S4 — Clonal Clustering (Change-O)",
+                "run_key": None,
+                "params": [
+                    {"key": "clone_model", "label": "Distance model", "type": "select", "default": "ham", "options": ["ham", "aa", "hh_s1f", "hh_s5f"]},
+                    {"key": "clone_norm",  "label": "Normalization",  "type": "select", "default": "len", "options": ["len", "none"]},
+                ],
+            },
+            {
+                "key": "s7",
+                "label": "S7 — Clonal Abundance & Diversity (Alakazam)",
+                "run_key": None,
+                "params": [
+                    {"key": "nboot", "label": "Diversity bootstrap replicates", "type": "int", "default": 100},
+                ],
+            },
+            {
+                "key": "s9",
+                "label": "S9 — Lineage Trees (dowser)",
+                "run_key": "run_lineage",
+                "params": [
+                    {"key": "lineage_min_seqs", "label": "Min sequences per clone to build a tree", "type": "int", "default": 3},
+                ],
+            },
+            {
+                "key": "s10",
+                "label": "S10 — Render HTML Report",
+                "run_key": "run_report",
+                "params": [],
+            },
+        ],
+    },
+    "bcr_scirpy_pipeline": {
+        "name": "BCR Repertoire — scirpy",
+        "description": "Runs scirpy (scverse) on single-cell BCR data from 10x Genomics cellranger vdj: chain QC, clonotype definition, clonal expansion, diversity, repertoire overlap, and V/J gene usage/spectratype. Trusts Cell Ranger's own V(D)J gene calls (no IgBLAST reannotation).",
+        "readme": "bcr_scirpy_pipeline/README.md",
+        "input_mode": "samplesheet",
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv  (SampleID, contig_annotations, subject columns)"},
+        ],
+        "steps": [
+            {
+                "key": "s2",
+                "label": "S2 — Chain QC & Filtering",
+                "run_key": None,   # always runs
+                "params": [
+                    {"key": "remove_multichain", "label": "Remove multichain cells", "type": "bool", "default": True},
+                    {"key": "require_paired",    "label": "Require a paired chain",  "type": "bool", "default": True},
+                ],
+            },
+            {
+                "key": "s3",
+                "label": "S3 — Clonotype Definition",
+                "run_key": None,
+                "params": [
+                    {"key": "clustering_mode", "label": "Clustering mode",        "type": "select", "default": "clonotype_clusters", "options": ["clonotypes", "clonotype_clusters"]},
+                    {"key": "sequence",        "label": "Sequence (clusters only)", "type": "select", "default": "nt",     "options": ["nt", "aa"]},
+                    {"key": "metric",          "label": "Distance metric (clusters only)", "type": "select", "default": "hamming", "options": ["identity", "hamming", "levenshtein", "alignment"]},
+                    {"key": "receptor_arms",   "label": "Receptor arms",          "type": "select", "default": "all",     "options": ["all", "any", "VJ", "VDJ"]},
+                    {"key": "dual_ir",         "label": "Dual IR handling",       "type": "select", "default": "primary_only", "options": ["primary_only", "any", "all"]},
+                ],
+            },
+            {
+                "key": "s5",
+                "label": "S5 — Alpha Diversity",
+                "run_key": None,
+                "params": [
+                    {"key": "diversity_metric", "label": "Diversity metric", "type": "select", "default": "normalized_shannon_entropy",
+                     "options": ["normalized_shannon_entropy", "gini_simpson", "D50", "chao1"]},
+                ],
+            },
+            {
+                "key": "s6",
+                "label": "S6 — Repertoire Overlap",
+                "run_key": None,
+                "params": [
+                    {"key": "overlap_metric", "label": "Overlap metric", "type": "select", "default": "jaccard", "options": ["jaccard", "morisita_horn"]},
+                ],
+            },
+            {
+                "key": "s8",
+                "label": "S8 — Render HTML Report",
+                "run_key": "run_report",
+                "params": [],
+            },
+        ],
+    },
+    "bcr_immunarch_pipeline": {
+        "name": "BCR Repertoire — immunarch",
+        "description": "Runs immunarch on single-cell BCR data from 10x Genomics cellranger vdj: repertoire exploration, clonality, diversity, V/J gene usage, optional clonal tracking and k-mer analysis, and pairwise repertoire overlap. The fastest/most exploratory of the four BCR pipelines; trusts Cell Ranger's own V(D)J gene calls.",
+        "readme": "bcr_immunarch_pipeline/README.md",
+        "input_mode": "samplesheet",
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv  (SampleID, contig_annotations, subject columns)"},
+        ],
+        "steps": [
+            {
+                "key": "s2",
+                "label": "S2 — Repertoire Exploration",
+                "run_key": None,   # always runs
+                "params": [
+                    {"key": "explore_method", "label": "Metric", "type": "select", "default": "volume", "options": ["volume", "len", "count", "samples"]},
+                ],
+            },
+            {
+                "key": "s3",
+                "label": "S3 — Clonality",
+                "run_key": None,
+                "params": [
+                    {"key": "clonality_method", "label": "Method", "type": "select", "default": "clonal.prop", "options": ["homeo", "clonal.prop", "top", "rare"]},
+                ],
+            },
+            {
+                "key": "s4",
+                "label": "S4 — Diversity",
+                "run_key": None,
+                "params": [
+                    {"key": "diversity_method", "label": "Method", "type": "select", "default": "chao1",
+                     "options": ["chao1", "hill", "div", "gini.simp", "inv.simp", "gini", "raref"]},
+                ],
+            },
+            {
+                "key": "s5",
+                "label": "S5 — V/J Gene Usage",
+                "run_key": None,
+                "params": [
+                    {"key": "gene_reference", "label": "immunarch gene reference", "type": "select", "default": "hs.ighv",
+                     "options": ["hs.ighv", "hs.igkv", "hs.iglv", "hs.ighj", "hs.igkj", "hs.iglj"]},
+                    {"key": "gene_col", "label": "Fallback column (if reference unrecognized)", "type": "select", "default": "V.name", "options": ["V.name", "J.name"]},
+                ],
+            },
+            {
+                "key": "s6",
+                "label": "S6 — Clonal Tracking",
+                "run_key": "run_tracking",
+                "params": [
+                    {"key": "top_n_clonotypes", "label": "Top N clonotypes to track", "type": "int", "default": 10},
+                ],
+            },
+            {
+                "key": "s7",
+                "label": "S7 — Repertoire Overlap",
+                "run_key": None,
+                "params": [
+                    {"key": "overlap_method", "label": "Method", "type": "select", "default": "jaccard", "options": ["public", "jaccard", "morisita", "tversky", "cosine"]},
+                ],
+            },
+            {
+                "key": "s8",
+                "label": "S8 — K-mer Analysis",
+                "run_key": "run_kmer",
+                "params": [
+                    {"key": "kmer_k",    "label": "K-mer length",       "type": "int", "default": 5},
+                    {"key": "kmer_head", "label": "Top K-mers to show", "type": "int", "default": 10},
+                ],
+            },
+            {
+                "key": "s9",
+                "label": "S9 — Render HTML Report",
+                "run_key": "run_report",
+                "params": [],
+            },
+        ],
+    },
+    "bcr_dandelion_pipeline": {
+        "name": "BCR Repertoire — Dandelion",
+        "description": "Runs sc-dandelion on single-cell BCR data from 10x Genomics cellranger vdj: IgBLAST reannotation, contig QC, clone definition, and Dandelion's signature clonal similarity network, plus clone size, diversity, and V gene usage. Independently reannotates V(D)J genes via IgBLAST like Immcantation.",
+        "readme": "bcr_dandelion_pipeline/README.md",
+        "input_mode": "samplesheet",
+        "input_files": [
+            {"key": "samplesheet", "label": "samplesheet.csv  (SampleID, contig_fasta, contig_annotations, subject columns)"},
+        ],
+        "steps": [
+            {
+                "key": "s1",
+                "label": "S1 — Format & IgBLAST Reannotation",
+                "run_key": None,   # always runs
+                "params": [
+                    {"key": "species", "label": "Species", "type": "select", "default": "human", "options": ["human", "mouse"]},
+                ],
+            },
+            {
+                "key": "s2",
+                "label": "S2 — Contig QC",
+                "run_key": None,
+                "params": [
+                    {"key": "productive_only", "label": "Productive contigs only", "type": "bool", "default": True},
+                ],
+            },
+            {
+                "key": "s3",
+                "label": "S3 — Clone Definition",
+                "run_key": None,
+                "params": [
+                    {"key": "identity_threshold", "label": "CDR3 identity threshold", "type": "float", "default": 0.85},
+                ],
+            },
+            {
+                "key": "s4",
+                "label": "S4 — Clonal Similarity Network",
+                "run_key": None,
+                "params": [
+                    {"key": "min_network_size", "label": "Min clone size to include", "type": "int", "default": 2},
+                ],
+            },
+            {
+                "key": "s5",
+                "label": "S5 — Clone Size & Diversity",
+                "run_key": None,
+                "params": [
+                    {"key": "diversity_method", "label": "Diversity metric", "type": "select", "default": "chao1", "options": ["chao1", "shannon", "simpson", "gini"]},
+                ],
+            },
+            {
+                "key": "s7",
+                "label": "S7 — Render HTML Report",
+                "run_key": "run_report",
+                "params": [],
+            },
+        ],
+    },
     "basic_Seurat_single_cell_pipeline": {
         "name": "Seurat object from 10x CellRanger",
         "description": "Runs the full Seurat single-cell pipeline. Upload either a single CellRanger triplet (barcodes/features/matrix) or a samplesheet CSV (SampleID, barcodes, matrix, features) for multiple samples.",

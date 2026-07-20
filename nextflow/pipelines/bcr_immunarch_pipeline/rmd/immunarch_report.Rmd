@@ -1,0 +1,98 @@
+---
+title: "BCR repertoire report — immunarch"
+date: "Last update on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    keep_md: no
+    df_print: paged
+    toc: true
+    toc_float:
+      toc_collapsed: false
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+params:
+  sample_summary:  NA
+  explore_table:   NA
+  explore_png:     NA
+  clonality_table: NA
+  clonality_png:   NA
+  diversity_table: NA
+  diversity_png:   NA
+  gene_usage_table: NA
+  gene_usage_png:   NA
+  overlap_table:    NA
+  overlap_png:      NA
+---
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(DT)
+
+read_tsv_safe <- function(path) {
+  if (is.na(path) || !file.exists(path)) return(NULL)
+  df <- tryCatch(read.delim(path, sep = "\t", stringsAsFactors = FALSE, comment.char = "#"), error = function(e) NULL)
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+  df
+}
+
+show_table <- function(path, title) {
+  cat(paste0("\n\n## ", title, "\n\n"))
+  df <- read_tsv_safe(path)
+  if (is.null(df)) {
+    cat("No data available.\n")
+  } else {
+    print(htmltools::tagList(DT::datatable(df, options = list(scrollX = TRUE))))
+  }
+}
+
+show_plot <- function(path, title) {
+  cat(paste0("\n\n### ", title, " (plot)\n\n"))
+  if (!is.na(path) && file.exists(path)) {
+    cat(paste0("![](", path, ")\n"))
+  } else {
+    cat("No plot available.\n")
+  }
+}
+```
+
+# Sample summary
+
+```{r sample-summary, results='asis'}
+show_table(params$sample_summary, "Samples")
+```
+
+# Repertoire exploration
+
+```{r explore, results='asis'}
+show_table(params$explore_table, "Clone volume / length / count")
+show_plot(params$explore_png, "Exploration")
+```
+
+# Clonality
+
+```{r clonality, results='asis'}
+show_table(params$clonality_table, "Clonal space homeostasis")
+show_plot(params$clonality_png, "Clonality")
+```
+
+# Diversity
+
+```{r diversity, results='asis'}
+show_table(params$diversity_table, "Diversity estimates")
+show_plot(params$diversity_png, "Diversity")
+```
+
+# Gene usage
+
+```{r gene-usage, results='asis'}
+show_table(params$gene_usage_table, "V/J gene usage")
+show_plot(params$gene_usage_png, "Gene usage")
+```
+
+# Repertoire overlap
+
+```{r overlap, results='asis'}
+show_table(params$overlap_table, "Pairwise overlap")
+show_plot(params$overlap_png, "Overlap")
+```

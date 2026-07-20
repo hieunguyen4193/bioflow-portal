@@ -179,3 +179,134 @@ Filters BAM files or fragment tables to enrich for specific fragment sub-populat
 | `filter_flen` | BAM | Splits into short / long / full sub-BAMs |
 | `filter_bed` | BAM + BED | Keeps reads overlapping a BED region |
 | `filter_nd` | FLEN_EM_ND.tsv | Filters by nucleosome-distance range |
+
+---
+
+## BCR repertoire pipelines
+
+Each B-cell repertoire (BCR) analysis tool gets its own pipeline so the user can
+choose which one to run. All BCR pipelines take the same input: single-cell VDJ
+output from 10x Genomics `cellranger vdj` (`filtered_contig.fasta` +
+`filtered_contig_annotations.csv`).
+
+| Pipeline | Tool | Status |
+|---|---|---|
+| `bcr_immcantation_pipeline` | [Immcantation](https://immcantation.readthedocs.io/) (IgBLAST, Change-O, SHazaM, Alakazam, dowser) | Available |
+| `bcr_scirpy_pipeline` | [scirpy](https://scverse.org/scirpy/) | Available |
+| `bcr_dandelion_pipeline` | [sc-dandelion](https://sc-dandelion.readthedocs.io/) | Available |
+| `bcr_immunarch_pipeline` | [immunarch](https://immunarch.com/) | Available |
+
+### `bcr_immcantation_pipeline`
+
+Runs the Immcantation framework end to end: IgBLAST V(D)J reannotation merged
+with 10x contig annotations, productive/functional filtering, per-subject
+SHazaM clonal-distance thresholding, Change-O clonal clustering, germline
+reconstruction, SHazaM somatic hypermutation analysis, Alakazam clonal
+abundance/diversity and V/J gene usage, optional dowser lineage trees, and a
+per-subject HTML report.
+
+**Samplesheet:**
+```csv
+SampleID,contig_fasta,contig_annotations,subject
+SAMPLE_01,/path/to/SAMPLE_01/outs/filtered_contig.fasta,/path/to/SAMPLE_01/outs/filtered_contig_annotations.csv,PATIENT_01
+```
+`subject` is optional — groups samples from the same individual for clonal
+clustering/diversity/lineage analysis; defaults to `SampleID` when left blank.
+
+| Step | Description | Optional |
+|------|-------------|----------|
+| S1 | IgBLAST V(D)J reannotation (species: human/mouse) | No |
+| S2 | Filter productive/functional sequences, split by locus | No |
+| S3 | SHazaM clonal distance threshold (auto density-method or manual) | Mode switch |
+| S4 | Change-O clonal clustering | No |
+| S5 | Germline reconstruction (D-masked) | No |
+| S6 | SHazaM somatic hypermutation frequency | No |
+| S7 | Alakazam clonal abundance + Hill diversity curve | No |
+| S8 | Alakazam V/J gene usage | No |
+| S9 | dowser lineage trees (maximum parsimony) | Yes |
+| S10 | Per-subject HTML report | Yes |
+
+**Docker image:** `tronghieunguyen/bcr-immcantation:latest` (`bcr-pipelines/immcantation/Dockerfile`, based on `immcantation/suite`)
+
+### `bcr_scirpy_pipeline`
+
+Runs [scirpy](https://scverse.org/scirpy/): loads and concatenates all samples'
+10x VDJ contigs into one AnnData, chain QC + BCR/pairing filtering, clonotype
+definition (exact or similarity-based clusters), clonal expansion, alpha
+diversity, pairwise repertoire overlap, V/J gene usage, and CDR3 spectratype,
+finishing with a self-contained static HTML report. Unlike Immcantation, it
+trusts Cell Ranger's own V(D)J gene calls and clusters clonotypes across the
+whole dataset rather than per subject.
+
+**Samplesheet:**
+```csv
+SampleID,contig_annotations,subject
+SAMPLE_01,/path/to/SAMPLE_01/outs/filtered_contig_annotations.csv,PATIENT_01
+```
+
+| Step | Description | Optional |
+|------|-------------|----------|
+| S1 | Load + concatenate 10x VDJ contigs | No |
+| S2 | Chain QC + BCR/pairing filtering | No |
+| S3 | Clonotype definition (exact or similarity-based clusters) | No |
+| S4 | Clonal expansion | No |
+| S5 | Alpha diversity | No |
+| S6 | Repertoire overlap across samples | No |
+| S7 | V/J gene usage + CDR3 spectratype | No |
+| S8 | Static HTML report | Yes |
+
+**Docker image:** `tronghieunguyen/bcr-scirpy:latest` (`bcr-pipelines/scirpy/Dockerfile`)
+
+### `bcr_immunarch_pipeline`
+
+Runs [immunarch](https://immunarch.com/) — the fastest/most exploratory of the
+four: repertoire exploration, clonality, diversity, V/J gene usage, optional
+clonal tracking and k-mer analysis, and pairwise repertoire overlap, finishing
+with an HTML report. Like scirpy, it trusts Cell Ranger's own V(D)J gene calls.
+
+**Samplesheet:**
+```csv
+SampleID,contig_annotations,subject
+SAMPLE_01,/path/to/SAMPLE_01/outs/filtered_contig_annotations.csv,PATIENT_01
+```
+
+| Step | Description | Optional |
+|------|-------------|----------|
+| S1 | Load repertoires (`repLoad`) | No |
+| S2 | Repertoire exploration (`repExplore`) | No |
+| S3 | Clonality (`repClonality`) | No |
+| S4 | Diversity (`repDiversity`) | No |
+| S5 | V/J gene usage (`geneUsage`) | No |
+| S6 | Clonal tracking across samples (`trackClonotypes`) | Yes |
+| S7 | Repertoire overlap (`repOverlap`) | No |
+| S8 | CDR3 k-mer analysis (`getKmers`) | Yes |
+| S9 | HTML report | Yes |
+
+**Docker image:** `tronghieunguyen/bcr-immunarch:latest` (`bcr-pipelines/immunarch/Dockerfile`)
+
+### `bcr_dandelion_pipeline`
+
+Runs [sc-dandelion](https://sc-dandelion.readthedocs.io/): IgBLAST V(D)J
+reannotation (like Immcantation, independent of Cell Ranger's calls), contig
+QC, per-subject clone definition, and Dandelion's signature **clonal
+similarity network** (a graph-based view distinct from the other three
+pipelines' clustering approaches), plus clone size, diversity, and V gene
+usage, finishing with a per-subject HTML report.
+
+**Samplesheet:**
+```csv
+SampleID,contig_fasta,contig_annotations,subject
+SAMPLE_01,/path/to/SAMPLE_01/outs/filtered_contig.fasta,/path/to/SAMPLE_01/outs/filtered_contig_annotations.csv,PATIENT_01
+```
+
+| Step | Description | Optional |
+|------|-------------|----------|
+| S1 | Format contig IDs + IgBLAST reannotation | No |
+| S2 | Contig QC (ambiguous/chimeric/productive filtering) | No |
+| S3 | Clone definition per subject | No |
+| S4 | Clonal similarity network + plot | No |
+| S5 | Clone size distribution + diversity | No |
+| S6 | V gene usage | No |
+| S7 | Per-subject HTML report | Yes |
+
+**Docker image:** `tronghieunguyen/bcr-dandelion:latest` (`bcr-pipelines/dandelion/Dockerfile`, based on `sctdandelion/dandelion`)
