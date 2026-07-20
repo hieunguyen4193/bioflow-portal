@@ -124,6 +124,15 @@ def _build_expr_cache_bg(rds_path: str, cache_base: str,
         _cache_building.discard(cache_key)
 
 
+def _parse_json_line(json_line: str) -> dict | list:
+    # R prints deferred warnings (accumulated via options(warn=0)) right after the
+    # script's final cat(toJSON(...)), which has no trailing newline — so a warning
+    # can land glued onto the same line with no separator. json.loads would then
+    # fail with "Extra data" even though the JSON itself is well-formed; raw_decode
+    # parses just the leading JSON value and ignores whatever garbage follows it.
+    return json.JSONDecoder().raw_decode(json_line.strip())[0]
+
+
 def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list:
     container_script = os.path.join(R_SCRIPTS, script_name)   # path inside the spawned R container
     cmd = [
@@ -143,7 +152,7 @@ def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list
     if not json_line:
         raise HTTPException(500, f"R parse error: no JSON in output\nstdout[:500]: {result.stdout[:500]}")
     try:
-        return json.loads(json_line)
+        return _parse_json_line(json_line)
     except json.JSONDecodeError as exc:
         raise HTTPException(500, f"R parse error: {exc}\nstdout[:500]: {result.stdout[:500]}")
 
@@ -538,7 +547,7 @@ def _run_dge_background(task_id: str, req: "DGERequest", rds_path: str, cache_ke
         if proc.returncode != 0 or not json_line:
             _dge_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
             return
-        r = json.loads(json_line)
+        r = _parse_json_line(json_line)
         result = {
             "markers":      r.get("markers", []),
             "excluded_tcr": r.get("excluded_tcr", []),
@@ -728,7 +737,7 @@ def _run_subcluster_background(task_id: str, req: "SubclusterRequest", rds_path:
         if proc.returncode != 0 or not json_line:
             _subcluster_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
             return
-        result = json.loads(json_line)
+        result = _parse_json_line(json_line)
         _write_subcluster_result(req, rds_path, cache_key, out_rds_path, result)
         _subcluster_tasks[task_id].update({"status": "done", "result": result, "cache_key": cache_key})
     except subprocess.TimeoutExpired:
@@ -886,7 +895,7 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
         if proc.returncode != 0 or not json_line:
             _pathway_tasks[task_id].update({"status": "error", "error": full_output[-4000:]})
             return
-        parsed = json.loads(json_line)
+        parsed = _parse_json_line(json_line)
         _pathway_tasks[task_id].update({"status": "done", "results": parsed})
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -995,7 +1004,7 @@ def _run_module_score_background(task_id: str, rds_path: str, gene_list_path: st
         if proc.returncode != 0 or not json_line:
             _module_score_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
             return
-        result = json.loads(json_line)
+        result = _parse_json_line(json_line)
         if not result.get("expression"):
             _module_score_tasks[task_id].update({
                 "status": "error",
@@ -1150,7 +1159,7 @@ def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict
         if proc.returncode != 0 or not json_line:
             _cellchat_tasks[task_id].update({"status": "error", "error": full_output[-4000:]})
             return
-        parsed = json.loads(json_line)
+        parsed = _parse_json_line(json_line)
         _cellchat_tasks[task_id].update({"status": "done", "html": parsed.get("html", "")})
     except subprocess.TimeoutExpired:
         proc.kill()

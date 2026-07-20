@@ -1,0 +1,20 @@
+# Python package list for the single_cell_data_analysis_with_python pipeline.
+# Equivalent of src/import_libraries.R's list.of.packages / bioc.packages.
+# Meant to be baked into the pipeline's Docker image (see pipeline-image/), not
+# installed at run time.
+
+scanpy>=1.10
+anndata>=0.10
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+leidenalg          # sc.tl.leiden clustering backend
+python-igraph       # neighbors graph backend
+scrublet            # doublet detection  (== DoubletFinder in the R pipeline)
+harmonypy           # Harmony batch integration (exact port used by Seurat's HarmonyIntegration)
+scanorama            # integration method used in place of Seurat's CCA integration
+bbknn                # integration method used in place of Seurat's RPCA integration
+mygene                # SYMBOL -> ENSEMBL mapping (== org.Hs.eg.db::mapIds in the R pipeline)
+jinja2                # HTML report templating

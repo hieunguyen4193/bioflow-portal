@@ -1,0 +1,95 @@
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+include { SCANPY_PIPELINE } from './workflows/scanpy_pipeline'
+
+// ── Input files ────────────────────────────────────────────────────────────
+params.samplesheet           = null   // CSV: SampleID,barcodes,matrix,features
+params.barcodes              = null   // single-sample mode
+params.features              = null
+params.matrix                = null
+params.sample_name           = "sample"
+
+// ── Step 1: QC thresholds ──────────────────────────────────────────────────
+params.min_cells             = 3
+params.min_features          = 200
+params.max_features          = 5000
+params.max_mt_pct            = 20
+params.remove_TCR_genes      = false
+
+// ── Step skip switches (s1 always runs) ───────────────────────────────────
+params.run_downsample    = "false"
+params.downsample_type   = "percent"  // percent | number
+params.downsample_value  = 100
+params.run_s2 = "true"
+params.run_s3 = "true"
+params.run_s4 = "true"
+params.run_s5 = "true"
+params.run_s6 = "true"
+params.run_s7 = "true"
+params.run_s8  = "true"
+params.run_s8a = "true"
+
+// ── Step 2: Ambient RNA ────────────────────────────────────────────────────
+params.ambient_method        = "decontX"   // decontX | SoupX | none
+// NOTE: "decontX" here is a lightweight pure-Python re-implementation of the
+// decontX algorithm (no official Python port of Bioconductor's celda/decontX
+// exists). "SoupX" is left unimplemented, exactly mirroring the R pipeline,
+// which also stops with "SoupX support is not yet implemented."
+
+// ── Step 3: Cell filtering ("" = skip that filter) ────────────────────────
+params.nFeatureRNA_floor      = ""
+params.nFeatureRNA_ceiling    = ""
+params.nCountRNA_floor        = ""
+params.nCountRNA_ceiling      = ""
+params.pct_mito_floor         = ""
+params.pct_mito_ceiling       = ""
+params.pct_ribo_floor         = ""
+params.pct_ribo_ceiling       = ""
+params.ambientRNA_thres       = ""
+params.log10GenesPerUMI_thres = ""
+
+// ── Step 4: Doublet detection ──────────────────────────────────────────────
+params.doublet_csv           = "${projectDir}/assets/DoubletEstimation10X.csv"
+params.remove_doublet        = false
+// Doublet detection uses Scrublet (Python) in place of DoubletFinder (R).
+
+// ── Step 5: CC pre-processing ──────────────────────────────────────────────
+params.use_sctransform       = false   // uses scanpy Pearson-residual normalisation
+                                        // (analytic equivalent of SCTransform) instead of "false" = standard LogNormalize
+params.vars_to_regress       = "percent.mt"
+
+// ── Step 6: Cell cycle scoring ─────────────────────────────────────────────
+params.cc_scoring_mode       = "gene_name"    // gene_name | ensembl
+
+// ── Step 7: Regress out ────────────────────────────────────────────────────
+params.features_to_regressOut = "none"        // comma-separated list or "none"
+params.regressOut_mode        = "alternative" // normal | alternative
+
+// ── Step 8: UMAP + clustering ──────────────────────────────────────────────
+params.num_PCA                   = 50
+params.num_PC_used_in_UMAP       = 30
+params.num_PC_used_in_Clustering = 30
+params.cluster_resolution        = 0.5
+params.s8_vars_to_regress        = "percent.mt"
+params.s8_remove_genes           = "none"
+
+params.outdir                = "${launchDir}/results"
+
+workflow {
+    if (params.samplesheet) {
+        ch_input = Channel
+            .fromPath(params.samplesheet)
+            .splitCsv(header: true, strip: true)
+            .map { row -> tuple(row.SampleID, file(row.barcodes), file(row.features), file(row.matrix)) }
+    } else {
+        ch_input = Channel.of(tuple(
+            params.sample_name ?: 'sample',
+            file(params.barcodes),
+            file(params.features),
+            file(params.matrix)
+        ))
+    }
+
+    SCANPY_PIPELINE(ch_input, params)
+}
