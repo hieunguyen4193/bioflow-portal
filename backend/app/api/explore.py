@@ -333,6 +333,39 @@ async def load_preset(req: PresetLoadRequest):
     return JSONResponse(data)
 
 
+# ── Cache listing ───────────────────────────────────────────────────────────
+@router.get("/cache-list")
+async def list_expr_cache(session_id: str):
+    """List cached expression (assay, slot) pairs on disk for this session's RDS file."""
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+
+    cache_base = _cache_base_for(rds_path)
+    parent = Path(cache_base).parent
+    prefix = Path(cache_base).name + "_"
+
+    entries = []
+    for meta_path in sorted(parent.glob(f"{prefix}*.json")):
+        bin_path = meta_path.with_suffix(".bin")
+        if not bin_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception:
+            continue
+        assay_name = meta.get("assay")
+        slot_name  = meta.get("slot")
+        if not assay_name or not slot_name:
+            continue
+        entries.append({
+            "assay":      assay_name,
+            "slot":       slot_name,
+            "size_bytes": bin_path.stat().st_size,
+        })
+    return JSONResponse(entries)
+
+
 # ── Cache status ────────────────────────────────────────────────────────────
 @router.get("/cache-status")
 async def get_cache_status(session_id: str, assay: Optional[str] = None, slot: Optional[str] = None):
@@ -383,6 +416,35 @@ async def start_cache_build(req: CacheBuildRequest):
         daemon=True,
     ).start()
     return JSONResponse({"status": "started", "message": f"Started caching expression data for {label}…"})
+
+
+@router.delete("/cache")
+async def delete_expr_cache(session_id: str, assay: Optional[str] = None, slot: Optional[str] = None):
+    """Delete cached expression .bin/.json files for a session.
+    With assay+slot, removes just that pair; without, removes every pair for the session.
+    """
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+
+    cache_base = _cache_base_for(rds_path)
+    parent = Path(cache_base).parent
+    prefix = Path(cache_base).name + "_"
+
+    if assay and slot:
+        paths = [parent / f"{prefix}{assay}_{slot}.bin", parent / f"{prefix}{assay}_{slot}.json"]
+        _expr_caches.get(rds_path, {}).pop((assay, slot), None)
+    else:
+        paths = list(parent.glob(f"{prefix}*.bin")) + list(parent.glob(f"{prefix}*.json"))
+        _expr_caches.pop(rds_path, None)
+
+    removed = 0
+    for path in paths:
+        if path.exists():
+            path.unlink()
+            removed += 1
+
+    return JSONResponse({"status": "deleted", "removed": removed})
 
 
 # ── Upload ──────────────────────────────────────────────────────────────────

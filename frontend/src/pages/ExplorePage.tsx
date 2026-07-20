@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, subclusterDownloadUrl, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, subclusterDownloadUrl, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -86,6 +86,128 @@ function CacheBuildButton({ sessionId, assay, slot }: { sessionId: string; assay
       </button>
       {message && <span className="text-xs text-slate-500">{message}</span>}
     </>
+  )
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB']
+  let v = n / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(1)} ${units[i]}`
+}
+
+// ── Cache manager (lists cached assay/slot pairs on disk, lets user delete one or all) ──
+function CacheManagerButton({ sessionId, onChanged }: { sessionId: string; onChanged?: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [entries, setEntries] = useState<ExprCacheEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const [deletingKey, setDeletingKey] = useState<string | null>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  async function refresh() {
+    setLoading(true)
+    try {
+      setEntries(await listExprCache(sessionId))
+    } catch {
+      toast.error('Failed to load cache list')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function toggleOpen() {
+    setOpen(v => {
+      const next = !v
+      if (next) refresh()
+      return next
+    })
+  }
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    function onClick(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [open])
+
+  async function deleteOne(entry: ExprCacheEntry) {
+    const key = `${entry.assay}/${entry.slot}`
+    if (!window.confirm(`Delete cached expression data for ${key}? You'll need to rebuild it to view gene expression for this assay/slot again.`)) return
+    setDeletingKey(key)
+    try {
+      await deleteExprCache(sessionId, entry.assay, entry.slot)
+      toast.success(`Deleted cache for ${key}`)
+      await refresh()
+      onChanged?.()
+    } catch {
+      toast.error(`Failed to delete cache for ${key}`)
+    } finally {
+      setDeletingKey(null)
+    }
+  }
+
+  async function deleteAll() {
+    if (!window.confirm(`Delete all ${entries.length} cached expression pair(s) for this file? You'll need to rebuild them to view gene expression again.`)) return
+    setDeletingKey('__all__')
+    try {
+      const res = await deleteExprCache(sessionId)
+      toast.success(`Deleted ${res.removed} cache file(s)`)
+      await refresh()
+      onChanged?.()
+    } catch {
+      toast.error('Failed to delete cache')
+    } finally {
+      setDeletingKey(null)
+    }
+  }
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <button onClick={toggleOpen}
+        className="text-xs text-slate-400 hover:text-slate-600 border border-slate-200 hover:border-slate-300 px-2 py-1 rounded-md whitespace-nowrap">
+        Manage cache
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 w-80 bg-white border border-slate-200 rounded-lg shadow-lg text-xs">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
+            <span className="font-medium text-slate-700">Expression cache</span>
+            {entries.length > 0 && (
+              <button onClick={deleteAll} disabled={deletingKey !== null}
+                className="text-red-500 hover:text-red-600 font-medium disabled:opacity-50">
+                {deletingKey === '__all__' ? 'Deleting…' : 'Delete all'}
+              </button>
+            )}
+          </div>
+          <div className="max-h-64 overflow-auto divide-y divide-slate-100">
+            {loading ? (
+              <p className="px-3 py-3 text-slate-400 italic">Loading…</p>
+            ) : entries.length === 0 ? (
+              <p className="px-3 py-3 text-slate-400 italic">No cached expression data for this file.</p>
+            ) : (
+              entries.map(entry => {
+                const key = `${entry.assay}/${entry.slot}`
+                return (
+                  <div key={key} className="flex items-center justify-between gap-2 px-3 py-2">
+                    <span className="text-slate-600 truncate">
+                      {key} <span className="text-slate-400">({formatBytes(entry.size_bytes)})</span>
+                    </span>
+                    <button onClick={() => deleteOne(entry)} disabled={deletingKey !== null}
+                      className="text-slate-400 hover:text-red-500 font-medium disabled:opacity-50 shrink-0">
+                      {deletingKey === key ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -3689,6 +3811,7 @@ export default function ExplorePage() {
                 Gene cache ready
               </span>
             )}
+            <CacheManagerButton sessionId={sessionId!} onChanged={() => startCachePolling(sessionId!, assay, slot)} />
             <button onClick={() => {
               if (cachePollRef.current) clearInterval(cachePollRef.current)
               setCacheStatus('idle')

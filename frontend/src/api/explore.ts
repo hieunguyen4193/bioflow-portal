@@ -192,6 +192,27 @@ export async function startCacheBuild(
   return data
 }
 
+export interface ExprCacheEntry {
+  assay:      string
+  slot:       string
+  size_bytes: number
+}
+
+export async function listExprCache(session_id: string): Promise<ExprCacheEntry[]> {
+  const { data } = await api.get<ExprCacheEntry[]>('/explore/cache-list', { params: { session_id } })
+  return data
+}
+
+// Omit assay/slot to delete every cached (assay, slot) pair for this session.
+export async function deleteExprCache(
+  session_id: string, assay?: string, slot?: string
+): Promise<{ status: string; removed: number }> {
+  const { data } = await api.delete('/explore/cache', {
+    params: { session_id, ...(assay ? { assay } : {}), ...(slot ? { slot } : {}) },
+  })
+  return data
+}
+
 export async function getPathwayResult(task_id: string): Promise<{
   status: 'running' | 'done' | 'error'
   log?: string

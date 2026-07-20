@@ -23,6 +23,9 @@ cp backend/.env.example backend/.env   # set SECRET_KEY; optionally SMTP
 # 2. Build the R pipeline image (bakes in all required R packages)
 docker build -t pipeline-portal/r-pipeline:latest ./pipeline-image/
 
+# 2b. Optional: build the Python pipeline image (needed for single_cell_data_analysis_with_python)
+docker build -t tronghieunguyen/single_cell_pipeline_python ./pipeline-image-python/
+
 # 3. Start everything
 docker compose up --build
 ```
@@ -123,6 +126,37 @@ Creates a Seurat object from 10x CellRanger output and takes it through QC, norm
 **Key parameters:** `sample_name`, `min_cells` (3), `min_features` / `max_features` (200 / 5000), `max_mt_pct` (20), `cluster_resolution` (0.5)
 
 **Outputs:** per-step RDS files, QC plots, UMAP plots, marker CSV under `results/`.
+
+---
+
+### `single_cell_data_analysis_with_python`
+
+Python/scanpy port of `basic_Seurat_single_cell_pipeline` — same steps, same
+parameters, same skip switches, same output layout, with the R/Seurat/
+Bioconductor stack replaced by Python equivalents (Scrublet, harmonypy,
+Scanorama, BBKNN in place of DoubletFinder, Harmony, CCA, RPCA integration).
+
+**Inputs:** `barcodes.tsv.gz`, `features.tsv.gz`, `matrix.mtx.gz` (single sample), or a samplesheet CSV (`SampleID, barcodes, matrix, features`) for multiple samples.
+
+| Step | Description | Optional |
+|------|-------------|----------|
+| S1 | Create AnnData object; QC filters (min cells, min/max features, max % MT) | No |
+| S1b | Downsample cells | Yes |
+| S2 | Ambient RNA correction | Yes |
+| S3 | Cell filtering | Yes |
+| S4 | Doublet detection | Yes |
+| S5 | CC pre-processing and regression | Yes |
+| S6 | Cell-cycle scoring | Yes |
+| S7 | Regress out covariates | Yes |
+| S8 | UMAP + graph-based clustering, HTML report | Yes |
+
+**Key parameters:** `min_cells` (3), `min_features` / `max_features` (200 / 5000), `max_mt_pct` (20), `sample_name`, `outdir` (`results`)
+
+**Outputs:** per-step `.h5ad` files, QC plots, UMAP plots, self-contained HTML report under `results/`.
+
+**Docker image:** `tronghieunguyen/single_cell_pipeline_python` (`pipeline-image-python/Dockerfile`) — separate from the R pipeline image; build it too if you want to run this pipeline (see [Quick start](#quick-start)).
+
+Not wired into the Explore tab — that subsystem is still R/`.rds`-only; this pipeline's `.h5ad` output isn't consumed by it. See the pipeline's own [README](nextflow/pipelines/single_cell_data_analysis_with_python/README.md) for the full R → Python tool mapping.
 
 ---
 
