@@ -69,9 +69,13 @@ def s5_preprocess_before_cc_scoring(adata, use_sctransform, vars_to_regress, sam
     # ── QC metrics (recalculate in case not present) ────────────────────────
     adata.var["mt"]   = adata.var_names.str.match(r"^mt-|^MT-")
     adata.var["ribo"] = adata.var_names.str.match(r"^Rpl|^Rps|^RPL|^RPS")
-    sc.pp.calculate_qc_metrics(adata, qc_vars=["mt", "ribo"], inplace=True, percent_top=None)
-    adata.obs.rename(columns={"pct_counts_mt": "percent_mt", "pct_counts_ribo": "percent_ribo"},
-                      inplace=True)
+    missing_qc_vars = [v for v in ("mt", "ribo") if f"percent_{v}" not in adata.obs.columns]
+    if missing_qc_vars:
+        sc.pp.calculate_qc_metrics(adata, qc_vars=missing_qc_vars, inplace=True, percent_top=None)
+        adata.obs.rename(
+            columns={f"pct_counts_{v}": f"percent_{v}" for v in missing_qc_vars},
+            inplace=True,
+        )
     exclude_genes = adata.var_names[adata.var["mt"] | adata.var["ribo"]]
     adata.obs["percent_exclude"] = (
         adata[:, exclude_genes].X.sum(axis=1).A1 / adata.X.sum(axis=1).A1 * 100
