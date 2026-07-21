@@ -1066,7 +1066,10 @@ function ModuleScoreTab({ meta, reduction, assay, colorBy, sessionId }: any) {
       </div>
       <p className="text-xs text-slate-400">
         Upload a .csv/.xls/.xlsx file with one column per gene module (column header = module name, cells = gene symbols).
-        Scores are computed on assay <strong>{assay}</strong> via Seurat's AddModuleScore.
+        Scores are computed on assay <strong>{assay}</strong> via Seurat's AddModuleScore.{' '}
+        <a href="/examples/module_score_example.csv" download className="text-indigo-500 hover:underline">
+          Download example CSV
+        </a> (plasma_cells: XBP1, PRDM1, SDC1, JCHAIN, IRF4, MZB1).
       </p>
 
       {status === 'running' && log && (
