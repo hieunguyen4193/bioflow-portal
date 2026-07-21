@@ -23,7 +23,7 @@ services:
       - ${BIOFLOW_DATA_DIR}/uploads:${BIOFLOW_DATA_DIR}/uploads
       - ${BIOFLOW_DATA_DIR}/results:${BIOFLOW_DATA_DIR}/results
       - ${BIOFLOW_DATA_DIR}/explore:/data/explore
-      - ./nextflow:/nextflow
+      - ${BIOFLOW_REPO_DIR}/nextflow:${BIOFLOW_REPO_DIR}/nextflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
@@ -40,6 +40,14 @@ services:
       # mounts above instead of the /data/* remap used for direct file I/O.
       UPLOAD_DIR: ${BIOFLOW_DATA_DIR}/uploads
       RESULTS_DIR: ${BIOFLOW_DATA_DIR}/results
+      # Same reasoning: pipeline assets under nextflow/pipelines/*/assets are
+      # staged into task workdirs as symlinks to this path, which must also
+      # resolve on the host.
+      NEXTFLOW_PIPELINES_DIR: ${BIOFLOW_REPO_DIR}/nextflow/pipelines
+      # pipelines.py reads READMEs straight off disk inside this container;
+      # its default ("/nextflow/pipelines") no longer exists now that the
+      # nextflow volume is identity-mounted above.
+      PIPELINES_BASE: ${BIOFLOW_REPO_DIR}/nextflow/pipelines
     depends_on:
       db:
         condition: service_healthy

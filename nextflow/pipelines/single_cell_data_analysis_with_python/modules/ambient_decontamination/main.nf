@@ -45,6 +45,7 @@ def em_decontx(X_csr, cluster_labels, n_iter=3, newton_iters=5):
     via Newton-Raphson on the multinomial mixture likelihood -> profile
     refresh) stands in for it. Returns (contamination, corrected_counts).
     \"\"\"
+    cluster_labels = np.asarray(cluster_labels, dtype=np.int64)
     n_cells, n_genes = X_csr.shape
     n_clusters = int(cluster_labels.max()) + 1
     X_coo = X_csr.tocoo()
