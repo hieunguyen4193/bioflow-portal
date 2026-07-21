@@ -20,8 +20,8 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend:/app
-      - ${BIOFLOW_DATA_DIR}/uploads:/data/uploads
-      - ${BIOFLOW_DATA_DIR}/results:/data/results
+      - ${BIOFLOW_DATA_DIR}/uploads:${BIOFLOW_DATA_DIR}/uploads
+      - ${BIOFLOW_DATA_DIR}/results:${BIOFLOW_DATA_DIR}/results
       - ${BIOFLOW_DATA_DIR}/explore:/data/explore
       - ./nextflow:/nextflow
       - /var/run/docker.sock:/var/run/docker.sock
@@ -34,6 +34,12 @@ services:
       PIPELINE_IMAGE: ${PIPELINE_IMAGE:-pipeline-portal/r-pipeline:latest}
       EXPLORE_DIR: /data/explore
       R_SCRIPTS_DIR: /app/app/r_scripts
+      # Nextflow (-profile docker) launches task containers via the host's
+      # docker.sock, so its work/output dirs must resolve to the same path
+      # on the host as they do inside this container — hence identity
+      # mounts above instead of the /data/* remap used for direct file I/O.
+      UPLOAD_DIR: ${BIOFLOW_DATA_DIR}/uploads
+      RESULTS_DIR: ${BIOFLOW_DATA_DIR}/results
     depends_on:
       db:
         condition: service_healthy
