@@ -7,11 +7,19 @@ import RegisterPage from './pages/RegisterPage'
 import DashboardPage from './pages/DashboardPage'
 import SubmitJobPage from './pages/SubmitJobPage'
 import JobDetailPage from './pages/JobDetailPage'
+import AdminPage from './pages/AdminPage'
 import Layout from './components/Layout'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
   if (!token) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
+
+function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user)
+  if (!user) return null
+  if (!user.is_admin) return <Navigate to="/" replace />
   return <>{children}</>
 }
 
@@ -31,6 +39,7 @@ export default function App() {
         <Route path="submit"  element={<SubmitJobPage />} />
         <Route path="jobs/:id" element={<JobDetailPage />} />
         <Route path="explore" element={null} />
+        <Route path="admin" element={<RequireAdmin><AdminPage /></RequireAdmin>} />
       </Route>
     </Routes>
   )

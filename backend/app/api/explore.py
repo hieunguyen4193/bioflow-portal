@@ -9,14 +9,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.models.user import User
+from app.services.auth import get_current_user
+from app.services.presets import EXPLORE_DIR, HOST_EXPLORE, PRESETS_DIR, list_project_names
+from app.services.project_access import accessible_project_names, user_has_project_access
 
 router = APIRouter(prefix="/explore", tags=["explore"])
 
 _sessions: dict[str, str] = {}        # session_id → rds_path
 _session_labels: dict[str, str] = {}  # session_id → human-readable source label (project/file)
+_session_owners: dict[str, str] = {}  # session_id → user_id that created it
 _expr_caches: dict[str, dict] = {}    # rds_path → {(assay, slot): {mat, cells, gene_idx}}
 _cache_building: set[tuple] = set()   # {(rds_path, assay, slot)} currently being built
 _pathway_tasks: dict[str, dict] = {}
@@ -26,22 +34,28 @@ _module_score_tasks: dict[str, dict] = {}
 
 DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
 
-# HOST_DATA_DIR is always the host-machine absolute path (set in docker-compose).
-# We use it both to derive the container-internal explore path and for docker run -v mounts.
-_host_data   = os.environ.get("HOST_DATA_DIR", "").rstrip("/")
-HOST_EXPLORE = f"{_host_data}/explore" if _host_data else "/data/explore"
 HOST_SCRIPTS = os.environ.get("HOST_R_SCRIPTS", "")
-
-# Container-internal paths (for file I/O inside the backend container).
-# If EXPLORE_DIR is explicitly set use it; otherwise derive from HOST_DATA_DIR so the
-# path works even before the container is recreated with the new volume layout.
-EXPLORE_DIR  = os.environ.get("EXPLORE_DIR") or HOST_EXPLORE
-PRESETS_DIR  = os.path.join(EXPLORE_DIR, "presets")
 R_SCRIPTS    = os.environ.get("R_SCRIPTS_DIR", "/app/app/r_scripts")
 
 # Fall back HOST_SCRIPTS to R_SCRIPTS if not overridden (works when host path == container path)
 if not HOST_SCRIPTS:
     HOST_SCRIPTS = R_SCRIPTS
+
+
+def _require_session_owner(session_id: str, current_user: User) -> None:
+    """Sessions are created by one user (preset load / upload) — anyone else,
+    admins excluded, must not be able to poke another user's session_id even
+    though it's an unguessable UUID (defense in depth)."""
+    owner = _session_owners.get(session_id)
+    if owner is not None and owner != current_user.id and not current_user.is_admin:
+        raise HTTPException(403, "Not authorized to access this session")
+
+
+def _require_task_owner(task: Optional[dict], current_user: User) -> None:
+    if task is not None:
+        owner = task.get("owner")
+        if owner is not None and owner != current_user.id and not current_user.is_admin:
+            raise HTTPException(403, "Not authorized to access this task")
 
 
 def _cache_base_for(rds_path: str) -> str:
@@ -283,11 +297,15 @@ def _delete_subcluster_cache_entry(rds_path: str, cache_key: str) -> bool:
 
 # ── Presets ─────────────────────────────────────────────────────────────────
 @router.get("/presets")
-async def list_presets():
+async def list_presets(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     os.makedirs(PRESETS_DIR, exist_ok=True)
+    allowed = set(await accessible_project_names(db, current_user, list_project_names()))
     projects = []
     for project_dir in sorted(Path(PRESETS_DIR).iterdir()):
-        if not project_dir.is_dir():
+        if not project_dir.is_dir() or project_dir.name not in allowed:
             continue
         files = sorted(project_dir.glob("*.rds"), key=lambda p: p.name)
         if not files:
@@ -308,15 +326,22 @@ class PresetLoadRequest(BaseModel):
 
 
 @router.post("/presets/load")
-async def load_preset(req: PresetLoadRequest):
+async def load_preset(
+    req: PresetLoadRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if "/" in req.project or "\\" in req.project or "/" in req.filename or "\\" in req.filename:
         raise HTTPException(400, "Invalid path")
+    if not await user_has_project_access(db, current_user, req.project):
+        raise HTTPException(403, "You do not have access to this project")
     rds_path = os.path.join(PRESETS_DIR, req.project, req.filename)
     if not os.path.exists(rds_path) or not req.filename.endswith(".rds"):
         raise HTTPException(400, "Preset file not found")
     session_id = str(uuid.uuid4())
     _sessions[session_id] = rds_path
     _session_labels[session_id] = f"{req.project}/{req.filename}"
+    _session_owners[session_id] = current_user.id
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
@@ -335,11 +360,12 @@ async def load_preset(req: PresetLoadRequest):
 
 # ── Cache listing ───────────────────────────────────────────────────────────
 @router.get("/cache-list")
-async def list_expr_cache(session_id: str):
+async def list_expr_cache(session_id: str, current_user: User = Depends(get_current_user)):
     """List cached expression (assay, slot) pairs on disk for this session's RDS file."""
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
 
     cache_base = _cache_base_for(rds_path)
     parent = Path(cache_base).parent
@@ -368,10 +394,16 @@ async def list_expr_cache(session_id: str):
 
 # ── Cache status ────────────────────────────────────────────────────────────
 @router.get("/cache-status")
-async def get_cache_status(session_id: str, assay: Optional[str] = None, slot: Optional[str] = None):
+async def get_cache_status(
+    session_id: str,
+    assay: Optional[str] = None,
+    slot: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     cache = _expr_caches.get(rds_path, {})
     if assay and slot:
         if cache.get((assay, slot)):
@@ -390,10 +422,11 @@ class CacheBuildRequest(BaseModel):
 
 
 @router.post("/cache-build")
-async def start_cache_build(req: CacheBuildRequest):
+async def start_cache_build(req: CacheBuildRequest, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(req.session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
+    _require_session_owner(req.session_id, current_user)
 
     label = f"{req.assay}/{req.slot}"
 
@@ -419,13 +452,19 @@ async def start_cache_build(req: CacheBuildRequest):
 
 
 @router.delete("/cache")
-async def delete_expr_cache(session_id: str, assay: Optional[str] = None, slot: Optional[str] = None):
+async def delete_expr_cache(
+    session_id: str,
+    assay: Optional[str] = None,
+    slot: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
     """Delete cached expression .bin/.json files for a session.
     With assay+slot, removes just that pair; without, removes every pair for the session.
     """
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
 
     cache_base = _cache_base_for(rds_path)
     parent = Path(cache_base).parent
@@ -449,7 +488,7 @@ async def delete_expr_cache(session_id: str, assay: Optional[str] = None, slot: 
 
 # ── Upload ──────────────────────────────────────────────────────────────────
 @router.post("/upload")
-async def upload_rds(file: UploadFile = File(...)):
+async def upload_rds(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     if not (file.filename or "").endswith(".rds"):
         raise HTTPException(400, "Only .rds files are supported")
 
@@ -463,6 +502,7 @@ async def upload_rds(file: UploadFile = File(...)):
 
     _sessions[session_id] = rds_path
     _session_labels[session_id] = file.filename or os.path.basename(rds_path)
+    _session_owners[session_id] = current_user.id
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
@@ -488,10 +528,11 @@ class GeneRequest(BaseModel):
 
 
 @router.post("/gene")
-async def get_gene_expression(req: GeneRequest):
+async def get_gene_expression(req: GeneRequest, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(req.session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
+    _require_session_owner(req.session_id, current_user)
 
     # Fast path: numpy memmap, no Docker
     cache = _expr_caches.get(rds_path, {}).get((req.assay, req.slot))
@@ -629,10 +670,11 @@ def _run_dge_background(task_id: str, req: "DGERequest", rds_path: str, cache_ke
 
 
 @router.post("/dge/start")
-async def start_dge(req: DGERequest):
+async def start_dge(req: DGERequest, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(req.session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
+    _require_session_owner(req.session_id, current_user)
 
     ident1_list = [s.strip() for s in (req.ident1 or "").split(",") if s.strip()]
     ident2_list = [s.strip() for s in (req.ident2 or "").split(",") if s.strip()]
@@ -646,17 +688,18 @@ async def start_dge(req: DGERequest):
         return JSONResponse({**result, "cache_key": cache_key, "cached": True})
 
     task_id = str(uuid.uuid4())
-    _dge_tasks[task_id] = {"status": "running"}
+    _dge_tasks[task_id] = {"status": "running", "owner": current_user.id}
     thread = threading.Thread(target=_run_dge_background, args=(task_id, req, rds_path, cache_key), daemon=True)
     thread.start()
     return JSONResponse({"cached": False, "task_id": task_id})
 
 
 @router.get("/dge/{task_id}")
-async def get_dge_status(task_id: str):
+async def get_dge_status(task_id: str, current_user: User = Depends(get_current_user)):
     task = _dge_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     response = {"status": task.get("status"), "log": task.get("log", "")}
     if task.get("status") == "done":
         response.update(task.get("result", {}))
@@ -667,10 +710,11 @@ async def get_dge_status(task_id: str):
 
 
 @router.post("/dge/{task_id}/cancel")
-async def cancel_dge(task_id: str):
+async def cancel_dge(task_id: str, current_user: User = Depends(get_current_user)):
     task = _dge_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     if task.get("status") != "running":
         raise HTTPException(400, "Task is not running")
     task.update({"status": "cancelled"})
@@ -686,18 +730,20 @@ async def cancel_dge(task_id: str):
 
 
 @router.get("/dge-cache")
-async def list_dge_cache(session_id: str):
+async def list_dge_cache(session_id: str, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     return JSONResponse(_list_dge_cache(rds_path))
 
 
 @router.get("/dge-cache/{cache_key}")
-async def get_dge_cache_entry(cache_key: str, session_id: str):
+async def get_dge_cache_entry(cache_key: str, session_id: str, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     entry = _read_dge_cache_entry(rds_path, cache_key)
     if not entry:
         raise HTTPException(404, "Cache entry not found")
@@ -705,10 +751,11 @@ async def get_dge_cache_entry(cache_key: str, session_id: str):
 
 
 @router.delete("/dge-cache/{cache_key}")
-async def delete_dge_cache_entry(cache_key: str, session_id: str):
+async def delete_dge_cache_entry(cache_key: str, session_id: str, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     if not _delete_dge_cache_entry(rds_path, cache_key):
         raise HTTPException(404, "Cache entry not found")
     return JSONResponse({"status": "deleted"})
@@ -813,10 +860,11 @@ def _run_subcluster_background(task_id: str, req: "SubclusterRequest", rds_path:
 
 
 @router.post("/subcluster/start")
-async def start_subcluster(req: SubclusterRequest):
+async def start_subcluster(req: SubclusterRequest, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(req.session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
+    _require_session_owner(req.session_id, current_user)
 
     clusters_list = [c.strip() for c in req.clusters.split(",") if c.strip()]
     if not clusters_list:
@@ -835,7 +883,7 @@ async def start_subcluster(req: SubclusterRequest):
     task_id      = str(uuid.uuid4())
     cache_dir    = _subcluster_cache_dir_for(rds_path)
     out_rds_path = os.path.join(cache_dir, f"{cache_key}.rds")
-    _subcluster_tasks[task_id] = {"status": "running"}
+    _subcluster_tasks[task_id] = {"status": "running", "owner": current_user.id}
     thread = threading.Thread(
         target=_run_subcluster_background,
         args=(task_id, req, rds_path, cache_key, out_rds_path),
@@ -846,10 +894,11 @@ async def start_subcluster(req: SubclusterRequest):
 
 
 @router.get("/subcluster/{task_id}")
-async def get_subcluster_status(task_id: str):
+async def get_subcluster_status(task_id: str, current_user: User = Depends(get_current_user)):
     task = _subcluster_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     response = {"status": task.get("status"), "log": task.get("log", "")}
     if task.get("status") == "done":
         response.update(task.get("result", {}))
@@ -860,10 +909,11 @@ async def get_subcluster_status(task_id: str):
 
 
 @router.post("/subcluster/{task_id}/cancel")
-async def cancel_subcluster(task_id: str):
+async def cancel_subcluster(task_id: str, current_user: User = Depends(get_current_user)):
     task = _subcluster_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     if task.get("status") != "running":
         raise HTTPException(400, "Task is not running")
     task.update({"status": "cancelled"})
@@ -875,18 +925,20 @@ async def cancel_subcluster(task_id: str):
 
 
 @router.get("/subcluster-cache")
-async def list_subcluster_cache(session_id: str):
+async def list_subcluster_cache(session_id: str, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     return JSONResponse(_list_subcluster_cache(rds_path))
 
 
 @router.get("/subcluster-cache/{cache_key}")
-async def get_subcluster_cache_entry(cache_key: str, session_id: str):
+async def get_subcluster_cache_entry(cache_key: str, session_id: str, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     entry = _read_subcluster_cache_entry(rds_path, cache_key)
     if not entry:
         raise HTTPException(404, "Cache entry not found")
@@ -894,20 +946,22 @@ async def get_subcluster_cache_entry(cache_key: str, session_id: str):
 
 
 @router.delete("/subcluster-cache/{cache_key}")
-async def delete_subcluster_cache_entry(cache_key: str, session_id: str):
+async def delete_subcluster_cache_entry(cache_key: str, session_id: str, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     if not _delete_subcluster_cache_entry(rds_path, cache_key):
         raise HTTPException(404, "Cache entry not found")
     return JSONResponse({"status": "deleted"})
 
 
 @router.get("/subcluster-cache/{cache_key}/download")
-async def download_subcluster_rds(cache_key: str, session_id: str):
+async def download_subcluster_rds(cache_key: str, session_id: str, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(session_id)
     if not rds_path:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
     entry = _read_subcluster_cache_entry(rds_path, cache_key)
     if not entry or not entry.get("rds_path") or not os.path.exists(entry["rds_path"]):
         raise HTTPException(404, "Sub-clustered file not found")
@@ -969,9 +1023,10 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
 
 
 @router.post("/pathway")
-async def start_pathway_analysis(req: PathwayRequest):
+async def start_pathway_analysis(req: PathwayRequest, current_user: User = Depends(get_current_user)):
     if req.session_id not in _sessions:
         raise HTTPException(404, "Session not found")
+    _require_session_owner(req.session_id, current_user)
     if req.species not in ("hsa", "mmu", "auto"):
         raise HTTPException(400, "species must be 'hsa', 'mmu', or 'auto'")
 
@@ -990,7 +1045,7 @@ async def start_pathway_analysis(req: PathwayRequest):
         writer.writeheader()
         writer.writerows(rows)
 
-    _pathway_tasks[task_id] = {"status": "running"}
+    _pathway_tasks[task_id] = {"status": "running", "owner": current_user.id}
     thread = threading.Thread(
         target=_run_pathway_background,
         args=(task_id, csv_path, task_dir, req.pval_cutoff, req.species),
@@ -1001,10 +1056,11 @@ async def start_pathway_analysis(req: PathwayRequest):
 
 
 @router.get("/pathway/{task_id}")
-async def get_pathway_result(task_id: str):
+async def get_pathway_result(task_id: str, current_user: User = Depends(get_current_user)):
     task = _pathway_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     response = {"status": task.get("status"), "log": task.get("log", "")}
     if task.get("status") == "done":
         response["results"] = task.get("results")
@@ -1014,10 +1070,11 @@ async def get_pathway_result(task_id: str):
 
 
 @router.post("/pathway/{task_id}/cancel")
-async def cancel_pathway(task_id: str):
+async def cancel_pathway(task_id: str, current_user: User = Depends(get_current_user)):
     task = _pathway_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     if task.get("status") != "running":
         raise HTTPException(400, "Task is not running")
     proc = task.get("proc")
@@ -1090,10 +1147,12 @@ async def start_module_score(
     assay:      str = Form("SCT"),
     ctrl:       int = Form(50),
     file:       UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
 ):
     rds_path = _sessions.get(session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
+    _require_session_owner(session_id, current_user)
 
     ext = os.path.splitext(file.filename or "")[1].lower().lstrip(".")
     if ext not in ("csv", "xls", "xlsx"):
@@ -1107,7 +1166,7 @@ async def start_module_score(
     with open(gene_list_path, "wb") as f:
         f.write(content)
 
-    _module_score_tasks[task_id] = {"status": "running"}
+    _module_score_tasks[task_id] = {"status": "running", "owner": current_user.id}
     thread = threading.Thread(
         target=_run_module_score_background,
         args=(task_id, rds_path, gene_list_path, assay, ctrl),
@@ -1118,10 +1177,11 @@ async def start_module_score(
 
 
 @router.get("/module-score/{task_id}")
-async def get_module_score_status(task_id: str):
+async def get_module_score_status(task_id: str, current_user: User = Depends(get_current_user)):
     task = _module_score_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     response = {"status": task.get("status"), "log": task.get("log", "")}
     if task.get("status") == "done":
         response.update(task.get("result", {}))
@@ -1131,10 +1191,11 @@ async def get_module_score_status(task_id: str):
 
 
 @router.post("/module-score/{task_id}/cancel")
-async def cancel_module_score(task_id: str):
+async def cancel_module_score(task_id: str, current_user: User = Depends(get_current_user)):
     task = _module_score_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     if task.get("status") != "running":
         raise HTTPException(400, "Task is not running")
     proc = task.get("proc")
@@ -1161,10 +1222,11 @@ HOST_CELLCHAT_RMD = os.environ.get(
 
 # Serve rendered HTML files from the explore dir
 @router.get("/cellchat/html/{task_id}")
-async def get_cellchat_html(task_id: str):
+async def get_cellchat_html(task_id: str, current_user: User = Depends(get_current_user)):
     task = _cellchat_tasks.get(task_id)
     if not task or task.get("status") != "done":
         raise HTTPException(404, "Report not ready")
+    _require_task_owner(task, current_user)
     html_path = task.get("html", "").replace(HOST_EXPLORE, EXPLORE_DIR)
     if not os.path.exists(html_path):
         raise HTTPException(404, "HTML file not found")
@@ -1233,16 +1295,17 @@ def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict
 
 
 @router.post("/cellchat")
-async def start_cellchat(req: CellChatRequest):
+async def start_cellchat(req: CellChatRequest, current_user: User = Depends(get_current_user)):
     rds_path = _sessions.get(req.session_id)
     if not rds_path or not os.path.exists(rds_path):
         raise HTTPException(404, "Session not found — please re-upload your file")
+    _require_session_owner(req.session_id, current_user)
 
     task_id  = str(uuid.uuid4())
     task_dir = os.path.join(EXPLORE_DIR, f"cellchat_{task_id}")
     os.makedirs(task_dir, exist_ok=True)
 
-    _cellchat_tasks[task_id] = {"status": "running"}
+    _cellchat_tasks[task_id] = {"status": "running", "owner": current_user.id}
     thread = threading.Thread(
         target=_run_cellchat_background,
         args=(task_id, rds_path, task_dir, req.model_dump()),
@@ -1253,10 +1316,11 @@ async def start_cellchat(req: CellChatRequest):
 
 
 @router.get("/cellchat/{task_id}")
-async def get_cellchat_status(task_id: str):
+async def get_cellchat_status(task_id: str, current_user: User = Depends(get_current_user)):
     task = _cellchat_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     result = {"status": task.get("status"), "log": task.get("log", "")}
     if task.get("status") == "done":
         result["report_url"] = f"/explore/cellchat/html/{task_id}"
@@ -1266,10 +1330,11 @@ async def get_cellchat_status(task_id: str):
 
 
 @router.post("/cellchat/{task_id}/cancel")
-async def cancel_cellchat(task_id: str):
+async def cancel_cellchat(task_id: str, current_user: User = Depends(get_current_user)):
     task = _cellchat_tasks.get(task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
     if task.get("status") != "running":
         raise HTTPException(400, "Task is not running")
     proc = task.get("proc")

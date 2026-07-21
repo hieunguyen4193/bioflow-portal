@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, subclusterDownloadUrl, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -2277,10 +2277,10 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
               · TCR excluded: {result.excluded_tcr.length}, BCR/Ig excluded: {result.excluded_bcr.length}
             </p>
             {result.cache_key && (
-              <a href={subclusterDownloadUrl(sessionId, result.cache_key)} download
+              <button onClick={() => downloadSubclusterRds(sessionId, result.cache_key!)}
                 className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-100 text-slate-600">
                 ↓ Download .rds
-              </a>
+              </button>
             )}
           </div>
           {subclusterMeta && (
@@ -2324,10 +2324,10 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
                       className="ml-auto text-indigo-600 hover:underline font-medium disabled:opacity-50">
                       {loadedCacheKey === entry.cache_key ? 'Loaded' : 'Load'}
                     </button>
-                    <a href={subclusterDownloadUrl(sessionId, entry.cache_key)} download
+                    <button onClick={() => downloadSubclusterRds(sessionId, entry.cache_key)}
                       className="text-indigo-600 hover:underline font-medium">
                       Download
-                    </a>
+                    </button>
                     <button onClick={() => deleteCachedEntry(entry)} disabled={loading || deletingKey === entry.cache_key}
                       className="text-slate-400 hover:text-red-500 font-medium disabled:opacity-50">
                       {deletingKey === entry.cache_key ? 'Deleting…' : 'Delete'}
@@ -3362,17 +3362,28 @@ function CellChatTab({ meta, sessionId }: { meta: SeuratMeta; sessionId: string 
         )}
       </div>
 
-      {status === 'done' && reportUrl && (
+      {status === 'done' && reportUrl && taskId && (
         <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-200 rounded-xl">
           <span className="text-sm text-green-700 font-medium">✓ CellChat report ready</span>
-          <a href={reportUrl} download="CellChat_report.html"
+          <button
+            onClick={async () => {
+              const blob = await fetchCellChatReport(taskId)
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a'); a.href = url; a.download = 'CellChat_report.html'; a.click()
+              URL.revokeObjectURL(url)
+            }}
             className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-100 text-slate-600">
             ↓ Download HTML
-          </a>
-          <a href={reportUrl} target="_blank" rel="noopener noreferrer"
+          </button>
+          <button
+            onClick={async () => {
+              const blob = await fetchCellChatReport(taskId)
+              const url = URL.createObjectURL(blob)
+              window.open(url, '_blank', 'noopener,noreferrer')
+            }}
             className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded">
             Open in new tab ↗
-          </a>
+          </button>
         </div>
       )}
     </div>

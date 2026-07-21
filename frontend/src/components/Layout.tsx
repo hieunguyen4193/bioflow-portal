@@ -28,6 +28,11 @@ export default function Layout() {
             <NavLink to="/explore" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
               Explore gene expression (Seurat)
             </NavLink>
+            {user?.is_admin && (
+              <NavLink to="/admin" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
+                Admin
+              </NavLink>
+            )}
           </nav>
         </div>
         <div className="flex items-center gap-3 text-sm">

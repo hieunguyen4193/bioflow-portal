@@ -343,8 +343,25 @@ export async function deleteSubclusterCacheEntry(session_id: string, cache_key: 
   await api.delete(`/explore/subcluster-cache/${cache_key}`, { params: { session_id } })
 }
 
-// Direct <a href> download link (not routed through the axios client) — mirrors
-// the CellChat HTML report link, which the backend also serves outside /api.
-export function subclusterDownloadUrl(session_id: string, cache_key: string): string {
-  return `/explore/subcluster-cache/${cache_key}/download?session_id=${encodeURIComponent(session_id)}`
+// Routed through the authenticated axios client (a bare <a href> would skip the
+// Bearer token and 401/403 now that these endpoints require login) — fetch as a
+// blob and trigger the download client-side instead.
+export async function downloadSubclusterRds(session_id: string, cache_key: string): Promise<void> {
+  const { data } = await api.get(`/explore/subcluster-cache/${cache_key}/download`, {
+    params: { session_id },
+    responseType: 'blob',
+  })
+  const url = URL.createObjectURL(data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `subcluster_${cache_key}.rds`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// Same reasoning as downloadSubclusterRds: fetch the rendered HTML report through
+// the authenticated client rather than a bare <a href> to the backend path.
+export async function fetchCellChatReport(task_id: string): Promise<Blob> {
+  const { data } = await api.get(`/explore/cellchat/html/${task_id}`, { responseType: 'blob' })
+  return data
 }
