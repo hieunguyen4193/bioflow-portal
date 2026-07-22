@@ -13,10 +13,6 @@ process RENDER_REPORT {
 
     script:
     """
-    cp ${report_script}     render_report.py
-    cp ${helper_functions}  helper_functions.py
-    cp ${cc_genes}          cc_genes.py
-
     python3 render_report.py \\
         --h5ad               "${h5ad}" \\
         --sample             "${sample}" \\

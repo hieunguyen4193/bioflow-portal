@@ -84,6 +84,11 @@ def s5_preprocess_before_cc_scoring(adata, use_sctransform, vars_to_regress, sam
     )
 
     # ── Normalisation / scaling ──────────────────────────────────────────────
+    # Always start from raw counts — never renormalize/rescale data that a
+    # previous step already transformed.
+    if "counts" in adata.layers:
+        adata.X = adata.layers["counts"].copy()
+
     if use_sctransform:
         # Closest established Python analogue of Seurat::SCTransform: Pearson
         # residual normalisation (Lause/Kobak/Berens 2021 showed this is

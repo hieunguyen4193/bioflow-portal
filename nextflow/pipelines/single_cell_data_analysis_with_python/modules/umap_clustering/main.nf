@@ -63,6 +63,12 @@ def s8_integration_and_clustering(adata, use_sctransform, num_pca, num_pc_umap,
                                    num_pc_clustering, cluster_resolution,
                                    vars_to_regress, remove_genes):
 
+    # Always start from raw counts — s5/s7 may have left adata.X log-normalized
+    # or scaled (mean-centered, negative values), which would corrupt
+    # normalize_total/log1p/highly_variable_genes if reused directly here.
+    if "counts" in adata.layers:
+        adata.X = adata.layers["counts"].copy()
+
     if use_sctransform:
         sc.experimental.pp.normalize_pearson_residuals(adata)
         sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=2000)

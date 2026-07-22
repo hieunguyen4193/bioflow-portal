@@ -75,6 +75,11 @@ adata.uns["sample_name"] = opt.sample
 sc.pp.filter_genes(adata, min_cells=opt.min_cells)
 sc.pp.filter_cells(adata, min_genes=opt.min_features)
 
+# Snapshot raw counts so later steps (s5, s8) can always renormalize from
+# true counts instead of chaining off whatever transform the previous step
+# left in adata.X (log-normalized, scaled, ...).
+adata.layers["counts"] = adata.X.copy()
+
 # ── ADT assay ────────────────────────────────────────────────────────────────
 if is_multimodal:
     shared_cells = adata.obs_names.intersection(adata_adt.obs_names)
