@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { listAdminUsers, listAdminProjects, listProjectAccess, grantProjectAccess, revokeProjectAccess } from '../api/admin'
+import { listAdminUsers, listAdminProjects, listProjectAccess, grantProjectAccess, revokeProjectAccess, deleteUser } from '../api/admin'
 
 export default function AdminPage() {
   const qc = useQueryClient()
@@ -65,6 +65,18 @@ export default function AdminPage() {
     }
   }
 
+  async function handleDeleteUser(userId: string, username: string) {
+    if (!confirm(`Delete user ${username}? This cannot be undone.`)) return
+    try {
+      await deleteUser(userId)
+      toast.success(`Deleted ${username}`)
+      qc.invalidateQueries({ queryKey: ['admin-users'] })
+      qc.invalidateQueries({ queryKey: ['admin-project-access'] })
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Failed to delete user')
+    }
+  }
+
   const loading = usersLoading || projectsLoading || grantsLoading
 
   return (
@@ -74,6 +86,36 @@ export default function AdminPage() {
         <p className="text-sm text-slate-400">
           {projects.length} project{projects.length === 1 ? '' : 's'} · {grants.length} grant{grants.length === 1 ? '' : 's'}
         </p>
+      </div>
+
+      <div className="bg-white rounded-xl shadow overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b bg-slate-50">
+          <h3 className="font-semibold text-slate-700">Users</h3>
+        </div>
+        {usersLoading ? (
+          <p className="px-4 py-3 text-sm text-slate-400">Loading…</p>
+        ) : users.length === 0 ? (
+          <p className="px-4 py-3 text-sm text-slate-400 italic">No users found.</p>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {users.map(u => (
+              <div key={u.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
+                <span className="text-slate-700">
+                  {u.username} <span className="text-slate-400">({u.full_name})</span>
+                  {u.is_admin && (
+                    <span className="ml-2 text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded">admin</span>
+                  )}
+                </span>
+                {!u.is_admin && (
+                  <button onClick={() => handleDeleteUser(u.id, u.username)}
+                    className="text-xs border border-red-300 text-red-600 hover:bg-red-50 px-2 py-0.5 rounded transition-colors">
+                    Delete
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-xl shadow p-4 mb-6">

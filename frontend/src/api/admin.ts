@@ -31,3 +31,7 @@ export async function grantProjectAccess(username: string, project_name: string)
 export async function revokeProjectAccess(grantId: string): Promise<void> {
   await api.delete(`/admin/project-access/${grantId}`)
 }
+
+export async function deleteUser(userId: string): Promise<void> {
+  await api.delete(`/admin/users/${userId}`)
+}

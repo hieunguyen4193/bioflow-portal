@@ -1,9 +1,10 @@
 """Admin-only endpoints: user list and per-project access grants."""
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.models.job import Job
 from app.models.project_access import ProjectAccess
 from app.models.user import User
 from app.schemas.project_access import ProjectAccessGrant, ProjectAccessOut
@@ -18,6 +19,31 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 async def list_users(db: AsyncSession = Depends(get_db), _admin: User = Depends(require_admin)):
     result = await db.execute(select(User).order_by(User.username))
     return result.scalars().all()
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    if user_id == admin.id:
+        raise HTTPException(400, "Cannot delete your own account")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.is_admin:
+        raise HTTPException(400, "Cannot delete an admin account")
+
+    job_count = await db.scalar(select(func.count()).select_from(Job).where(Job.user_id == user_id))
+    if job_count:
+        raise HTTPException(400, f"User has {job_count} job(s) and cannot be deleted")
+
+    await db.execute(delete(ProjectAccess).where(ProjectAccess.user_id == user_id))
+    await db.delete(user)
+    await db.commit()
 
 
 @router.get("/projects", response_model=list[str])
