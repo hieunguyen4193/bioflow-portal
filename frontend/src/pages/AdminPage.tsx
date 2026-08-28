@@ -3,10 +3,36 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { listAdminUsers, listAdminProjects, listProjectAccess, grantProjectAccess, revokeProjectAccess, deleteUser } from '../api/admin'
 
+// A user is considered "online" if we've heard from them within this window.
+// The backend refreshes last_seen_at at most once per minute, so this needs
+// enough slack to not flicker between requests.
+const ONLINE_THRESHOLD_MS = 2 * 60 * 1000
+
+function isOnline(lastSeenAt: string | null): boolean {
+  if (!lastSeenAt) return false
+  return Date.now() - new Date(lastSeenAt + 'Z').getTime() < ONLINE_THRESHOLD_MS
+}
+
+function formatLastSeen(lastSeenAt: string | null): string {
+  if (!lastSeenAt) return 'never'
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(lastSeenAt + 'Z').getTime()) / 1000))
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 export default function AdminPage() {
   const qc = useQueryClient()
 
-  const { data: users = [], isLoading: usersLoading } = useQuery({ queryKey: ['admin-users'], queryFn: listAdminUsers })
+  const { data: users = [], isLoading: usersLoading } = useQuery({
+    queryKey: ['admin-users'],
+    queryFn: listAdminUsers,
+    refetchInterval: 30_000,
+  })
   const { data: projects = [], isLoading: projectsLoading } = useQuery({ queryKey: ['admin-projects'], queryFn: listAdminProjects })
   const { data: grants = [], isLoading: grantsLoading } = useQuery({ queryKey: ['admin-project-access'], queryFn: listProjectAccess })
 
@@ -16,6 +42,7 @@ export default function AdminPage() {
   const [search, setSearch] = useState('')
 
   const nonAdminUsers = useMemo(() => users.filter(u => !u.is_admin), [users])
+  const onlineCount = useMemo(() => users.filter(u => isOnline(u.last_seen_at)).length, [users])
 
   const grantsByProject = useMemo(() => {
     const map = new Map<string, typeof grants>()
@@ -89,8 +116,11 @@ export default function AdminPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow overflow-hidden mb-6">
-        <div className="px-4 py-3 border-b bg-slate-50">
+        <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
           <h3 className="font-semibold text-slate-700">Users</h3>
+          <span className="text-xs text-slate-400">
+            {onlineCount} online now
+          </span>
         </div>
         {usersLoading ? (
           <p className="px-4 py-3 text-sm text-slate-400">Loading…</p>
@@ -98,22 +128,32 @@ export default function AdminPage() {
           <p className="px-4 py-3 text-sm text-slate-400 italic">No users found.</p>
         ) : (
           <div className="divide-y divide-slate-100">
-            {users.map(u => (
-              <div key={u.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
-                <span className="text-slate-700">
-                  {u.username} <span className="text-slate-400">({u.full_name})</span>
-                  {u.is_admin && (
-                    <span className="ml-2 text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded">admin</span>
+            {users.map(u => {
+              const online = isOnline(u.last_seen_at)
+              return (
+                <div key={u.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
+                  <span className="text-slate-700 flex items-center gap-2">
+                    <span
+                      className={`inline-block w-2 h-2 rounded-full ${online ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                      title={online ? 'Online' : 'Offline'}
+                    />
+                    {u.username} <span className="text-slate-400">({u.full_name})</span>
+                    {u.is_admin && (
+                      <span className="ml-1 text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded">admin</span>
+                    )}
+                    <span className={`text-xs ${online ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {online ? 'online' : `last seen ${formatLastSeen(u.last_seen_at)}`}
+                    </span>
+                  </span>
+                  {!u.is_admin && (
+                    <button onClick={() => handleDeleteUser(u.id, u.username)}
+                      className="text-xs border border-red-300 text-red-600 hover:bg-red-50 px-2 py-0.5 rounded transition-colors">
+                      Delete
+                    </button>
                   )}
-                </span>
-                {!u.is_admin && (
-                  <button onClick={() => handleDeleteUser(u.id, u.username)}
-                    className="text-xs border border-red-300 text-red-600 hover:bg-red-50 px-2 py-0.5 rounded transition-colors">
-                    Delete
-                  </button>
-                )}
-              </div>
-            ))}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

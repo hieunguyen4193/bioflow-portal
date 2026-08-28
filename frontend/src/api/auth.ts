@@ -1,6 +1,13 @@
 import api from './client'
 
-export interface User { id: string; username: string; email: string | null; full_name: string; is_admin: boolean }
+export interface User {
+  id: string
+  username: string
+  email: string | null
+  full_name: string
+  is_admin: boolean
+  last_seen_at: string | null
+}
 
 export async function login(username: string, password: string): Promise<string> {
   const form = new FormData()
