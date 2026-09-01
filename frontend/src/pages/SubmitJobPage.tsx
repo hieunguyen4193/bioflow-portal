@@ -352,6 +352,11 @@ function SamplesheetUploadPanel({ files, setFiles }: { files: File[]; setFiles: 
   )
 }
 
+// Pipelines whose S8/S8a step produces a Seurat .rds object that can be saved
+// into Explore's preset library (the Python/scanpy port emits .h5ad, not .rds,
+// so it's excluded).
+const PRESET_SAVEABLE_PIPELINES = new Set(['basic_Seurat_single_cell_pipeline'])
+
 // ── Submit tab ────────────────────────────────────────────────────────────────
 function SubmitTab({ pipelines }: { pipelines: any[] }) {
   const navigate = useNavigate()
@@ -360,6 +365,9 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
   const [params, setParams] = useState<Record<string, string>>({})
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [savePreset, setSavePreset] = useState(false)
+  const [presetProject, setPresetProject] = useState('')
+  const [presetFilename, setPresetFilename] = useState('')
 
   useEffect(() => {
     if (!selectedPipeline && pipelines.length > 0) {
@@ -374,6 +382,7 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
   const currentPipeline = pipelines.find((p: any) => p.id === selectedPipeline)
   const isSamplesheet = currentPipeline?.input_mode === 'samplesheet'
   const isSeurat = currentPipeline?.input_mode === 'seurat'
+  const canSaveAsPreset = PRESET_SAVEABLE_PIPELINES.has(selectedPipeline)
   const missingFiles = (isSamplesheet || isSeurat)
     ? (files.length === 0 ? ['input file'] : [])
     : REQUIRED_FILES.filter((req) => !files.some((f) => f.name === req))
@@ -383,6 +392,16 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
     if (missingFiles.length > 0) {
       toast.error(isSamplesheet ? 'Please upload a samplesheet CSV' : `Missing: ${missingFiles.join(', ')}`)
       return
+    }
+    if (canSaveAsPreset && savePreset) {
+      if (!presetProject.trim() || !presetFilename.trim()) {
+        toast.error('Please enter both a project name and a file name for the preset')
+        return
+      }
+      if (/[/\\]/.test(presetProject) || /[/\\]/.test(presetFilename)) {
+        toast.error('Project and file names cannot contain "/" or "\\"')
+        return
+      }
     }
     setUploading(true)
     try {
@@ -401,6 +420,13 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
         }
       }
       const fullParams = { ...defaults, ...params }
+      if (canSaveAsPreset) {
+        fullParams.save_preset = savePreset ? 'true' : 'false'
+        if (savePreset) {
+          fullParams.preset_project = presetProject.trim()
+          fullParams.preset_filename = presetFilename.trim()
+        }
+      }
       const job = await submitJob(selectedPipeline, batch_id, fullParams)
       setUploadProgress(100)
       toast.success('Job submitted!')
@@ -420,7 +446,14 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
         <h3 className="font-medium mb-3">1. Select Pipeline</h3>
         <select
           value={selectedPipeline}
-          onChange={(e) => { setSelectedPipeline(e.target.value); setParams({}); setFiles([]) }}
+          onChange={(e) => {
+            setSelectedPipeline(e.target.value)
+            setParams({})
+            setFiles([])
+            setSavePreset(false)
+            setPresetProject('')
+            setPresetFilename('')
+          }}
           className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
         >
           {pipelines.map((p: any) => (
@@ -450,6 +483,52 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
           {currentPipeline.steps.map((step: any) => (
             <StepPanel key={step.key} step={step} params={params} setParam={setParam} />
           ))}
+        </div>
+      )}
+
+      {/* 4. Save output as preset (optional, Seurat pipeline only) */}
+      {canSaveAsPreset && (
+        <div className="bg-white rounded-xl shadow p-5">
+          <div className="flex items-center gap-3">
+            <div
+              onClick={() => setSavePreset((v) => !v)}
+              className={`relative flex-shrink-0 w-10 h-5 rounded-full cursor-pointer transition-colors ${savePreset ? 'bg-indigo-500' : 'bg-slate-300'}`}
+              title="Save the S8/S8a Seurat object into Explore's preset library"
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${savePreset ? 'translate-x-5' : ''}`} />
+            </div>
+            <h3 className="font-medium flex-1 cursor-pointer select-none" onClick={() => setSavePreset((v) => !v)}>
+              4. Save Output as Preset
+            </h3>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            When enabled, the S8 (or S8a) Seurat object is copied into Explore's preset library once the job finishes, so it can be loaded directly from the Explore page.
+          </p>
+          {savePreset && (
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Project name</label>
+                <input
+                  type="text"
+                  value={presetProject}
+                  onChange={(e) => setPresetProject(e.target.value)}
+                  placeholder="e.g. crc1382"
+                  className="w-full border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">File name</label>
+                <input
+                  type="text"
+                  value={presetFilename}
+                  onChange={(e) => setPresetFilename(e.target.value)}
+                  placeholder="e.g. sample01_s8"
+                  className="w-full border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+              <p className="col-span-2 text-xs text-slate-400">Saved as <code>{presetProject || '<project>'}/{presetFilename || '<file>'}.rds</code>. If the job produces multiple samples, each is saved with its sample name appended.</p>
+            </div>
+          )}
         </div>
       )}
 
