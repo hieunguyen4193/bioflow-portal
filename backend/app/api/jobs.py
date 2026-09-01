@@ -30,9 +30,12 @@ async def submit_job(
     if not os.path.isdir(input_dir):
         raise HTTPException(400, "Unknown batch_id")
 
+    # os.walk (not listdir) so per-sample subfolders from multi-sample
+    # uploads are included, not just files at the top of the batch dir.
     input_files = [
-        os.path.relpath(os.path.join(input_dir, f), settings.UPLOAD_DIR)
-        for f in os.listdir(input_dir)
+        os.path.relpath(os.path.join(root, fname), settings.UPLOAD_DIR)
+        for root, _dirs, filenames in os.walk(input_dir)
+        for fname in filenames
     ]
 
     job = Job(

@@ -235,8 +235,52 @@ function TenXUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: Fil
   )
 }
 
-function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: File[]) => void }) {
-  const [mode, setMode] = useState<'single' | 'samplesheet'>('single')
+// Path of a File dropped/picked via a folder — react-dropzone (file-selector)
+// attaches this for both directory drag-drop and <input webkitdirectory>.
+function relPath(f: File): string {
+  return ((f as unknown as { path?: string }).path || f.name).replace(/^\//, '')
+}
+
+function topFolder(f: File): string {
+  const p = relPath(f)
+  return p.includes('/') ? p.split('/')[0] : '(ungrouped)'
+}
+
+function groupByTopFolder(files: File[]): Map<string, File[]> {
+  const groups = new Map<string, File[]>()
+  for (const f of files) {
+    const key = topFolder(f)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(f)
+  }
+  return groups
+}
+
+function matchOne(files: File[], re: RegExp): File | undefined {
+  return files.find((f) => re.test(f.name))
+}
+
+function csvCell(v: string): string {
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+}
+
+function downloadBlob(content: string, filename: string, type: string) {
+  const blob = new Blob([content], { type })
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename })
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function SeuratUploadPanel({
+  files, setFiles, mode, setMode,
+}: {
+  files: File[]
+  setFiles: (f: File[]) => void
+  mode: 'single' | 'samplesheet'
+  setMode: (m: 'single' | 'samplesheet') => void
+}) {
+  const [sheetCsv, setSheetCsv] = useState<File | null>(null)
+  const [sheetTriplets, setSheetTriplets] = useState<File[]>([])
 
   const onDropTriplet = useCallback((accepted: File[]) => {
     setFiles([...files, ...accepted.filter((f) => !files.some((x) => x.name === f.name))])
@@ -244,11 +288,29 @@ function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: F
 
   const onDropSheet = useCallback((accepted: File[], rejected: FileRejection[]) => {
     const first = accepted.find((f) => !f.name.startsWith('.'))
-    if (first) setFiles([first])
+    if (first) setSheetCsv(first)
     if (rejected.length > 0 && !first) {
       toast.error('That file was rejected — expected a single .csv samplesheet')
     }
-  }, [setFiles])
+  }, [])
+
+  const onDropSampleFiles = useCallback((accepted: File[]) => {
+    const clean = accepted.filter((f) => !f.name.startsWith('.'))
+    setSheetTriplets((prev) => {
+      const seen = new Set(prev.map(relPath))
+      const merged = [...prev]
+      for (const f of clean) {
+        const p = relPath(f)
+        if (!seen.has(p)) { merged.push(f); seen.add(p) }
+      }
+      return merged
+    })
+  }, [])
+
+  useEffect(() => {
+    if (mode !== 'samplesheet') return
+    setFiles([...(sheetCsv ? [sheetCsv] : []), ...sheetTriplets])
+  }, [mode, sheetCsv, sheetTriplets, setFiles])
 
   const { getRootProps: getTripletProps, getInputProps: getTripletInput, isDragActive: tripletDrag } = useDropzone({
     onDrop: onDropTriplet,
@@ -265,13 +327,42 @@ function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: F
     },
     multiple: true,
   })
+  const { getRootProps: getSamplesProps, getInputProps: getSamplesInput, isDragActive: samplesDrag } = useDropzone({
+    onDrop: onDropSampleFiles,
+    accept: { 'application/gzip': ['.gz'], 'text/plain': ['.tsv', '.mtx', '.txt'] },
+    multiple: true,
+  })
+  // webkitdirectory isn't in react-dropzone's input prop types, but every
+  // evergreen browser honors it for click-to-browse folder selection.
+  const samplesInputProps = getSamplesInput({ webkitdirectory: 'true' } as any)
 
   function switchMode(m: 'single' | 'samplesheet') {
     setMode(m)
     setFiles([])
+    setSheetCsv(null)
+    setSheetTriplets([])
+  }
+
+  function removeGroup(name: string) {
+    setSheetTriplets((prev) => prev.filter((f) => topFolder(f) !== name))
+  }
+
+  function downloadTemplate() {
+    const groups = groupByTopFolder(sheetTriplets)
+    const rows = [['SampleID', 'barcodes', 'features', 'matrix']]
+    for (const [name, gfiles] of groups) {
+      rows.push([
+        name,
+        matchOne(gfiles, /barcodes/i) ? relPath(matchOne(gfiles, /barcodes/i)!) : '',
+        matchOne(gfiles, /features|genes/i) ? relPath(matchOne(gfiles, /features|genes/i)!) : '',
+        matchOne(gfiles, /matrix/i) ? relPath(matchOne(gfiles, /matrix/i)!) : '',
+      ])
+    }
+    downloadBlob(rows.map((r) => r.map(csvCell).join(',')).join('\n'), 'samplesheet_template.csv', 'text/csv')
   }
 
   const missing = REQUIRED_FILES.filter((r) => !files.some((f) => f.name === r))
+  const sampleGroups = groupByTopFolder(sheetTriplets)
 
   return (
     <>
@@ -316,15 +407,57 @@ function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: F
       ) : (
         <>
           <p className="text-xs text-slate-500 mb-3">
-            Upload a CSV with columns: <code>SampleID</code>, <code>barcodes</code>, <code>matrix</code>, <code>features</code> — paths on the server.
+            Two steps: <strong>1)</strong> drag in one folder per sample below — the folder that directly contains that sample's
+            <code>barcodes.tsv.gz</code>, <code>features.tsv.gz</code>, <code>matrix.mtx.gz</code> (e.g. CellRanger's
+            <code>filtered_feature_bc_matrix/</code>, not the whole <code>outs/</code> folder). Dropping folders keeps samples with
+            identically-named files apart. Then <strong>2)</strong> upload a samplesheet CSV with columns <code>SampleID</code>,
+            <code>barcodes</code>, <code>features</code>, <code>matrix</code>, where those three columns are the folder-relative paths
+            shown below (e.g. <code>SampleA/barcodes.tsv.gz</code>) — or an absolute path already on the server. Use "Download CSV
+            template" once your folders are in to get a pre-filled starting point.
           </p>
-          <div {...getSheetProps()} className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${sheetDrag ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'}`}>
+
+          <div {...getSamplesProps()} className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${samplesDrag ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'}`}>
+            <input {...samplesInputProps} />
+            <p className="text-sm text-slate-500">{samplesDrag ? 'Drop here…' : 'Drag & drop sample folders, or click to browse a folder'}</p>
+          </div>
+
+          {sampleGroups.size > 0 && (
+            <div className="mt-3 space-y-2">
+              {[...sampleGroups.entries()].map(([name, gfiles]) => {
+                const hasBarcodes = !!matchOne(gfiles, /barcodes/i)
+                const hasFeatures = !!matchOne(gfiles, /features|genes/i)
+                const hasMatrix = !!matchOne(gfiles, /matrix/i)
+                const complete = hasBarcodes && hasFeatures && hasMatrix
+                return (
+                  <div key={name} className="border rounded-lg p-2">
+                    <div className="flex items-center justify-between text-sm font-medium">
+                      <span className="flex items-center gap-2">
+                        <span className={complete ? 'text-green-600' : 'text-amber-600'}>{complete ? '✓' : '!'}</span>
+                        {name} <span className="text-slate-400 font-normal">({gfiles.length} files)</span>
+                      </span>
+                      <button type="button" onClick={() => removeGroup(name)} className="text-slate-400 hover:text-red-500 text-xs">Remove</button>
+                    </div>
+                    {!complete && (
+                      <p className="mt-1 text-xs text-amber-600">
+                        Missing: {[!hasBarcodes && 'barcodes', !hasFeatures && 'features', !hasMatrix && 'matrix'].filter(Boolean).join(', ')}
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+              <button type="button" onClick={downloadTemplate} className="text-xs text-indigo-600 hover:underline">
+                Download CSV template for {sampleGroups.size} sample{sampleGroups.size === 1 ? '' : 's'}
+              </button>
+            </div>
+          )}
+
+          <div {...getSheetProps()} className={`mt-4 border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${sheetDrag ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300'}`}>
             <input {...getSheetInput()} />
             <p className="text-sm text-slate-500">{sheetDrag ? 'Drop here…' : 'Drag & drop samplesheet.csv, or click to browse'}</p>
           </div>
-          {files[0] && (
+          {sheetCsv && (
             <p className="mt-3 text-sm text-green-700 flex items-center gap-2">
-              <span>✓</span> {files[0].name} ({(files[0].size / 1024).toFixed(1)} KB)
+              <span>✓</span> {sheetCsv.name} ({(sheetCsv.size / 1024).toFixed(1)} KB)
             </p>
           )}
         </>
@@ -380,6 +513,7 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
   const navigate = useNavigate()
   const [selectedPipeline, setSelectedPipeline] = useState('')
   const [files, setFiles] = useState<File[]>([])
+  const [seuratMode, setSeuratMode] = useState<'single' | 'samplesheet'>('single')
   const [params, setParams] = useState<Record<string, string>>({})
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -402,7 +536,11 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
   const isSeurat = currentPipeline?.input_mode === 'seurat'
   const canSaveAsPreset = PRESET_SAVEABLE_PIPELINES.has(selectedPipeline)
   const missingFiles = (isSamplesheet || isSeurat)
-    ? (files.length === 0 ? ['input file'] : [])
+    ? (files.length === 0
+        ? ['input file']
+        : (isSeurat && seuratMode === 'samplesheet' && files.length < 2)
+        ? ['sample folders (only the samplesheet CSV was added)']
+        : [])
     : REQUIRED_FILES.filter((req) => !files.some((f) => f.name === req))
 
   async function handleSubmit(e: React.FormEvent) {
@@ -468,6 +606,7 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
             setSelectedPipeline(e.target.value)
             setParams({})
             setFiles([])
+            setSeuratMode('single')
             setSavePreset(false)
             setPresetProject('')
             setPresetFilename('')
@@ -487,7 +626,7 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
       <div className="bg-white rounded-xl shadow p-5">
         <h3 className="font-medium mb-3">2. Upload Input Files</h3>
         {isSeurat
-          ? <SeuratUploadPanel files={files} setFiles={setFiles} />
+          ? <SeuratUploadPanel files={files} setFiles={setFiles} mode={seuratMode} setMode={setSeuratMode} />
           : isSamplesheet
           ? <SamplesheetUploadPanel files={files} setFiles={setFiles} />
           : <TenXUploadPanel files={files} setFiles={setFiles} />

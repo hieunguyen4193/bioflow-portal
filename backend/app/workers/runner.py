@@ -131,18 +131,26 @@ def _build_cmd(pipeline: str, params: dict, input_files: list, job_base: str, us
     if resume:
         cmd.append("-resume")
 
-    for f in input_files:
-        fname    = os.path.basename(f)
-        abs_path = os.path.join(settings.UPLOAD_DIR, f)
-        # samplesheet-mode pipelines upload a CSV; others use the 10x triplet
-        if fname.endswith(".csv") or "samplesheet" in fname.lower():
-            cmd += ["--samplesheet", abs_path]
-        elif "barcodes" in fname:
-            cmd += ["--barcodes", abs_path]
-        elif "features" in fname or "genes" in fname:
-            cmd += ["--features", abs_path]
-        elif "matrix" in fname:
-            cmd += ["--matrix", abs_path]
+    csv_file = next(
+        (f for f in input_files if os.path.basename(f).endswith(".csv") or "samplesheet" in os.path.basename(f).lower()),
+        None,
+    )
+    if csv_file:
+        # Samplesheet mode: only forward the CSV itself — any triplet files
+        # sitting alongside it (multi-sample uploads) are per-sample and are
+        # resolved from inside the CSV's rows via --input_dir, not by name.
+        abs_csv = os.path.join(settings.UPLOAD_DIR, csv_file)
+        cmd += ["--samplesheet", abs_csv, "--input_dir", os.path.dirname(abs_csv)]
+    else:
+        for f in input_files:
+            fname    = os.path.basename(f)
+            abs_path = os.path.join(settings.UPLOAD_DIR, f)
+            if "barcodes" in fname:
+                cmd += ["--barcodes", abs_path]
+            elif "features" in fname or "genes" in fname:
+                cmd += ["--features", abs_path]
+            elif "matrix" in fname:
+                cmd += ["--matrix", abs_path]
 
     for k, v in params.items():
         if v == "" or v is None:

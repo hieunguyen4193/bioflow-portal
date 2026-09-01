@@ -23,12 +23,25 @@ async def upload_files(
     os.makedirs(dest_dir, exist_ok=True)
 
     saved = []
+    seen_rel_paths: set[str] = set()
     for upload in files:
-        filename = os.path.basename(upload.filename or "file")
-        dest_path = os.path.join(dest_dir, filename)
+        raw_name = (upload.filename or "file").replace("\\", "/")
+        # Folder uploads carry a relative path (e.g. "SampleA/barcodes.tsv.gz") —
+        # keep that structure so identically-named files from different samples
+        # don't collide; strip any ".."/empty segments to stay inside dest_dir.
+        parts = [p for p in raw_name.split("/") if p not in ("", ".", "..")]
+        if not parts:
+            raise HTTPException(400, f"Invalid filename: {upload.filename!r}")
+        rel_path = os.path.join(*parts)
+        if rel_path in seen_rel_paths:
+            raise HTTPException(400, f"Duplicate file in upload: {rel_path}")
+        seen_rel_paths.add(rel_path)
+
+        dest_path = os.path.join(dest_dir, rel_path)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         async with aiofiles.open(dest_path, "wb") as f:
             while chunk := await upload.read(CHUNK_SIZE):
                 await f.write(chunk)
-        saved.append({"filename": filename, "path": os.path.relpath(dest_path, settings.UPLOAD_DIR)})
+        saved.append({"filename": rel_path, "path": os.path.relpath(dest_path, settings.UPLOAD_DIR)})
 
     return {"batch_id": batch_id, "files": saved}

@@ -16,7 +16,13 @@ export interface OutputFile { name: string; size: number }
 
 export async function uploadFiles(files: File[]): Promise<{ batch_id: string; files: { filename: string }[] }> {
   const form = new FormData()
-  files.forEach((f) => form.append('files', f))
+  files.forEach((f) => {
+    // Folder drops (react-dropzone/file-selector) attach a relative `.path`
+    // (e.g. "SampleA/barcodes.tsv.gz") — forward it as the upload filename so
+    // the backend can keep same-named files from different samples apart.
+    const relative = (f as unknown as { path?: string }).path?.replace(/^\//, '')
+    form.append('files', f, relative || f.name)
+  })
   const { data } = await api.post('/files/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })

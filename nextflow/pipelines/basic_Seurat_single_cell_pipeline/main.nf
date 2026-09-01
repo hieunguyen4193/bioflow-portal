@@ -5,6 +5,7 @@ include { SEURAT_PIPELINE } from './workflows/seurat_pipeline'
 
 // ── Input files ────────────────────────────────────────────────────────────
 params.samplesheet           = null   // CSV: SampleID,barcodes,matrix,features
+params.input_dir             = ""     // base dir for samplesheet rows given as relative paths
 params.barcodes              = null   // single-sample mode
 params.features              = null
 params.matrix                = null
@@ -70,12 +71,19 @@ params.s8_remove_genes           = "none"
 
 params.outdir                = "${launchDir}/results"
 
+// Samplesheet cells may be an absolute server path (existing behavior) or a
+// path relative to params.input_dir (browser-uploaded per-sample folders).
+def resolveSampleFile(p) {
+    def resolved = p.startsWith('/') ? p : "${params.input_dir}/${p}"
+    return file(resolved, checkIfExists: true)
+}
+
 workflow {
     if (params.samplesheet) {
         ch_input = Channel
             .fromPath(params.samplesheet)
             .splitCsv(header: true, strip: true)
-            .map { row -> tuple(row.SampleID, file(row.barcodes), file(row.features), file(row.matrix)) }
+            .map { row -> tuple(row.SampleID, resolveSampleFile(row.barcodes), resolveSampleFile(row.features), resolveSampleFile(row.matrix)) }
     } else {
         ch_input = Channel.of(tuple(
             params.sample_name ?: 'sample',
