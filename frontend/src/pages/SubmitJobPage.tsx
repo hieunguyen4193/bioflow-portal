@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useDropzone } from 'react-dropzone'
+import { useDropzone, type FileRejection } from 'react-dropzone'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -242,8 +242,12 @@ function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: F
     setFiles([...files, ...accepted.filter((f) => !files.some((x) => x.name === f.name))])
   }, [files, setFiles])
 
-  const onDropSheet = useCallback((accepted: File[]) => {
-    if (accepted[0]) setFiles([accepted[0]])
+  const onDropSheet = useCallback((accepted: File[], rejected: FileRejection[]) => {
+    const first = accepted.find((f) => !f.name.startsWith('.'))
+    if (first) setFiles([first])
+    if (rejected.length > 0 && !first) {
+      toast.error('That file was rejected — expected a single .csv samplesheet')
+    }
   }, [setFiles])
 
   const { getRootProps: getTripletProps, getInputProps: getTripletInput, isDragActive: tripletDrag } = useDropzone({
@@ -253,8 +257,13 @@ function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: F
   })
   const { getRootProps: getSheetProps, getInputProps: getSheetInput, isDragActive: sheetDrag } = useDropzone({
     onDrop: onDropSheet,
-    accept: { 'text/csv': ['.csv'], 'text/plain': ['.csv'] },
-    multiple: false,
+    accept: {
+      'text/csv': ['.csv'],
+      'text/plain': ['.csv', '.tsv', '.txt'],
+      'application/vnd.ms-excel': ['.csv'],
+      'text/tab-separated-values': ['.tsv'],
+    },
+    multiple: true,
   })
 
   function switchMode(m: 'single' | 'samplesheet') {
@@ -325,13 +334,22 @@ function SeuratUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: F
 }
 
 function SamplesheetUploadPanel({ files, setFiles }: { files: File[]; setFiles: (f: File[]) => void }) {
-  const onDrop = useCallback((accepted: File[]) => {
-    if (accepted[0]) setFiles([accepted[0]])
+  const onDrop = useCallback((accepted: File[], rejected: FileRejection[]) => {
+    const first = accepted.find((f) => !f.name.startsWith('.'))
+    if (first) setFiles([first])
+    if (rejected.length > 0 && !first) {
+      toast.error('That file was rejected — expected a single .csv samplesheet')
+    }
   }, [setFiles])
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { 'text/csv': ['.csv'], 'text/plain': ['.csv'] },
-    multiple: false,
+    accept: {
+      'text/csv': ['.csv'],
+      'text/plain': ['.csv', '.tsv', '.txt'],
+      'application/vnd.ms-excel': ['.csv'],
+      'text/tab-separated-values': ['.tsv'],
+    },
+    multiple: true,
   })
   return (
     <>
