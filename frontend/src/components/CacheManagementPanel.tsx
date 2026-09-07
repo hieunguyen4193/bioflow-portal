@@ -5,6 +5,7 @@ import {
   listCacheDatasets, inspectDataset, buildCache, getCacheStatus, deleteCache,
   CacheDataset, AssaySlotLayout,
 } from '../api/admin'
+import ProjectCacheJobPanel from './ProjectCacheJobPanel'
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
@@ -241,6 +242,8 @@ export default function CacheManagementPanel() {
           {datasets.length} dataset{datasets.length === 1 ? '' : 's'} · {totalCached} cached pair{totalCached === 1 ? '' : 's'}
         </p>
       </div>
+
+      <ProjectCacheJobPanel />
 
       <input
         type="text"

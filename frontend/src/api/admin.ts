@@ -96,3 +96,55 @@ export async function deleteCache(
   const { data } = await api.delete('/admin/cache', { params: { project, filename, assay, slot } })
   return data
 }
+
+// ── Whole-project cache jobs ─────────────────────────────────────────────────
+export interface CacheOptions {
+  assays: string[]
+  slots: string[]
+}
+
+export interface ProjectCacheJobItem {
+  filename: string
+  assay: string
+  slot: string
+  status: 'running' | 'done' | 'skipped' | 'error'
+  message?: string
+  error?: string
+}
+
+export interface ProjectCacheJob {
+  job_id: string
+  project: string
+  assays: string[]
+  slots: string[]
+  total: number
+  items: ProjectCacheJobItem[]
+  current: ProjectCacheJobItem | null
+  status: 'running' | 'done' | 'cancelled'
+  created_at: string
+  finished_at?: string
+}
+
+export async function getCacheOptions(): Promise<CacheOptions> {
+  const { data } = await api.get<CacheOptions>('/admin/cache/options')
+  return data
+}
+
+export async function buildProjectCache(project: string, assays: string[], slots: string[]): Promise<{ job_id: string; total: number }> {
+  const { data } = await api.post('/admin/cache/build-project', { project, assays, slots })
+  return data
+}
+
+export async function listProjectCacheJobs(): Promise<ProjectCacheJob[]> {
+  const { data } = await api.get<ProjectCacheJob[]>('/admin/cache/build-project')
+  return data
+}
+
+export async function getProjectCacheJob(jobId: string): Promise<ProjectCacheJob> {
+  const { data } = await api.get<ProjectCacheJob>(`/admin/cache/build-project/${jobId}`)
+  return data
+}
+
+export async function cancelProjectCacheJob(jobId: string): Promise<void> {
+  await api.post(`/admin/cache/build-project/${jobId}/cancel`)
+}
