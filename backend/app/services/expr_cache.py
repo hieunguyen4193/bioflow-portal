@@ -87,6 +87,35 @@ def evict(rds_path: str, assay: str | None = None, slot: str | None = None) -> N
         _expr_caches.pop(rds_path, None)
 
 
+def delete_cache(rds_path: str, assay: str | None = None, slot: str | None = None) -> int:
+    """Delete cached .bin/.json files on disk for rds_path — one (assay, slot)
+    pair, or every pair for this file when both are omitted — and evict the
+    matching in-memory memmap(s). Returns the number of files removed."""
+    cache_base = cache_base_for(rds_path)
+    parent = Path(cache_base).parent
+    prefix = Path(cache_base).name + "_"
+
+    if assay and slot:
+        paths = [parent / f"{prefix}{assay}_{slot}.bin", parent / f"{prefix}{assay}_{slot}.json"]
+    else:
+        paths = list(parent.glob(f"{prefix}*.bin")) + list(parent.glob(f"{prefix}*.json"))
+
+    evict(rds_path, assay, slot)
+
+    removed = 0
+    for path in paths:
+        if path.exists():
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def delete_project_cache(rds_paths: list[str]) -> int:
+    """Delete every cache file for every dataset path given — e.g. all .rds
+    files in a project. Returns the total number of files removed."""
+    return sum(delete_cache(rds_path) for rds_path in rds_paths)
+
+
 def load_expr_cache(rds_path: str, cache_base: str) -> None:
     """Memory-map binary expression files written by load_seurat.R.
     Keys in _expr_caches[rds_path] are (assay, slot) tuples.
@@ -165,6 +194,16 @@ def build_expr_cache_bg(rds_path: str, cache_base: str,
         _build_errors[cache_key] = "Cache build timed out (30 min)"
     finally:
         _cache_building.discard(cache_key)
+
+
+def rebuild_cache_bg(rds_path: str, cache_base: str, assay: str, slot: str) -> None:
+    """Force a fresh cache build for (rds_path, assay, slot), even if one already
+    exists. Deletes the old .bin/.json first — build_expr_cache_bg short-circuits
+    and just reloads the existing .bin otherwise, and leaving it in place while
+    rebuilding would waste disk. Meant to be run in a background thread, same as
+    build_expr_cache_bg."""
+    delete_cache(rds_path, assay, slot)
+    build_expr_cache_bg(rds_path, cache_base, assay, slot)
 
 
 # ── Whole-project cache jobs ───────────────────────────────────────────────────

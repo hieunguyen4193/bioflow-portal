@@ -97,6 +97,18 @@ export async function deleteCache(
   return data
 }
 
+export async function deleteProjectCache(project: string): Promise<{ status: string; removed: number; files: number }> {
+  const { data } = await api.delete('/admin/cache/project', { params: { project } })
+  return data
+}
+
+export async function rebuildCache(
+  project: string, filename: string, assay: string, slot: string
+): Promise<{ status: string; message: string }> {
+  const { data } = await api.post('/admin/cache/rebuild', { project, filename, assay, slot })
+  return data
+}
+
 // ── Whole-project cache jobs ─────────────────────────────────────────────────
 export interface CacheOptions {
   assays: string[]

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
   listCacheDatasets, inspectDataset, buildCache, getCacheStatus, deleteCache,
+  deleteProjectCache, rebuildCache,
   CacheDataset, AssaySlotLayout,
 } from '../api/admin'
 import ProjectCacheJobPanel from './ProjectCacheJobPanel'
@@ -100,6 +101,21 @@ function DatasetCacheRow({ dataset }: { dataset: CacheDataset }) {
     }
   }
 
+  async function handleRebuild(a: string, s: string) {
+    if (!confirm(`Rebuild cache for ${a}/${s}? The current cache will be deleted first.`)) return
+    try {
+      const res = await rebuildCache(dataset.project, dataset.filename, a, s)
+      toast(res.message)
+      if (res.status === 'started') {
+        setBuilding({ assay: a, slot: s })
+        qc.invalidateQueries({ queryKey: ['admin-cache-datasets'] })
+        pollUntilDone(a, s)
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Failed to start cache rebuild')
+    }
+  }
+
   const slotsForAssay = layout?.assay_slots[assay] ?? []
   const alreadyCached = dataset.caches.some((c) => c.assay === assay && c.slot === slot)
 
@@ -151,8 +167,16 @@ function DatasetCacheRow({ dataset }: { dataset: CacheDataset }) {
                       <span className="text-slate-600">{c.assay}/{c.slot}</span>
                       <span className="text-slate-400">{formatBytes(c.size_bytes)}</span>
                       <button
+                        onClick={() => handleRebuild(c.assay, c.slot)}
+                        disabled={!!building}
+                        className="text-indigo-500 hover:text-indigo-700 ml-1 disabled:opacity-50"
+                        title="Delete and rebuild this cache"
+                      >
+                        ↻
+                      </button>
+                      <button
                         onClick={() => handleDelete(c.assay, c.slot)}
-                        className="text-red-500 hover:text-red-700 ml-1"
+                        className="text-red-500 hover:text-red-700"
                         title="Delete this cache"
                       >
                         ×
@@ -208,11 +232,23 @@ function DatasetCacheRow({ dataset }: { dataset: CacheDataset }) {
 }
 
 export default function CacheManagementPanel() {
+  const qc = useQueryClient()
   const { data: datasets = [], isLoading } = useQuery({
     queryKey: ['admin-cache-datasets'],
     queryFn: listCacheDatasets,
   })
   const [search, setSearch] = useState('')
+
+  async function handleDeleteProject(project: string) {
+    if (!confirm(`Delete every cache in "${project}"? This cannot be undone.`)) return
+    try {
+      const res = await deleteProjectCache(project)
+      toast.success(`Deleted ${res.removed} cache file(s) across ${res.files} dataset(s) in ${project}`)
+      qc.invalidateQueries({ queryKey: ['admin-cache-datasets'] })
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || `Failed to delete caches for ${project}`)
+    }
+  }
 
   const filtered = useMemo(() => {
     if (!search) return datasets
@@ -267,8 +303,14 @@ export default function CacheManagementPanel() {
         <div className="space-y-4">
           {[...byProject.entries()].map(([project, files]) => (
             <div key={project} className="bg-white rounded-xl shadow overflow-hidden">
-              <div className="px-4 py-3 border-b bg-slate-50">
+              <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
                 <span className="font-medium text-sm text-slate-700">{project}</span>
+                <button
+                  onClick={() => handleDeleteProject(project)}
+                  className="text-xs border border-red-300 text-red-600 hover:bg-red-50 px-2 py-0.5 rounded transition-colors"
+                >
+                  Delete all caches
+                </button>
               </div>
               <div>
                 {files.map((d) => (

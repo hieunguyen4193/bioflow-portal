@@ -24,13 +24,15 @@ from app.services.expr_cache import (
     build_expr_cache_bg,
     cache_base_for,
     cancel_project_job,
-    evict,
+    delete_cache,
+    delete_project_cache,
     get_build_error,
     get_project_job,
     is_building,
     is_cached,
     list_cache_entries,
     list_project_jobs,
+    rebuild_cache_bg,
     start_project_cache_job,
 )
 from app.services.presets import PRESETS_DIR, list_project_names
@@ -231,24 +233,43 @@ async def admin_delete_cache(
     """Delete cached expression .bin/.json files for a preset dataset.
     With assay+slot, removes just that pair; without, removes every pair."""
     rds_path = _preset_rds_path(project, filename)
-    cache_base = cache_base_for(rds_path)
-    parent = Path(cache_base).parent
-    prefix = Path(cache_base).name + "_"
-
-    if assay and slot:
-        paths = [parent / f"{prefix}{assay}_{slot}.bin", parent / f"{prefix}{assay}_{slot}.json"]
-        evict(rds_path, assay, slot)
-    else:
-        paths = list(parent.glob(f"{prefix}*.bin")) + list(parent.glob(f"{prefix}*.json"))
-        evict(rds_path)
-
-    removed = 0
-    for path in paths:
-        if path.exists():
-            path.unlink()
-            removed += 1
-
+    removed = delete_cache(rds_path, assay, slot)
     return JSONResponse({"status": "deleted", "removed": removed})
+
+
+@router.delete("/cache/project")
+async def admin_delete_project_cache(project: str, _admin: User = Depends(require_admin)):
+    """Delete every cached expression .bin/.json file for every dataset in a
+    project — the whole-project counterpart to DELETE /cache above."""
+    if "/" in project or "\\" in project:
+        raise HTTPException(400, "Invalid project name")
+    project_dir = Path(PRESETS_DIR) / project
+    if not project_dir.is_dir():
+        raise HTTPException(404, "Project not found")
+
+    rds_paths = [str(p) for p in project_dir.glob("*.rds")]
+    removed = delete_project_cache(rds_paths)
+    return JSONResponse({"status": "deleted", "removed": removed, "files": len(rds_paths)})
+
+
+@router.post("/cache/rebuild")
+async def admin_rebuild_cache(req: CacheBuildRequest, _admin: User = Depends(require_admin)):
+    """Force a fresh cache build for one (assay, slot) pair, even if one is
+    already cached — deletes the old cache first, then runs the build, so the
+    old and new .bin files never sit on disk at the same time."""
+    rds_path = _preset_rds_path(req.project, req.filename)
+    label = f"{req.assay}/{req.slot}"
+
+    if is_building(rds_path, req.assay, req.slot):
+        return JSONResponse({"status": "building", "message": f"Cache for {label} is already being built."})
+
+    cache_base = cache_base_for(rds_path)
+    threading.Thread(
+        target=rebuild_cache_bg,
+        args=(rds_path, cache_base, req.assay, req.slot),
+        daemon=True,
+    ).start()
+    return JSONResponse({"status": "started", "message": f"Rebuilding cache for {label}…"})
 
 
 # ── Whole-project cache jobs ───────────────────────────────────────────────────
