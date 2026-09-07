@@ -17,29 +17,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.user import User
 from app.services.auth import get_current_user
+from app.services.expr_cache import (
+    _expr_caches, _cache_building,
+    cache_base_for as _cache_base_for,
+    load_expr_cache as _load_expr_cache,
+    build_expr_cache_bg as _build_expr_cache_bg,
+)
 from app.services.presets import EXPLORE_DIR, HOST_EXPLORE, PRESETS_DIR, list_project_names
 from app.services.project_access import accessible_project_names, user_has_project_access
+from app.services.r_runner import (
+    DOCKER_IMAGE, HOST_SCRIPTS, R_SCRIPTS,
+    parse_json_line as _parse_json_line,
+    run_r as _run_r,
+)
 
 router = APIRouter(prefix="/explore", tags=["explore"])
 
 _sessions: dict[str, str] = {}        # session_id → rds_path
 _session_labels: dict[str, str] = {}  # session_id → human-readable source label (project/file)
 _session_owners: dict[str, str] = {}  # session_id → user_id that created it
-_expr_caches: dict[str, dict] = {}    # rds_path → {(assay, slot): {mat, cells, gene_idx}}
-_cache_building: set[tuple] = set()   # {(rds_path, assay, slot)} currently being built
 _pathway_tasks: dict[str, dict] = {}
 _dge_tasks: dict[str, dict] = {}
 _subcluster_tasks: dict[str, dict] = {}
 _module_score_tasks: dict[str, dict] = {}
-
-DOCKER_IMAGE = os.environ.get("PIPELINE_IMAGE", "tronghieunguyen/single_cell_pipeline")
-
-HOST_SCRIPTS = os.environ.get("HOST_R_SCRIPTS", "")
-R_SCRIPTS    = os.environ.get("R_SCRIPTS_DIR", "/app/app/r_scripts")
-
-# Fall back HOST_SCRIPTS to R_SCRIPTS if not overridden (works when host path == container path)
-if not HOST_SCRIPTS:
-    HOST_SCRIPTS = R_SCRIPTS
 
 
 def _require_session_owner(session_id: str, current_user: User) -> None:
@@ -56,119 +56,6 @@ def _require_task_owner(task: Optional[dict], current_user: User) -> None:
         owner = task.get("owner")
         if owner is not None and owner != current_user.id and not current_user.is_admin:
             raise HTTPException(403, "Not authorized to access this task")
-
-
-def _cache_base_for(rds_path: str) -> str:
-    key = hashlib.md5(rds_path.encode()).hexdigest()[:16]
-    return os.path.join(EXPLORE_DIR, f".seurat_cache_{key}")
-
-
-def _load_expr_cache(rds_path: str, cache_base: str) -> None:
-    """Memory-map binary expression files written by load_seurat.R.
-    Keys in _expr_caches[rds_path] are (assay, slot) tuples.
-    Files must have 'assay' and 'slot' fields in their JSON metadata.
-    """
-    import numpy as np
-    assay_data: dict = {}
-    parent = Path(cache_base).parent
-    prefix = Path(cache_base).name + "_"
-    for meta_path in sorted(parent.glob(f"{prefix}*.json")):
-        bin_path = meta_path.with_suffix(".bin")
-        if not bin_path.exists():
-            continue
-        try:
-            meta = json.loads(meta_path.read_text())
-            assay_name = meta.get("assay")
-            slot_name  = meta.get("slot")
-            if not assay_name or not slot_name:
-                continue  # old-format file without assay/slot fields — skip
-            n_genes = int(meta["n_genes"])
-            n_cells = int(meta["n_cells"])
-            mat = np.memmap(str(bin_path), dtype=np.float32, mode="r",
-                            shape=(n_genes, n_cells))
-            assay_data[(assay_name, slot_name)] = {
-                "mat":      mat,
-                "cells":    meta["cells"],
-                "gene_idx": {g: i for i, g in enumerate(meta["genes"])},
-            }
-        except Exception:
-            continue
-    if assay_data:
-        existing = _expr_caches.get(rds_path, {})
-        existing.update(assay_data)
-        _expr_caches[rds_path] = existing
-
-
-def _build_expr_cache_bg(rds_path: str, cache_base: str,
-                         required_assay: str, required_slot: str) -> None:
-    """Background thread: run load_seurat.R to cache one (assay, slot) pair.
-
-    Errors out (and propagates to R stderr) if the slot is not available in
-    the assay — no silent zero-fill.
-    """
-    cache_key = (rds_path, required_assay, required_slot)
-
-    # Already in memory — nothing to do
-    if _expr_caches.get(rds_path, {}).get((required_assay, required_slot)):
-        return
-    # Another thread is already building this exact pair
-    if cache_key in _cache_building:
-        return
-
-    _cache_building.add(cache_key)
-    try:
-        bin_path = Path(f"{cache_base}_{required_assay}_{required_slot}.bin")
-        if bin_path.exists():
-            _load_expr_cache(rds_path, cache_base)
-            return
-
-        script = os.path.join(R_SCRIPTS, "load_seurat.R")
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
-            "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
-            DOCKER_IMAGE,
-            "Rscript", "--vanilla", script,
-            rds_path, cache_base, required_assay, required_slot,
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        if result.returncode == 0:
-            _load_expr_cache(rds_path, cache_base)
-    finally:
-        _cache_building.discard(cache_key)
-
-
-def _parse_json_line(json_line: str) -> dict | list:
-    # R prints deferred warnings (accumulated via options(warn=0)) right after the
-    # script's final cat(toJSON(...)), which has no trailing newline — so a warning
-    # can land glued onto the same line with no separator. json.loads would then
-    # fail with "Extra data" even though the JSON itself is well-formed; raw_decode
-    # parses just the leading JSON value and ignores whatever garbage follows it.
-    return json.JSONDecoder().raw_decode(json_line.strip())[0]
-
-
-def _run_r(script_name: str, args: list[str], timeout: int = 300) -> dict | list:
-    container_script = os.path.join(R_SCRIPTS, script_name)   # path inside the spawned R container
-    cmd = [
-        "docker", "run", "--rm",
-        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
-        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
-        DOCKER_IMAGE,
-        "Rscript", "--vanilla", container_script, *args,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        raise HTTPException(500, f"R error:\n{result.stderr[-3000:]}")
-    json_line = next(
-        (l for l in result.stdout.splitlines() if l.strip().startswith(("{", "["))),
-        None,
-    )
-    if not json_line:
-        raise HTTPException(500, f"R parse error: no JSON in output\nstdout[:500]: {result.stdout[:500]}")
-    try:
-        return _parse_json_line(json_line)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(500, f"R parse error: {exc}\nstdout[:500]: {result.stdout[:500]}")
 
 
 # ── DGE result cache ──────────────────────────────────────────────────────────

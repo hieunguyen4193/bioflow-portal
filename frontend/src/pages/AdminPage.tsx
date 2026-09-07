@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { listAdminUsers, listAdminProjects, listProjectAccess, grantProjectAccess, revokeProjectAccess, deleteUser } from '../api/admin'
+import CacheManagementPanel from '../components/CacheManagementPanel'
 
 // A user is considered "online" if we've heard from them within this window.
 // The backend refreshes last_seen_at at most once per minute, so this needs
@@ -105,9 +106,30 @@ export default function AdminPage() {
   }
 
   const loading = usersLoading || projectsLoading || grantsLoading
+  const [tab, setTab] = useState<'access' | 'cache'>('access')
 
   return (
     <div>
+      <div className="flex items-center gap-1 mb-6 border-b border-slate-200">
+        {(['access', 'cache'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === t
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {t === 'access' ? 'Project Access' : 'Expression Cache'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'cache' && <CacheManagementPanel />}
+
+      {tab === 'access' && (
+        <>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold">Project Access</h2>
         <p className="text-sm text-slate-400">
@@ -242,6 +264,8 @@ export default function AdminPage() {
             )
           })}
         </div>
+      )}
+        </>
       )}
     </div>
   )
