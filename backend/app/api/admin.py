@@ -11,10 +11,18 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.pipelines import PIPELINE_REGISTRY
 from app.core.database import get_db
 from app.models.job import Job
+from app.models.pipeline_access import PipelineAccess, PipelineSetting
 from app.models.project_access import ProjectAccess
 from app.models.user import User
+from app.schemas.pipeline_access import (
+    PipelineOverrideOut,
+    PipelineOverrideSet,
+    PipelineToggle,
+    PipelineVisibilityOut,
+)
 from app.schemas.project_access import ProjectAccessGrant, ProjectAccessOut
 from app.schemas.user import UserOut
 from app.services.auth import require_admin
@@ -68,6 +76,7 @@ async def delete_user(
         raise HTTPException(400, f"User has {job_count} job(s) and cannot be deleted")
 
     await db.execute(delete(ProjectAccess).where(ProjectAccess.user_id == user_id))
+    await db.execute(delete(PipelineAccess).where(PipelineAccess.user_id == user_id))
     await db.delete(user)
     await db.commit()
 
@@ -130,6 +139,139 @@ async def revoke_project_access(
     if not grant:
         raise HTTPException(404, "Grant not found")
     await db.delete(grant)
+    await db.commit()
+
+
+# ── Pipeline visibility ───────────────────────────────────────────────────────
+# Controls which pipelines appear in the "Run Pipeline" section. Each pipeline
+# has a global on/off switch (default on, so new registry entries show up
+# without setup), and per-user overrides that win over it in either direction.
+@router.get("/pipelines", response_model=list[PipelineVisibilityOut])
+async def list_pipeline_visibility(
+    db: AsyncSession = Depends(get_db), _admin: User = Depends(require_admin)
+):
+    settings_result = await db.execute(select(PipelineSetting.pipeline_id, PipelineSetting.is_enabled))
+    enabled = {row[0]: row[1] for row in settings_result.all()}
+
+    overrides_result = await db.execute(
+        select(PipelineAccess, User.username, User.full_name)
+        .join(User, User.id == PipelineAccess.user_id)
+        .order_by(User.username)
+    )
+    by_pipeline: dict[str, list[PipelineOverrideOut]] = {}
+    for override, username, full_name in overrides_result.all():
+        by_pipeline.setdefault(override.pipeline_id, []).append(
+            PipelineOverrideOut(
+                id=override.id,
+                user_id=override.user_id,
+                username=username,
+                full_name=full_name,
+                allowed=override.allowed,
+            )
+        )
+
+    return [
+        PipelineVisibilityOut(
+            id=pipeline_id,
+            name=entry.get("name", pipeline_id),
+            description=entry.get("description"),
+            is_enabled=enabled.get(pipeline_id, True),
+            overrides=by_pipeline.get(pipeline_id, []),
+        )
+        for pipeline_id, entry in PIPELINE_REGISTRY.items()
+    ]
+
+
+@router.patch("/pipelines/{pipeline_id}", response_model=PipelineVisibilityOut)
+async def set_pipeline_enabled(
+    pipeline_id: str,
+    body: PipelineToggle,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    entry = PIPELINE_REGISTRY.get(pipeline_id)
+    if not entry:
+        raise HTTPException(404, "Pipeline not found")
+
+    result = await db.execute(select(PipelineSetting).where(PipelineSetting.pipeline_id == pipeline_id))
+    setting = result.scalar_one_or_none()
+    if setting:
+        setting.is_enabled = body.is_enabled
+    else:
+        db.add(PipelineSetting(pipeline_id=pipeline_id, is_enabled=body.is_enabled))
+    await db.commit()
+
+    overrides_result = await db.execute(
+        select(PipelineAccess, User.username, User.full_name)
+        .join(User, User.id == PipelineAccess.user_id)
+        .where(PipelineAccess.pipeline_id == pipeline_id)
+        .order_by(User.username)
+    )
+    return PipelineVisibilityOut(
+        id=pipeline_id,
+        name=entry.get("name", pipeline_id),
+        description=entry.get("description"),
+        is_enabled=body.is_enabled,
+        overrides=[
+            PipelineOverrideOut(
+                id=o.id, user_id=o.user_id, username=username, full_name=full_name, allowed=o.allowed
+            )
+            for o, username, full_name in overrides_result.all()
+        ],
+    )
+
+
+@router.put("/pipeline-access", response_model=PipelineOverrideOut)
+async def set_pipeline_override(
+    body: PipelineOverrideSet,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Create or update one user's override for one pipeline."""
+    if body.pipeline_id not in PIPELINE_REGISTRY:
+        raise HTTPException(404, "Pipeline not found")
+    result = await db.execute(select(User).where(User.username == body.username))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    existing = await db.execute(
+        select(PipelineAccess).where(
+            PipelineAccess.user_id == user.id,
+            PipelineAccess.pipeline_id == body.pipeline_id,
+        )
+    )
+    override = existing.scalar_one_or_none()
+    if override:
+        override.allowed = body.allowed
+    else:
+        override = PipelineAccess(
+            user_id=user.id, pipeline_id=body.pipeline_id, allowed=body.allowed
+        )
+        db.add(override)
+    await db.commit()
+    await db.refresh(override)
+    return PipelineOverrideOut(
+        id=override.id,
+        user_id=override.user_id,
+        username=user.username,
+        full_name=user.full_name,
+        allowed=override.allowed,
+    )
+
+
+@router.delete("/pipeline-access/{override_id}", status_code=204)
+async def clear_pipeline_override(
+    override_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Drop an override so the user falls back to the global switch."""
+    result = await db.execute(select(PipelineAccess).where(PipelineAccess.id == override_id))
+    override = result.scalar_one_or_none()
+    if not override:
+        raise HTTPException(404, "Override not found")
+    await db.delete(override)
     await db.commit()
 
 

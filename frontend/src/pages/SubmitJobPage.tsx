@@ -170,6 +170,9 @@ function PipelinesTab({ pipelines }: { pipelines: any[] }) {
                 }`}
               >
                 {p.name}
+                {p.hidden_by_default && (
+                  <span className="block text-xs text-amber-600">hidden from users</span>
+                )}
               </button>
             </li>
           ))}
@@ -614,7 +617,9 @@ function SubmitTab({ pipelines }: { pipelines: any[] }) {
           className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
         >
           {pipelines.map((p: any) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
+            <option key={p.id} value={p.id}>
+              {p.name}{p.hidden_by_default ? '  (hidden from users)' : ''}
+            </option>
           ))}
         </select>
         {currentPipeline && (

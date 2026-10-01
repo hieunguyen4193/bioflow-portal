@@ -160,3 +160,41 @@ export async function getProjectCacheJob(jobId: string): Promise<ProjectCacheJob
 export async function cancelProjectCacheJob(jobId: string): Promise<void> {
   await api.post(`/admin/cache/build-project/${jobId}/cancel`)
 }
+
+// ── Pipeline visibility ──────────────────────────────────────────────────────
+export interface PipelineOverride {
+  id: string
+  user_id: string
+  username: string
+  full_name: string
+  allowed: boolean
+}
+
+export interface PipelineVisibility {
+  id: string
+  name: string
+  description: string | null
+  is_enabled: boolean
+  overrides: PipelineOverride[]
+}
+
+export async function listPipelineVisibility(): Promise<PipelineVisibility[]> {
+  const { data } = await api.get<PipelineVisibility[]>('/admin/pipelines')
+  return data
+}
+
+export async function setPipelineEnabled(pipelineId: string, is_enabled: boolean): Promise<PipelineVisibility> {
+  const { data } = await api.patch<PipelineVisibility>(`/admin/pipelines/${pipelineId}`, { is_enabled })
+  return data
+}
+
+export async function setPipelineOverride(
+  username: string, pipeline_id: string, allowed: boolean
+): Promise<PipelineOverride> {
+  const { data } = await api.put<PipelineOverride>('/admin/pipeline-access', { username, pipeline_id, allowed })
+  return data
+}
+
+export async function clearPipelineOverride(overrideId: string): Promise<void> {
+  await api.delete(`/admin/pipeline-access/${overrideId}`)
+}

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { listAdminUsers, listAdminProjects, listProjectAccess, grantProjectAccess, revokeProjectAccess, deleteUser } from '../api/admin'
 import CacheManagementPanel from '../components/CacheManagementPanel'
+import PipelineVisibilityPanel from '../components/PipelineVisibilityPanel'
 
 // A user is considered "online" if we've heard from them within this window.
 // The backend refreshes last_seen_at at most once per minute, so this needs
@@ -106,12 +107,18 @@ export default function AdminPage() {
   }
 
   const loading = usersLoading || projectsLoading || grantsLoading
-  const [tab, setTab] = useState<'access' | 'cache'>('access')
+  const [tab, setTab] = useState<'access' | 'pipelines' | 'cache'>('access')
+
+  const TAB_LABELS = {
+    access: 'Project Access',
+    pipelines: 'Pipeline Visibility',
+    cache: 'Expression Cache',
+  } as const
 
   return (
     <div>
       <div className="flex items-center gap-1 mb-6 border-b border-slate-200">
-        {(['access', 'cache'] as const).map((t) => (
+        {(['access', 'pipelines', 'cache'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -121,12 +128,14 @@ export default function AdminPage() {
                 : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
-            {t === 'access' ? 'Project Access' : 'Expression Cache'}
+            {TAB_LABELS[t]}
           </button>
         ))}
       </div>
 
       {tab === 'cache' && <CacheManagementPanel />}
+
+      {tab === 'pipelines' && <PipelineVisibilityPanel />}
 
       {tab === 'access' && (
         <>

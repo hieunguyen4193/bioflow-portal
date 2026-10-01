@@ -7,6 +7,7 @@ from app.api import auth, files, jobs, pipelines, explore, admin
 import app.models.user  # noqa: F401 – register ORM models
 import app.models.job   # noqa: F401
 import app.models.project_access  # noqa: F401
+import app.models.pipeline_access  # noqa: F401
 
 
 @asynccontextmanager

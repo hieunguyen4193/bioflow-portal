@@ -1,7 +1,17 @@
 """Static registry of available pipelines."""
 import os
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.models.user import User
+from app.services.auth import get_current_user
+from app.services.pipeline_access import (
+    global_switches,
+    user_can_run_pipeline,
+    visible_pipeline_ids,
+)
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
@@ -651,8 +661,20 @@ PIPELINE_REGISTRY = {
 
 
 @router.get("/")
-async def list_pipelines():
-    return [{"id": k, **v} for k, v in PIPELINE_REGISTRY.items()]
+async def list_pipelines(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pipelines this user may run — admins get the whole registry."""
+    visible = await visible_pipeline_ids(db, current_user, list(PIPELINE_REGISTRY))
+    if current_user.is_admin:
+        # Admins see everything, so flag what regular users don't get to see.
+        enabled = await global_switches(db)
+        return [
+            {**PIPELINE_REGISTRY[k], "id": k, "hidden_by_default": not enabled.get(k, True)}
+            for k in visible
+        ]
+    return [{**PIPELINE_REGISTRY[k], "id": k} for k in visible]
 
 
 PIPELINE_ALIASES = {
@@ -660,10 +682,16 @@ PIPELINE_ALIASES = {
 }
 
 @router.get("/{pipeline_id}/readme", response_class=PlainTextResponse)
-async def get_pipeline_readme(pipeline_id: str):
+async def get_pipeline_readme(
+    pipeline_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     resolved = PIPELINE_ALIASES.get(pipeline_id, pipeline_id)
     entry = PIPELINE_REGISTRY.get(resolved)
     if not entry:
+        raise HTTPException(404, "Pipeline not found")
+    if not await user_can_run_pipeline(db, current_user, resolved):
         raise HTTPException(404, "Pipeline not found")
     rel = entry.get("readme")
     if not rel:
@@ -675,8 +703,14 @@ async def get_pipeline_readme(pipeline_id: str):
 
 
 @router.get("/{pipeline_id}")
-async def get_pipeline(pipeline_id: str):
+async def get_pipeline(
+    pipeline_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     resolved = PIPELINE_ALIASES.get(pipeline_id, pipeline_id)
     if resolved not in PIPELINE_REGISTRY:
+        raise HTTPException(404, "Pipeline not found")
+    if not await user_can_run_pipeline(db, current_user, resolved):
         raise HTTPException(404, "Pipeline not found")
     return {"id": resolved, **PIPELINE_REGISTRY[resolved]}

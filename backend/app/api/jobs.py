@@ -10,6 +10,7 @@ from app.models.job import Job
 from app.models.user import User
 from app.schemas.job import JobCreate, JobOut
 from app.services.auth import get_current_user
+from app.services.pipeline_access import user_can_run_pipeline
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -21,6 +22,9 @@ async def submit_job(
     current_user: User = Depends(get_current_user),
 ):
     from app.workers.runner import launch
+
+    if not await user_can_run_pipeline(db, current_user, body.pipeline):
+        raise HTTPException(403, "This pipeline is not available to your account")
 
     batch_id = body.params.pop("batch_id", None)
     if not batch_id:
