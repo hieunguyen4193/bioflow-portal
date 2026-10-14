@@ -12,6 +12,8 @@ export interface SeuratMeta {
   genes:       string[]
   dge_cache?:  DgeCacheEntry[]
   subcluster_cache?: SubclusterCacheEntry[]
+  preset_project?: string   // set only when the session was loaded from a preset
+  preset_name?:    string
 }
 
 export interface PresetFile {
@@ -341,6 +343,13 @@ export async function loadSubclusterCacheEntry(
 
 export async function deleteSubclusterCacheEntry(session_id: string, cache_key: string): Promise<void> {
   await api.delete(`/explore/subcluster-cache/${cache_key}`, { params: { session_id } })
+}
+
+export async function saveSubclusterAsPreset(
+  session_id: string, cache_key: string, project: string, name: string
+): Promise<{ project: string; filename: string }> {
+  const { data } = await api.post(`/explore/subcluster-cache/${cache_key}/save-preset`, { session_id, project, name })
+  return data
 }
 
 // Routed through the authenticated axios client (a bare <a href> would skip the

@@ -2,6 +2,8 @@
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import threading
 import uuid
@@ -232,6 +234,8 @@ async def load_preset(
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
+    data["preset_project"] = req.project
+    data["preset_name"] = Path(req.filename).stem
     data["dge_cache"] = _list_dge_cache(rds_path)
     data["subcluster_cache"] = _list_subcluster_cache(rds_path)
     assays = data.get("assays") or []
@@ -854,6 +858,52 @@ async def download_subcluster_rds(cache_key: str, session_id: str, current_user:
         raise HTTPException(404, "Sub-clustered file not found")
     return FileResponse(entry["rds_path"], media_type="application/octet-stream",
                         filename=f"subcluster_{cache_key}.rds")
+
+
+_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class SubclusterSavePresetRequest(BaseModel):
+    session_id: str
+    project:    str
+    name:       str    # preset file name, with or without the .rds suffix
+
+
+@router.post("/subcluster-cache/{cache_key}/save-preset")
+async def save_subcluster_as_preset(
+    cache_key: str,
+    req: SubclusterSavePresetRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Copy a sub-clustered Seurat object into Explore's preset library under a
+    user-chosen project/name, so it can be loaded later like any other preset."""
+    rds_path = _sessions.get(req.session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    _require_session_owner(req.session_id, current_user)
+    entry = _read_subcluster_cache_entry(rds_path, cache_key)
+    if not entry or not entry.get("rds_path") or not os.path.exists(entry["rds_path"]):
+        raise HTTPException(404, "Sub-clustered file not found")
+
+    project = req.project.strip()
+    name    = req.name.strip()
+    if name.lower().endswith(".rds"):
+        name = name[:-4]
+    if not _PRESET_NAME_RE.match(project) or not _PRESET_NAME_RE.match(name):
+        raise HTTPException(400, "Project and preset names may only contain letters, digits, '.', '_' and '-'")
+    # Admins may create new projects; everyone else can only save into projects
+    # they've been granted, otherwise the preset would be invisible to them.
+    if not await user_has_project_access(db, current_user, project):
+        raise HTTPException(403, "You do not have access to this project")
+
+    dest_dir  = os.path.join(PRESETS_DIR, project)
+    dest_path = os.path.join(dest_dir, f"{name}.rds")
+    if os.path.exists(dest_path):
+        raise HTTPException(409, f"A preset named '{name}.rds' already exists in '{project}'")
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copyfile(entry["rds_path"], dest_path)
+    return JSONResponse({"project": project, "filename": f"{name}.rds"})
 
 
 # ── Pathway Analysis ─────────────────────────────────────────────────────────

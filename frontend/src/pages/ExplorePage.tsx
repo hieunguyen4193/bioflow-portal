@@ -1,9 +1,9 @@
 import { useState, useCallback, useMemo, useEffect, useRef, memo } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -2061,6 +2061,13 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
   const [loadedCacheKey, setLoadedCacheKey] = useState<string | null>(null)
   const [deletingKey,    setDeletingKey]    = useState<string | null>(null)
 
+  const queryClient = useQueryClient()
+  const { data: presets = [] } = useQuery({ queryKey: ['explore-presets'], queryFn: listPresets })
+  const [showSavePreset, setShowSavePreset] = useState(false)
+  const [presetProject,  setPresetProject]  = useState('')
+  const [presetName,     setPresetName]     = useState('')
+  const [savingPreset,   setSavingPreset]   = useState(false)
+
   // Rendered through the same UMAPTab used by the main UMAP tab (centroid labels,
   // PDF export, panel sizing all come for free) by wrapping the result in a
   // minimal SeuratMeta-shaped object — reductions/cells/metadata are the only
@@ -2123,7 +2130,7 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
   }, [taskId])
 
   async function runAnalysis() {
-    setLoading(true); setLog('Running…'); setRunLog(''); setRunFailed(false); setResult(null); setLoadedCacheKey(null); setTaskId(null)
+    setLoading(true); setLog('Running…'); setRunLog(''); setRunFailed(false); setResult(null); setLoadedCacheKey(null); setTaskId(null); setShowSavePreset(false)
     try {
       const res = await startSubcluster({
         session_id: sessionId, group_by: colorBy, clusters: selectedClusters.join(','),
@@ -2155,7 +2162,7 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
   }
 
   async function loadCachedEntry(entry: SubclusterCacheEntry) {
-    setLoading(true); setLog('Loading cached result…'); setResult(null); setLoadedCacheKey(null)
+    setLoading(true); setLog('Loading cached result…'); setResult(null); setLoadedCacheKey(null); setShowSavePreset(false)
     try {
       const cached = await loadSubclusterCacheEntry(sessionId, entry.cache_key)
       setUseSctransform(cached.use_sctransform)
@@ -2168,6 +2175,33 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
       setLog(`Loaded from cache (run at ${new Date(cached.created_at).toLocaleString()}) — ${cached.result.n_cells_before.toLocaleString()} → ${cached.result.n_cells_after.toLocaleString()} cells.`)
     } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)) }
     finally { setLoading(false) }
+  }
+
+  function openSavePreset() {
+    // Default into the project the parent object came from, named after the
+    // parent plus the clusters that were kept, e.g. "pbmc_sub_Tcells_NK".
+    const base = meta.preset_name || 'subcluster'
+    const tag  = selectedClusters.join('_').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 60)
+    setPresetProject(prev => prev || meta.preset_project || presets[0]?.project || '')
+    setPresetName(`${base}_sub${tag ? '_' + tag : ''}`)
+    setShowSavePreset(true)
+  }
+
+  async function savePreset() {
+    if (!result?.cache_key) return
+    const project = presetProject.trim(), name = presetName.trim()
+    if (!project || !name) { toast.error('Please enter both a project and a preset name'); return }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(project) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+      toast.error("Names may only contain letters, digits, '.', '_' and '-'"); return
+    }
+    setSavingPreset(true)
+    try {
+      const saved = await saveSubclusterAsPreset(sessionId, result.cache_key, project, name)
+      toast.success(`Saved as preset ${saved.project}/${saved.filename}`)
+      setShowSavePreset(false)
+      queryClient.invalidateQueries({ queryKey: ['explore-presets'] })
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed to save preset') }
+    finally { setSavingPreset(false) }
   }
 
   async function deleteCachedEntry(entry: SubclusterCacheEntry) {
@@ -2280,12 +2314,49 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
               · TCR excluded: {result.excluded_tcr.length}, BCR/Ig excluded: {result.excluded_bcr.length}
             </p>
             {result.cache_key && (
-              <button onClick={() => downloadSubclusterRds(sessionId, result.cache_key!)}
-                className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-100 text-slate-600">
-                ↓ Download .rds
-              </button>
+              <div className="flex gap-2">
+                <button onClick={() => showSavePreset ? setShowSavePreset(false) : openSavePreset()}
+                  className="px-3 py-1.5 text-xs border border-indigo-300 rounded hover:bg-indigo-50 text-indigo-600">
+                  Save as preset
+                </button>
+                <button onClick={() => downloadSubclusterRds(sessionId, result.cache_key!)}
+                  className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-100 text-slate-600">
+                  ↓ Download .rds
+                </button>
+              </div>
             )}
           </div>
+          {showSavePreset && result.cache_key && (
+            <div className="bg-slate-50 rounded-lg p-3 flex flex-wrap gap-3 items-end">
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Project</label>
+                <input value={presetProject} onChange={e => setPresetProject(e.target.value)}
+                  list="subcluster-preset-projects" placeholder="project"
+                  className="border border-slate-300 rounded px-2 py-1 text-sm w-48" />
+                <datalist id="subcluster-preset-projects">
+                  {presets.map(p => <option key={p.project} value={p.project} />)}
+                </datalist>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Preset name</label>
+                <input value={presetName} onChange={e => setPresetName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') savePreset() }}
+                  placeholder="name" className="border border-slate-300 rounded px-2 py-1 text-sm w-64" />
+              </div>
+              <button onClick={savePreset} disabled={savingPreset}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50">
+                {savingPreset ? 'Saving…' : 'Save'}
+              </button>
+              <button onClick={() => setShowSavePreset(false)}
+                className="text-sm text-slate-400 hover:text-slate-600 px-2 py-1.5">
+                Cancel
+              </button>
+              <p className="w-full text-xs text-slate-400">
+                Saved as <code>{presetProject || '<project>'}/{(presetName || '<name>').replace(/\.rds$/i, '')}.rds</code> in
+                the preset library, so it can be loaded from the Explore start page.
+              </p>
+            </div>
+          )}
           {subclusterMeta && (
             <UMAPTabMemo meta={subclusterMeta} reduction="umap" colorBy={subclusterColorBy}
               splitBy="" selectedClusters={subclusterClusterVals} />
