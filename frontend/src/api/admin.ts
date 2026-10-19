@@ -137,8 +137,8 @@ export interface ProjectCacheJob {
   finished_at?: string
 }
 
-export async function getCacheOptions(): Promise<CacheOptions> {
-  const { data } = await api.get<CacheOptions>('/admin/cache/options')
+export async function getCacheOptions(project?: string): Promise<CacheOptions> {
+  const { data } = await api.get<CacheOptions>('/admin/cache/options', { params: { project } })
   return data
 }
 

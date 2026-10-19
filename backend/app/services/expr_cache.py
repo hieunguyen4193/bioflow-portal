@@ -10,6 +10,7 @@ app.api.admin, which build caches for preset files directly.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -19,12 +20,17 @@ from pathlib import Path
 from app.services.presets import EXPLORE_DIR, HOST_EXPLORE
 from app.services.r_runner import DOCKER_IMAGE, HOST_SCRIPTS, R_SCRIPTS
 
-# Fixed set the admin picks from for a whole-project cache run — deliberately not
-# read off the data (that would mean opening every .rds file in the project just
-# to list its assays, defeating the point of a "don't inspect, just cache" bulk
-# action). Almost every dataset in this pipeline carries these two assays.
-ASSUMED_ASSAYS = ["RNA", "SCT"]
+# Baseline assays offered for a whole-project cache run. Deliberately not read
+# off the data (that would mean opening every .rds file in the project just to
+# list its assays, defeating the point of a "don't inspect, just cache" bulk
+# action) — instead this is unioned with every assay already seen in the
+# project's on-disk caches, see project_assay_options(). A file that turns out
+# not to carry a picked assay is skipped, not reported as an error.
+ASSUMED_ASSAYS = ["RNA", "SCT", "ADT"]
 ASSUMED_SLOTS  = ["data", "counts"]
+
+# Assay names end up in cache file paths, so only allow plain identifiers.
+ASSAY_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 _expr_caches: dict[str, dict] = {}    # rds_path → {(assay, slot): {mat, cells, gene_idx}}
 _cache_building: set[tuple] = set()   # {(rds_path, assay, slot)} currently being built
@@ -76,6 +82,13 @@ def is_cached(rds_path: str, assay: str, slot: str) -> bool:
 
 def is_building(rds_path: str, assay: str, slot: str) -> bool:
     return (rds_path, assay, slot) in _cache_building
+
+
+def project_assay_options(rds_paths: list[str]) -> list[str]:
+    """ASSUMED_ASSAYS plus any other assay already cached for one of rds_paths —
+    a filesystem scan only, no R."""
+    seen = {e["assay"] for p in rds_paths for e in list_cache_entries(p)}
+    return ASSUMED_ASSAYS + sorted(seen - set(ASSUMED_ASSAYS))
 
 
 def evict(rds_path: str, assay: str | None = None, slot: str | None = None) -> None:
@@ -219,6 +232,7 @@ def _run_project_cache_job(job_id: str, rds_files: list[tuple[str, str]],
     job = _project_jobs[job_id]
     try:
         for filename, rds_path in rds_files:
+            missing_assays: set[str] = set()  # assays this file turned out not to have
             for assay in assays:
                 for slot in slots:
                     if job["status"] == "cancelled":
@@ -231,15 +245,27 @@ def _run_project_cache_job(job_id: str, rds_files: list[tuple[str, str]],
                         item["status"] = "skipped"
                         item["message"] = "already cached"
                         continue
+                    if assay in missing_assays:
+                        item["status"] = "skipped"
+                        item["message"] = f"no {assay} assay in this file"
+                        continue
 
                     cache_base = cache_base_for(rds_path)
                     build_expr_cache_bg(rds_path, cache_base, assay, slot)
 
                     if is_cached(rds_path, assay, slot):
                         item["status"] = "done"
+                        continue
+                    error = get_build_error(rds_path, assay, slot) or "unknown error"
+                    # load_seurat.R stops with "Assay 'X' not found. Available: ..."
+                    # when the file lacks the assay — expected in a mixed project.
+                    if f"Assay '{assay}' not found" in error:
+                        missing_assays.add(assay)
+                        item["status"] = "skipped"
+                        item["message"] = f"no {assay} assay in this file"
                     else:
                         item["status"] = "error"
-                        item["error"] = get_build_error(rds_path, assay, slot) or "unknown error"
+                        item["error"] = error
     finally:
         job["current"] = None
         if job["status"] != "cancelled":

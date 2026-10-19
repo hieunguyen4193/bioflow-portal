@@ -27,7 +27,7 @@ from app.schemas.project_access import ProjectAccessGrant, ProjectAccessOut
 from app.schemas.user import UserOut
 from app.services.auth import require_admin
 from app.services.expr_cache import (
-    ASSUMED_ASSAYS,
+    ASSAY_NAME_RE,
     ASSUMED_SLOTS,
     build_expr_cache_bg,
     cache_base_for,
@@ -40,6 +40,7 @@ from app.services.expr_cache import (
     is_cached,
     list_cache_entries,
     list_project_jobs,
+    project_assay_options,
     rebuild_cache_bg,
     start_project_cache_job,
 )
@@ -416,11 +417,17 @@ async def admin_rebuild_cache(req: CacheBuildRequest, _admin: User = Depends(req
 
 # ── Whole-project cache jobs ───────────────────────────────────────────────────
 @router.get("/cache/options")
-async def cache_build_options(_admin: User = Depends(require_admin)):
-    """The fixed assay/slot choices offered for a whole-project cache run — see
-    ASSUMED_ASSAYS/ASSUMED_SLOTS: deliberately not read off the data, so this
+async def cache_build_options(project: Optional[str] = None, _admin: User = Depends(require_admin)):
+    """Assay/slot choices offered for a whole-project cache run: the baseline
+    ASSUMED_ASSAYS plus any assay already cached for a file in `project` (see
+    project_assay_options). Not read off the .rds files themselves, so this
     doesn't require opening every file in a project first."""
-    return JSONResponse({"assays": ASSUMED_ASSAYS, "slots": ASSUMED_SLOTS})
+    rds_paths: list[str] = []
+    if project and "/" not in project and "\\" not in project:
+        project_dir = Path(PRESETS_DIR) / project
+        if project_dir.is_dir():
+            rds_paths = [str(p) for p in project_dir.glob("*.rds")]
+    return JSONResponse({"assays": project_assay_options(rds_paths), "slots": ASSUMED_SLOTS})
 
 
 class ProjectCacheBuildRequest(BaseModel):
@@ -437,7 +444,7 @@ async def admin_start_project_cache_build(req: ProjectCacheBuildRequest, _admin:
     if not project_dir.is_dir():
         raise HTTPException(404, "Project not found")
 
-    bad_assays = [a for a in req.assays if a not in ASSUMED_ASSAYS]
+    bad_assays = [a for a in req.assays if not ASSAY_NAME_RE.match(a)]
     bad_slots  = [s for s in req.slots if s not in ASSUMED_SLOTS]
     if bad_assays or bad_slots:
         raise HTTPException(400, f"Unknown assay/slot: {bad_assays + bad_slots}")

@@ -22,21 +22,24 @@ function toggle(list: string[], setList: (v: string[]) => void, value: string) {
 export default function ProjectCacheJobPanel() {
   const qc = useQueryClient()
   const { data: projects = [] } = useQuery({ queryKey: ['admin-projects'], queryFn: listAdminProjects })
-  const { data: options } = useQuery({ queryKey: ['admin-cache-options'], queryFn: getCacheOptions })
-
   const [project, setProject] = useState('')
+  const { data: options } = useQuery({
+    queryKey: ['admin-cache-options', project],
+    queryFn: () => getCacheOptions(project || undefined),
+  })
+
   const [assays, setAssays] = useState<string[]>([])
   const [slots, setSlots] = useState<string[]>([])
   const [job, setJob] = useState<ProjectCacheJob | null>(null)
   const [starting, setStarting] = useState(false)
 
-  // Default the checkboxes to "everything" once the fixed assay/slot options load.
+  // Default the checkboxes to "everything" whenever the options (re)load — they
+  // change per project, since assays already cached in a project are offered too.
   useEffect(() => {
-    if (options && assays.length === 0 && slots.length === 0) {
+    if (options) {
       setAssays(options.assays)
       setSlots(options.slots)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options])
 
   // Re-discover an in-progress run on mount, so navigating away and back doesn't lose it.
@@ -105,7 +108,8 @@ export default function ProjectCacheJobPanel() {
       <h3 className="font-semibold text-slate-700 mb-1">Cache an entire project</h3>
       <p className="text-xs text-slate-500 mb-3">
         Runs the cache build for every dataset in a project, one file at a time — without opening
-        each file first to check what it has. Just picks from the assays/slots below.
+        each file first to check what it has. Just picks from the assays/slots below; files that
+        don't carry a picked assay are skipped.
       </p>
 
       <div className="flex flex-wrap items-end gap-5 mb-3">
@@ -125,7 +129,7 @@ export default function ProjectCacheJobPanel() {
 
         <div>
           <label className="text-xs text-slate-500 block mb-1">Assay</label>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             {(options?.assays ?? []).map((a) => (
               <label key={a} className="flex items-center gap-1.5 text-sm text-slate-600">
                 <input type="checkbox" checked={assays.includes(a)} onChange={() => toggle(assays, setAssays, a)} />
@@ -189,7 +193,7 @@ export default function ProjectCacheJobPanel() {
                   <span className="text-slate-600 truncate" title={it.error}>
                     {it.filename} — {it.assay}/{it.slot}
                   </span>
-                  <span className={`px-1.5 py-0.5 rounded shrink-0 ml-2 ${statusColor(it.status)}`} title={it.error}>
+                  <span className={`px-1.5 py-0.5 rounded shrink-0 ml-2 ${statusColor(it.status)}`} title={it.error ?? it.message}>
                     {it.status}
                   </span>
                 </div>
