@@ -143,6 +143,9 @@ export async function startPathwayAnalysis(params: {
   csv_data: string   // JSON-stringified array of marker rows
   species?: 'hsa' | 'mmu' | 'auto'
   pval_cutoff: number
+  methods?: ('ORA' | 'GSEA')[]                         // omitted/empty = all
+  databases?: ('GO' | 'KEGG' | 'WP' | 'MSIGDB')[]      // omitted/empty = all
+  msigdb_collections?: string[]                        // omitted/empty = all for the species
 }): Promise<{ task_id: string }> {
   const { data } = await api.post('/explore/pathway', params)
   return data

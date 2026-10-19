@@ -912,9 +912,20 @@ class PathwayRequest(BaseModel):
     csv_data:    str        # JSON-encoded list of row dicts (the DGE markers table)
     species:     str = "auto"
     pval_cutoff: float = 0.05
+    # Which analyses to run — empty lists mean "all" (the original run-everything behaviour)
+    methods:     list[str] = []   # subset of PATHWAY_METHODS
+    databases:   list[str] = []   # subset of PATHWAY_DATABASES
+    msigdb_collections: list[str] = []   # e.g. ["H", "C2"]; empty = all for the species
 
 
-def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: float, species: str):
+PATHWAY_METHODS   = {"ORA", "GSEA"}
+PATHWAY_DATABASES = {"GO", "KEGG", "WP", "MSIGDB"}
+MSIGDB_COLLECTIONS = {"H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8",
+                      "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"}
+
+
+def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: float, species: str,
+                            methods: str, databases: str, msigdb_collections: str):
     container_script = os.path.join(R_SCRIPTS, "run_pathway_analysis.R")
     log_path = os.path.join(outdir, "run.log")
     cmd = [
@@ -923,7 +934,7 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
         "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
         DOCKER_IMAGE,
         "Rscript", "--vanilla", container_script,
-        csv_path, outdir, str(pval), species,
+        csv_path, outdir, str(pval), species, methods, databases, msigdb_collections,
     ]
     try:
         with open(log_path, "w") as log_f:
@@ -966,6 +977,15 @@ async def start_pathway_analysis(req: PathwayRequest, current_user: User = Depen
     _require_session_owner(req.session_id, current_user)
     if req.species not in ("hsa", "mmu", "auto"):
         raise HTTPException(400, "species must be 'hsa', 'mmu', or 'auto'")
+    methods   = [m.upper() for m in req.methods]
+    databases = [d.upper() for d in req.databases]
+    msigdb_collections = [c.upper() for c in req.msigdb_collections]
+    if not set(methods) <= PATHWAY_METHODS:
+        raise HTTPException(400, f"methods must be a subset of {sorted(PATHWAY_METHODS)}")
+    if not set(databases) <= PATHWAY_DATABASES:
+        raise HTTPException(400, f"databases must be a subset of {sorted(PATHWAY_DATABASES)}")
+    if not set(msigdb_collections) <= MSIGDB_COLLECTIONS:
+        raise HTTPException(400, f"msigdb_collections must be a subset of {sorted(MSIGDB_COLLECTIONS)}")
 
     task_id = str(uuid.uuid4())
     task_dir = os.path.join(EXPLORE_DIR, f"pathway_{task_id}")
@@ -985,7 +1005,8 @@ async def start_pathway_analysis(req: PathwayRequest, current_user: User = Depen
     _pathway_tasks[task_id] = {"status": "running", "owner": current_user.id}
     thread = threading.Thread(
         target=_run_pathway_background,
-        args=(task_id, csv_path, task_dir, req.pval_cutoff, req.species),
+        args=(task_id, csv_path, task_dir, req.pval_cutoff, req.species,
+              ",".join(methods), ",".join(databases), ",".join(msigdb_collections)),
         daemon=True,
     )
     thread.start()

@@ -12,6 +12,19 @@ csv_path     <- args[1]
 outputdir    <- args[2]
 pval_cutoff  <- as.numeric(args[3])
 species      <- if (length(args) >= 4 && nchar(args[4]) > 0) args[4] else "auto"
+# Optional selections (comma-separated). Omitted/empty = run everything, so older
+# callers keep the original behaviour.
+parse_sel <- function(i, default) {
+  if (length(args) >= i && nchar(args[i]) > 0) toupper(trimws(strsplit(args[i], ",")[[1]])) else default
+}
+run_methods <- parse_sel(5, c("ORA", "GSEA"))
+run_dbs     <- parse_sel(6, c("GO", "KEGG", "WP", "MSIGDB"))
+msigdb_sel  <- parse_sel(7, NULL)   # NULL = all available collections
+run_ora  <- "ORA"  %in% run_methods
+run_gsea <- "GSEA" %in% run_methods
+message(sprintf("Methods: %s | Databases: %s | MSigDB collections: %s",
+                paste(run_methods, collapse = ","), paste(run_dbs, collapse = ","),
+                if (is.null(msigdb_sel)) "all" else paste(msigdb_sel, collapse = ",")))
 
 dir.create(outputdir, showWarnings = FALSE, recursive = TRUE)
 
@@ -96,150 +109,170 @@ safe_df <- function(obj, convert_entrez = FALSE) {
 output <- list()
 
 # ── ORA — GO ─────────────────────────────────────────────────────────────────
-message("ORA GO (full)...")
-output[["ORA.FULL.GO"]] <- safe_df(tryCatch(
-  enrichGO(sig_all, OrgDb = org_db, ont = "ALL", pvalueCutoff = pval_cutoff,
-           qvalueCutoff = pval_cutoff, readable = TRUE, keyType = "SYMBOL", pAdjustMethod = "BH"),
-  error = function(e) NULL))
+if (run_ora && "GO" %in% run_dbs) {
+  message("ORA GO (full)...")
+  output[["ORA.FULL.GO"]] <- safe_df(tryCatch(
+    enrichGO(sig_all, OrgDb = org_db, ont = "ALL", pvalueCutoff = pval_cutoff,
+             qvalueCutoff = pval_cutoff, readable = TRUE, keyType = "SYMBOL", pAdjustMethod = "BH"),
+    error = function(e) NULL))
 
-message("ORA GO (up)...")
-output[["ORA.UP.GO"]] <- safe_df(tryCatch(
-  enrichGO(sig_up, OrgDb = org_db, ont = "ALL", pvalueCutoff = pval_cutoff,
-           qvalueCutoff = pval_cutoff, readable = TRUE, keyType = "SYMBOL", pAdjustMethod = "BH"),
-  error = function(e) NULL))
+  message("ORA GO (up)...")
+  output[["ORA.UP.GO"]] <- safe_df(tryCatch(
+    enrichGO(sig_up, OrgDb = org_db, ont = "ALL", pvalueCutoff = pval_cutoff,
+             qvalueCutoff = pval_cutoff, readable = TRUE, keyType = "SYMBOL", pAdjustMethod = "BH"),
+    error = function(e) NULL))
 
-message("ORA GO (down)...")
-output[["ORA.DOWN.GO"]] <- safe_df(tryCatch(
-  enrichGO(sig_down, OrgDb = org_db, ont = "ALL", pvalueCutoff = pval_cutoff,
-           qvalueCutoff = pval_cutoff, readable = TRUE, keyType = "SYMBOL", pAdjustMethod = "BH"),
-  error = function(e) NULL))
+  message("ORA GO (down)...")
+  output[["ORA.DOWN.GO"]] <- safe_df(tryCatch(
+    enrichGO(sig_down, OrgDb = org_db, ont = "ALL", pvalueCutoff = pval_cutoff,
+             qvalueCutoff = pval_cutoff, readable = TRUE, keyType = "SYMBOL", pAdjustMethod = "BH"),
+    error = function(e) NULL))
+}
 
 # ── ORA — KEGG ───────────────────────────────────────────────────────────────
-message("ORA KEGG (full)...")
-output[["ORA.FULL.KEGG"]] <- safe_df(tryCatch(
-  enrichKEGG(sig_all_ez, organism = species, pvalueCutoff = pval_cutoff, qvalueCutoff = pval_cutoff),
-  error = function(e) NULL), convert_entrez = TRUE)
+if (run_ora && "KEGG" %in% run_dbs) {
+  message("ORA KEGG (full)...")
+  output[["ORA.FULL.KEGG"]] <- safe_df(tryCatch(
+    enrichKEGG(sig_all_ez, organism = species, pvalueCutoff = pval_cutoff, qvalueCutoff = pval_cutoff),
+    error = function(e) NULL), convert_entrez = TRUE)
 
-message("ORA KEGG (up)...")
-output[["ORA.UP.KEGG"]] <- safe_df(tryCatch(
-  enrichKEGG(sig_up_ez, organism = species, pvalueCutoff = pval_cutoff, qvalueCutoff = pval_cutoff),
-  error = function(e) NULL), convert_entrez = TRUE)
+  message("ORA KEGG (up)...")
+  output[["ORA.UP.KEGG"]] <- safe_df(tryCatch(
+    enrichKEGG(sig_up_ez, organism = species, pvalueCutoff = pval_cutoff, qvalueCutoff = pval_cutoff),
+    error = function(e) NULL), convert_entrez = TRUE)
 
-message("ORA KEGG (down)...")
-output[["ORA.DOWN.KEGG"]] <- safe_df(tryCatch(
-  enrichKEGG(sig_down_ez, organism = species, pvalueCutoff = pval_cutoff, qvalueCutoff = pval_cutoff),
-  error = function(e) NULL), convert_entrez = TRUE)
+  message("ORA KEGG (down)...")
+  output[["ORA.DOWN.KEGG"]] <- safe_df(tryCatch(
+    enrichKEGG(sig_down_ez, organism = species, pvalueCutoff = pval_cutoff, qvalueCutoff = pval_cutoff),
+    error = function(e) NULL), convert_entrez = TRUE)
+}
 
 # ── ORA — WikiPathways ───────────────────────────────────────────────────────
-message("ORA WikiPathways (full)...")
-output[["ORA.FULL.WP"]] <- safe_df(tryCatch(
-  clusterProfiler::enrichWP(sig_all_ez, organism = species_full[[species]],
-                             pvalueCutoff = pval_cutoff, pAdjustMethod = "fdr"),
-  error = function(e) NULL), convert_entrez = TRUE)
+if (run_ora && "WP" %in% run_dbs) {
+  message("ORA WikiPathways (full)...")
+  output[["ORA.FULL.WP"]] <- safe_df(tryCatch(
+    clusterProfiler::enrichWP(sig_all_ez, organism = species_full[[species]],
+                               pvalueCutoff = pval_cutoff, pAdjustMethod = "fdr"),
+    error = function(e) NULL), convert_entrez = TRUE)
 
-message("ORA WikiPathways (up)...")
-output[["ORA.UP.WP"]] <- safe_df(tryCatch(
-  clusterProfiler::enrichWP(sig_up_ez, organism = species_full[[species]],
-                             pvalueCutoff = pval_cutoff, pAdjustMethod = "fdr"),
-  error = function(e) NULL), convert_entrez = TRUE)
+  message("ORA WikiPathways (up)...")
+  output[["ORA.UP.WP"]] <- safe_df(tryCatch(
+    clusterProfiler::enrichWP(sig_up_ez, organism = species_full[[species]],
+                               pvalueCutoff = pval_cutoff, pAdjustMethod = "fdr"),
+    error = function(e) NULL), convert_entrez = TRUE)
 
-message("ORA WikiPathways (down)...")
-output[["ORA.DOWN.WP"]] <- safe_df(tryCatch(
-  clusterProfiler::enrichWP(sig_down_ez, organism = species_full[[species]],
-                             pvalueCutoff = pval_cutoff, pAdjustMethod = "fdr"),
-  error = function(e) NULL), convert_entrez = TRUE)
+  message("ORA WikiPathways (down)...")
+  output[["ORA.DOWN.WP"]] <- safe_df(tryCatch(
+    clusterProfiler::enrichWP(sig_down_ez, organism = species_full[[species]],
+                               pvalueCutoff = pval_cutoff, pAdjustMethod = "fdr"),
+    error = function(e) NULL), convert_entrez = TRUE)
+}
 
 # ── GSEA — GO ────────────────────────────────────────────────────────────────
-message("GSEA GO...")
-output[["GSEA.GO"]] <- safe_df(tryCatch(
-  gseGO(gene_list_sym, OrgDb = org_db, ont = "ALL", keyType = "SYMBOL",
-        minGSSize = 10, maxGSSize = 500, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
-  error = function(e) NULL))
+if (run_gsea && "GO" %in% run_dbs) {
+  message("GSEA GO...")
+  output[["GSEA.GO"]] <- safe_df(tryCatch(
+    gseGO(gene_list_sym, OrgDb = org_db, ont = "ALL", keyType = "SYMBOL",
+          minGSSize = 10, maxGSSize = 500, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
+    error = function(e) NULL))
+}
 
 # ── GSEA — KEGG ──────────────────────────────────────────────────────────────
-message("GSEA KEGG...")
-output[["GSEA.KEGG"]] <- safe_df(tryCatch(
-  gseKEGG(gene_list_ez, organism = species, minGSSize = 10, maxGSSize = 500,
-          pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
-  error = function(e) NULL), convert_entrez = TRUE)
+if (run_gsea && "KEGG" %in% run_dbs) {
+  message("GSEA KEGG...")
+  output[["GSEA.KEGG"]] <- safe_df(tryCatch(
+    gseKEGG(gene_list_ez, organism = species, minGSSize = 10, maxGSSize = 500,
+            pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
+    error = function(e) NULL), convert_entrez = TRUE)
+}
 
 # ── GSEA — WikiPathways ──────────────────────────────────────────────────────
-message("GSEA WikiPathways...")
-output[["GSEA.WP"]] <- safe_df(tryCatch(
-  gseWP(gene_list_ez, organism = species_full[[species]], minGSSize = 10,
-        maxGSSize = 500, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
-  error = function(e) NULL), convert_entrez = TRUE)
-
-# ── MSigDB — all available collections for the detected species ───────────────
-message(sprintf("msigdbr version: %s", as.character(packageVersion("msigdbr"))))
-
-# Discover which categories are bundled for this species in the installed msigdbr
-probe_cats_for_species <- function(sp_full, candidates) {
-  Filter(function(cat) {
-    tryCatch(nrow(msigdbr(species = sp_full, category = cat)) > 0, error = function(e) FALSE)
-  }, candidates)
+if (run_gsea && "WP" %in% run_dbs) {
+  message("GSEA WikiPathways...")
+  output[["GSEA.WP"]] <- safe_df(tryCatch(
+    gseWP(gene_list_ez, organism = species_full[[species]], minGSSize = 10,
+          maxGSSize = 500, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
+    error = function(e) NULL), convert_entrez = TRUE)
 }
 
-available_cats <- tryCatch({
-  cols <- msigdbr_collections()
-  # msigdbr >= 2023: collections() returns all; filter to what this species has
-  sp_cats <- unique(cols$gs_cat[cols$organism == species_full[[species]]])
-  if (length(sp_cats) == 0) sp_cats <- unique(cols$gs_cat)  # fallback: try all
-  sp_cats
-}, error = function(e) {
-  message("msigdbr_collections() not available — probing categories directly")
-  character(0)
-})
+# ── MSigDB — selected (default: all available) collections for the species ────
+run_msigdb <- "MSIGDB" %in% run_dbs && (run_ora || run_gsea)
+if (run_msigdb) {
+  message(sprintf("msigdbr version: %s", as.character(packageVersion("msigdbr"))))
 
-# For human: H + C1–C8 (C9 doesn't exist in MSigDB)
-# For mouse: try M1–M8 first (msigdbr >= 2023); fall back to H + C1–C8 with ortholog mapping
-if (species == "hsa") {
-  desired_cats <- c("H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8")
-} else {
-  desired_cats <- c("H", "M1", "M2", "M3", "M5", "M8",   # mouse-specific (common subset)
-                    "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8")  # ortholog-mapped fallback
-}
+  # Discover which categories are bundled for this species in the installed msigdbr
+  probe_cats_for_species <- function(sp_full, candidates) {
+    Filter(function(cat) {
+      tryCatch(nrow(msigdbr(species = sp_full, category = cat)) > 0, error = function(e) FALSE)
+    }, candidates)
+  }
 
-# If available_cats is populated, intersect; otherwise probe directly
-if (length(available_cats) > 0) {
-  msigdb_cats <- intersect(desired_cats, available_cats)
-} else {
-  msigdb_cats <- probe_cats_for_species(species_full[[species]], desired_cats)
-}
-message(sprintf("msigdbr available for %s: %s",
-                species_full[[species]], paste(sort(available_cats), collapse = ", ")))
-message(sprintf("Will run MSigDB for: %s", paste(msigdb_cats, collapse = ", ")))
-
-for (cat in msigdb_cats) {
-  message(sprintf("MSigDB %s: fetching gene sets...", cat))
-  m_t2g <- tryCatch({
-    raw <- msigdbr(species = species_full[[species]], category = cat)
-    message(sprintf("  %s: %d rows, %d gene sets", cat, nrow(raw), length(unique(raw$gs_name))))
-    raw %>% dplyr::select(gs_name, entrez_gene) %>%
-      dplyr::mutate(entrez_gene = as.character(entrez_gene)) %>%
-      dplyr::filter(!is.na(entrez_gene) & entrez_gene != "0" & entrez_gene != "NA")
+  available_cats <- tryCatch({
+    cols <- msigdbr_collections()
+    # msigdbr >= 2023: collections() returns all; filter to what this species has
+    sp_cats <- unique(cols$gs_cat[cols$organism == species_full[[species]]])
+    if (length(sp_cats) == 0) sp_cats <- unique(cols$gs_cat)  # fallback: try all
+    sp_cats
   }, error = function(e) {
-    message(sprintf("  %s: FAILED — %s", cat, conditionMessage(e)))
-    NULL
+    message("msigdbr_collections() not available — probing categories directly")
+    character(0)
   })
 
-  if (!is.null(m_t2g) && nrow(m_t2g) > 0) {
-    message(sprintf("  %s: running ORA...", cat))
-    output[[paste0("ORA.FULL.MSigDB.", cat)]] <- safe_df(tryCatch(
-      enricher(sig_all_ez, TERM2GENE = m_t2g, pvalueCutoff = pval_cutoff),
-      error = function(e) { message(sprintf("  ORA %s error: %s", cat, e$message)); NULL }),
-      convert_entrez = TRUE)
-
-    message(sprintf("  %s: running GSEA...", cat))
-    output[[paste0("GSEA.MSigDB.", cat)]] <- safe_df(tryCatch(
-      GSEA(gene_list_ez, TERM2GENE = m_t2g, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
-      error = function(e) { message(sprintf("  GSEA %s error: %s", cat, e$message)); NULL }),
-      convert_entrez = TRUE)
-    message(sprintf("  %s: done.", cat))
+  # For human: H + C1–C8 (C9 doesn't exist in MSigDB)
+  # For mouse: try M1–M8 first (msigdbr >= 2023); fall back to H + C1–C8 with ortholog mapping
+  if (species == "hsa") {
+    desired_cats <- c("H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8")
   } else {
-    message(sprintf("  %s: no gene sets returned — skipping.", cat))
+    desired_cats <- c("H", "M1", "M2", "M3", "M5", "M8",   # mouse-specific (common subset)
+                      "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8")  # ortholog-mapped fallback
   }
-}
+  if (!is.null(msigdb_sel)) desired_cats <- intersect(desired_cats, msigdb_sel)
+
+  # If available_cats is populated, intersect; otherwise probe directly
+  if (length(available_cats) > 0) {
+    msigdb_cats <- intersect(desired_cats, available_cats)
+  } else {
+    msigdb_cats <- probe_cats_for_species(species_full[[species]], desired_cats)
+  }
+  message(sprintf("msigdbr available for %s: %s",
+                  species_full[[species]], paste(sort(available_cats), collapse = ", ")))
+  message(sprintf("Will run MSigDB for: %s", paste(msigdb_cats, collapse = ", ")))
+
+  for (cat in msigdb_cats) {
+    message(sprintf("MSigDB %s: fetching gene sets...", cat))
+    m_t2g <- tryCatch({
+      raw <- msigdbr(species = species_full[[species]], category = cat)
+      message(sprintf("  %s: %d rows, %d gene sets", cat, nrow(raw), length(unique(raw$gs_name))))
+      raw %>% dplyr::select(gs_name, entrez_gene) %>%
+        dplyr::mutate(entrez_gene = as.character(entrez_gene)) %>%
+        dplyr::filter(!is.na(entrez_gene) & entrez_gene != "0" & entrez_gene != "NA")
+    }, error = function(e) {
+      message(sprintf("  %s: FAILED — %s", cat, conditionMessage(e)))
+      NULL
+    })
+
+    if (!is.null(m_t2g) && nrow(m_t2g) > 0) {
+      if (run_ora) {
+        message(sprintf("  %s: running ORA...", cat))
+        output[[paste0("ORA.FULL.MSigDB.", cat)]] <- safe_df(tryCatch(
+          enricher(sig_all_ez, TERM2GENE = m_t2g, pvalueCutoff = pval_cutoff),
+          error = function(e) { message(sprintf("  ORA %s error: %s", cat, e$message)); NULL }),
+          convert_entrez = TRUE)
+      }
+
+      if (run_gsea) {
+        message(sprintf("  %s: running GSEA...", cat))
+        output[[paste0("GSEA.MSigDB.", cat)]] <- safe_df(tryCatch(
+          GSEA(gene_list_ez, TERM2GENE = m_t2g, pvalueCutoff = pval_cutoff, verbose = FALSE, seed = TRUE),
+          error = function(e) { message(sprintf("  GSEA %s error: %s", cat, e$message)); NULL }),
+          convert_entrez = TRUE)
+      }
+      message(sprintf("  %s: done.", cat))
+    } else {
+      message(sprintf("  %s: no gene sets returned — skipping.", cat))
+    }
+  }
+}  # run_msigdb
 
 # ── Save and output JSON ──────────────────────────────────────────────────────
 saveRDS(output, file.path(outputdir, "pathway_results.rds"))

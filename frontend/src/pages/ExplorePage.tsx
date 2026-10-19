@@ -221,6 +221,11 @@ function Sidebar({
   const meta_cols = Object.keys(meta.metadata)
   const clusterVals = useMemo(() =>
     [...new Set(meta.metadata[colorBy] ?? [])].sort(), [meta, colorBy])
+  const clusterCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const v of (meta.metadata[colorBy] ?? []) as any[]) counts[String(v)] = (counts[String(v)] ?? 0) + 1
+    return counts
+  }, [meta, colorBy])
 
   return (
     <div className="w-64 shrink-0 bg-white border-r border-slate-200 overflow-y-auto p-4 space-y-4 text-sm">
@@ -295,6 +300,9 @@ function Sidebar({
                 onChange={e => setSelectedClusters((prev: string[]) =>
                   e.target.checked ? [...prev, v] : prev.filter(x => x !== v))} />
               <span className="truncate">{v}</span>
+              <span className="ml-auto pl-1 text-xs text-slate-400 tabular-nums shrink-0">
+                {(clusterCounts[String(v)] ?? 0).toLocaleString()}
+              </span>
             </label>
           ))}
         </div>
@@ -1398,6 +1406,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
   const [search,    setSearch]    = useState('')
   const [sortCol,   setSortCol]   = useState<string>('avg_log2FC')
   const [sortDir,   setSortDir]   = useState<1 | -1>(-1)
+  const volcanoRefs = useRef<Record<string, any>>({})
   const [cacheList, setCacheList] = useState<DgeCacheEntry[]>(
     (meta.dge_cache ?? []).filter((e: DgeCacheEntry) => e.mode === mode))
   const [showCache, setShowCache] = useState(true)
@@ -1831,8 +1840,19 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
 
         return (
           <div className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col items-center">
-            <h4 className="text-sm font-medium text-slate-700 mb-2">Volcano Plot</h4>
+            <div className="w-full flex items-center justify-between mb-2">
+              <h4 className="text-sm font-medium text-slate-700">Volcano Plot</h4>
+              <button onClick={async () => {
+                try { await downloadPlotGridPdf(['volcano'], 1, 950, 750, volcanoRefs, 'DGE') }
+                catch (e: any) { toast.error(`PDF export failed: ${e?.message ?? e}`) }
+              }}
+                className="text-xs border border-slate-300 rounded px-2 py-1 text-slate-600 hover:bg-slate-50">
+                ↓ Download PDF (vector)
+              </button>
+            </div>
             <Plot
+              onInitialized={(_: any, gd: any) => { volcanoRefs.current['volcano'] = gd }}
+              onUpdate={(_: any, gd: any) => { volcanoRefs.current['volcano'] = gd }}
               data={[{
                 type: 'scatter', mode: 'markers',
                 x, y,
@@ -2986,6 +3006,21 @@ function PathwayMethodExplanation({ methodKey, rows }: {
   )
 }
 
+const PATHWAY_METHODS = [
+  { key: 'ORA',  label: 'ORA (over-representation)' },
+  { key: 'GSEA', label: 'GSEA (ranked)' },
+] as const
+const PATHWAY_DATABASES = [
+  { key: 'GO',     label: 'GO' },
+  { key: 'KEGG',   label: 'KEGG' },
+  { key: 'WP',     label: 'WikiPathways' },
+  { key: 'MSIGDB', label: 'MSigDB' },
+] as const
+const MSIGDB_COLLECTIONS: Record<'hsa' | 'mmu', string[]> = {
+  hsa: ['H', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8'],
+  mmu: ['H', 'M1', 'M2', 'M3', 'M5', 'M8', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8'],
+}
+
 function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
   meta: SeuratMeta; sessionId: string
   dgeVersion?: number  // bumped whenever a DGE run/load/delete happens elsewhere, to trigger a refetch
@@ -3007,6 +3042,11 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
 
   const [species,     setSpecies]     = useState<'auto' | 'hsa' | 'mmu'>('auto')
   const [pvalCutoff,  setPvalCutoff]  = useState(0.05)
+  // Running every method × database × MSigDB collection takes a long time, so the user
+  // picks what to run. Defaults are the commonly used, fast-ish subset.
+  const [pwMethods,   setPwMethods]   = useState<('ORA' | 'GSEA')[]>(['ORA', 'GSEA'])
+  const [databases,   setDatabases]   = useState<('GO' | 'KEGG' | 'WP' | 'MSIGDB')[]>(['GO', 'KEGG'])
+  const [msigdbCols,  setMsigdbCols]  = useState<string[]>(['H'])
   const [csvInput,    setCsvInput]    = useState<'session' | 'paste' | 'upload'>('session')
   const [selectedSaved, setSelectedSaved] = useState(0)
   const [pastedGenes, setPastedGenes] = useState('')
@@ -3059,6 +3099,12 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
   }, [taskId, status])
 
   async function handleRun() {
+    // The backend treats an empty list as "run all", so never send one
+    if (pwMethods.length === 0) { toast.error('Select at least one method (ORA / GSEA)'); return }
+    if (databases.length === 0) { toast.error('Select at least one database'); return }
+    if (databases.includes('MSIGDB') && msigdbCols.length === 0) {
+      toast.error('Select at least one MSigDB collection, or untick MSigDB'); return
+    }
     let csvData = ''
 
     if (csvInput === 'session') {
@@ -3111,7 +3157,10 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
     setError(null)
     setLog('')
     try {
-      const { task_id } = await startPathwayAnalysis({ session_id: sessionId, csv_data: csvData, species, pval_cutoff: pvalCutoff })
+      const { task_id } = await startPathwayAnalysis({
+        session_id: sessionId, csv_data: csvData, species, pval_cutoff: pvalCutoff,
+        methods: pwMethods, databases, msigdb_collections: msigdbCols,
+      })
       setTaskId(task_id)
       toast.success('Pathway analysis started — this may take 5–15 minutes')
     } catch (e: any) {
@@ -3128,7 +3177,8 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
       <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
         <h3 className="font-semibold text-slate-700">Pathway Analysis</h3>
         <p className="text-xs text-slate-400">
-          Runs ORA and GSEA against GO, KEGG, WikiPathways, and MSigDB (H + C1–C9 for human, H + M1–M8 for mouse) using clusterProfiler.
+          Runs the selected ORA / GSEA analyses against GO, KEGG, WikiPathways, and/or MSigDB using clusterProfiler.
+          Each extra method, database, or MSigDB collection adds run time — select only what you need.
           Provide a ranked gene list from a DGE result (columns: gene, pval / p_val, logFC / avg_log2FC, padj / p_val_adj).
         </p>
 
@@ -3149,6 +3199,30 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
               className="border border-slate-300 rounded px-3 py-1.5 text-sm w-24" />
           </div>
           <div>
+            <label className="text-xs text-slate-500 block mb-1">Method</label>
+            <div className="flex gap-3 py-1.5">
+              {PATHWAY_METHODS.map(m => (
+                <label key={m.key} className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer">
+                  <input type="checkbox" className="accent-indigo-600" checked={pwMethods.includes(m.key)}
+                    onChange={e => setPwMethods(prev => e.target.checked ? [...prev, m.key] : prev.filter(x => x !== m.key))} />
+                  {m.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Databases</label>
+            <div className="flex gap-3 py-1.5">
+              {PATHWAY_DATABASES.map(d => (
+                <label key={d.key} className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer">
+                  <input type="checkbox" className="accent-indigo-600" checked={databases.includes(d.key)}
+                    onChange={e => setDatabases(prev => e.target.checked ? [...prev, d.key] : prev.filter(x => x !== d.key))} />
+                  {d.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="text-xs text-slate-500 block mb-1">Gene list source</label>
             <div className="flex rounded overflow-hidden border border-slate-300 text-sm">
               {(['session', 'paste', 'upload'] as const).map(m => (
@@ -3160,6 +3234,35 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
             </div>
           </div>
         </div>
+
+        {databases.includes('MSIGDB') && (() => {
+          // Auto-detect resolves server-side, so offer the union (human + mouse-only) — the
+          // R script ignores collections that don't exist for the detected species.
+          const cols = species === 'auto'
+            ? [...new Set([...MSIGDB_COLLECTIONS.hsa, ...MSIGDB_COLLECTIONS.mmu])]
+            : MSIGDB_COLLECTIONS[species]
+          return (
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">
+                MSigDB collections
+                <button onClick={() => setMsigdbCols(cols)}
+                  className="ml-2 text-indigo-500 hover:underline">all</button>
+                <button onClick={() => setMsigdbCols([])}
+                  className="ml-1 text-indigo-500 hover:underline">none</button>
+              </label>
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {cols.map(c => (
+                  <label key={c} className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer"
+                    title={MSIGDB_CAT_LABEL[c] ?? c}>
+                    <input type="checkbox" className="accent-indigo-600" checked={msigdbCols.includes(c)}
+                      onChange={e => setMsigdbCols(prev => e.target.checked ? [...prev, c] : prev.filter(x => x !== c))} />
+                    {MSIGDB_CAT_LABEL[c] ?? c}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
 
         {csvInput === 'session' ? (
           <div className="space-y-2">
