@@ -12,6 +12,7 @@ export interface SeuratMeta {
   genes:       string[]
   dge_cache?:  DgeCacheEntry[]
   subcluster_cache?: SubclusterCacheEntry[]
+  pathway_cache?: PathwayCacheEntry[]
   preset_project?: string   // set only when the session was loaded from a preset
   preset_name?:    string
 }
@@ -146,9 +147,48 @@ export async function startPathwayAnalysis(params: {
   methods?: ('ORA' | 'GSEA')[]                         // omitted/empty = all
   databases?: ('GO' | 'KEGG' | 'WP' | 'MSIGDB')[]      // omitted/empty = all
   msigdb_collections?: string[]                        // omitted/empty = all for the species
-}): Promise<{ task_id: string }> {
-  const { data } = await api.post('/explore/pathway', params)
+  gene_source?: string                                 // display-only label for the cached result
+}): Promise<PathwayStartResponse> {
+  const { data } = await api.post<PathwayStartResponse>('/explore/pathway', params)
   return data
+}
+
+export type PathwayResults = Record<string, Record<string, unknown>[]>
+
+export interface PathwayCacheEntry {
+  cache_key:          string
+  created_at:         string
+  source_label:       string
+  gene_source:        string | null
+  species:            'auto' | 'hsa' | 'mmu'
+  pval_cutoff:        number
+  methods:            ('ORA' | 'GSEA')[]
+  databases:          ('GO' | 'KEGG' | 'WP' | 'MSIGDB')[]
+  msigdb_collections: string[]
+  n_genes:            number
+  n_tables:           number   // result tables with at least one enriched term
+}
+
+// Same cached-or-task shape as startDGE: identical gene list + settings return the
+// stored result straight away instead of re-running clusterProfiler.
+export type PathwayStartResponse =
+  | { cached: true; cache_key: string; created_at: string; results: PathwayResults }
+  | { cached: false; task_id: string }
+
+export async function listPathwayCache(session_id: string): Promise<PathwayCacheEntry[]> {
+  const { data } = await api.get<PathwayCacheEntry[]>('/explore/pathway-cache', { params: { session_id } })
+  return data
+}
+
+export async function loadPathwayCacheEntry(
+  session_id: string, cache_key: string
+): Promise<PathwayCacheEntry & { result: PathwayResults }> {
+  const { data } = await api.get(`/explore/pathway-cache/${cache_key}`, { params: { session_id } })
+  return data
+}
+
+export async function deletePathwayCacheEntry(session_id: string, cache_key: string): Promise<void> {
+  await api.delete(`/explore/pathway-cache/${cache_key}`, { params: { session_id } })
 }
 
 export async function startCellChat(params: {
@@ -221,7 +261,8 @@ export async function deleteExprCache(
 export async function getPathwayResult(task_id: string): Promise<{
   status: 'running' | 'done' | 'error'
   log?: string
-  results?: Record<string, Record<string, unknown>[]>
+  results?: PathwayResults
+  cache_key?: string
   error?: string
 }> {
   const { data } = await api.get(`/explore/pathway/${task_id}`)

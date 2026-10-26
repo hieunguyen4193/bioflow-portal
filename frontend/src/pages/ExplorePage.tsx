@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ReclusterResult, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -3277,6 +3277,45 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
   const logRef = useRef<HTMLPreElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  const [cacheList,      setCacheList]      = useState<PathwayCacheEntry[]>(meta.pathway_cache ?? [])
+  const [showCache,      setShowCache]      = useState(true)
+  const [loadedCacheKey, setLoadedCacheKey] = useState<string | null>(null)
+  const [deletingKey,    setDeletingKey]    = useState<string | null>(null)
+  const [cacheNote,      setCacheNote]      = useState('')
+
+  async function refreshCacheList() {
+    try { setCacheList(await listPathwayCache(sessionId)) } catch { /* non-fatal */ }
+  }
+
+  function showResults(r: Record<string, Record<string, unknown>[]>) {
+    setResults(r)
+    setActiveMethod(Object.keys(r)[0] ?? '')
+    setStatus('done')
+  }
+
+  async function loadCachedEntry(entry: PathwayCacheEntry) {
+    setError(null); setLog(''); setCacheNote('Loading cached result…')
+    try {
+      const cached = await loadPathwayCacheEntry(sessionId, entry.cache_key)
+      setSpecies(cached.species); setPvalCutoff(cached.pval_cutoff)
+      setPwMethods(cached.methods); setDatabases(cached.databases); setMsigdbCols(cached.msigdb_collections)
+      showResults(cached.result)
+      setLoadedCacheKey(cached.cache_key)
+      setCacheNote(`Loaded from cache (run at ${new Date(cached.created_at).toLocaleString()}).`)
+    } catch (e: any) { setCacheNote(''); toast.error(e.response?.data?.detail || 'Failed to load cached result') }
+  }
+
+  async function deleteCachedEntry(entry: PathwayCacheEntry) {
+    if (!window.confirm(`Delete cached pathway result "${entry.gene_source || entry.source_label}"? This can't be undone — re-running the same settings will recompute it.`)) return
+    setDeletingKey(entry.cache_key)
+    try {
+      await deletePathwayCacheEntry(sessionId, entry.cache_key)
+      setCacheList(prev => prev.filter(e => e.cache_key !== entry.cache_key))
+      if (loadedCacheKey === entry.cache_key) setLoadedCacheKey(null)
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Failed to delete cached result') }
+    finally { setDeletingKey(null) }
+  }
+
   // Auto-switch to session tab and select newest result when DGE — Conditions results arrive
   const prevSavedLen = useRef(0)
   useEffect(() => {
@@ -3298,10 +3337,9 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
         }
         if (res.status === 'done') {
           clearInterval(pollRef.current!)
-          setStatus('done')
-          const r = res.results ?? {}
-          setResults(r)
-          setActiveMethod(Object.keys(r)[0] ?? '')
+          showResults(res.results ?? {})
+          setLoadedCacheKey(res.cache_key ?? null)
+          refreshCacheList()
         } else if (res.status === 'error') {
           clearInterval(pollRef.current!)
           setStatus('error')
@@ -3323,6 +3361,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
       toast.error('Select at least one MSigDB collection, or untick MSigDB'); return
     }
     let csvData = ''
+    let geneSource = ''
 
     if (csvInput === 'session') {
       const entry = conditionsDgeResults[selectedSaved]
@@ -3345,6 +3384,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
         absLogFC: Math.abs(Number(r.avg_log2FC ?? r.logFC ?? 0)),
       }))
       csvData = JSON.stringify(rows)
+      geneSource = `DGE ${entry.group_by}: ${entry.ident1 || '(all)'} vs ${entry.ident2 || 'others'} (${entry.test_use})`
 
     } else if (csvInput === 'paste') {
       if (!pastedGenes.trim()) { toast.error('Paste a gene list first'); return }
@@ -3356,6 +3396,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
         return Object.fromEntries(header.map((h, i) => [h.trim(), parts[i]?.trim() ?? '']))
       })
       csvData = JSON.stringify(rows)
+      geneSource = `Pasted list (${rows.length} genes)`
 
     } else {
       if (!uploadedFile) { toast.error('Upload a CSV file first'); return }
@@ -3367,19 +3408,28 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
         return Object.fromEntries(header.map((h, i) => [h, parts[i]?.trim().replace(/^"|"$/g, '') ?? '']))
       })
       csvData = JSON.stringify(rows)
+      geneSource = `Uploaded ${uploadedFile.name}`
     }
 
     setStatus('running')
     setResults(null)
     setError(null)
     setLog('')
+    setCacheNote('')
+    setLoadedCacheKey(null)
     try {
-      const { task_id } = await startPathwayAnalysis({
+      const res = await startPathwayAnalysis({
         session_id: sessionId, csv_data: csvData, species, pval_cutoff: pvalCutoff,
-        methods: pwMethods, databases, msigdb_collections: msigdbCols,
+        methods: pwMethods, databases, msigdb_collections: msigdbCols, gene_source: geneSource,
       })
-      setTaskId(task_id)
-      toast.success('Pathway analysis started — this may take 5–15 minutes')
+      if (res.cached) {
+        showResults(res.results)
+        setLoadedCacheKey(res.cache_key)
+        setCacheNote(`Loaded from cache — same gene list and settings were run at ${new Date(res.created_at).toLocaleString()}.`)
+      } else {
+        setTaskId(res.task_id)
+        toast.success('Pathway analysis started — this may take 5–15 minutes')
+      }
     } catch (e: any) {
       setStatus('error')
       setError(e.response?.data?.detail ?? String(e))
@@ -3538,7 +3588,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
           )}
         </div>
 
-        {(status === 'running' || status === 'done' || (status === 'error' && log)) && (
+        {(status === 'running' || (status === 'done' && log) || (status === 'error' && log)) && (
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-slate-600">R log</span>
@@ -3556,6 +3606,53 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
         )}
         {status === 'error' && error && !log && (
           <p className="text-xs text-red-600 bg-red-50 rounded p-2 font-mono whitespace-pre-wrap">{error}</p>
+        )}
+        {cacheNote && status !== 'running' && <p className="text-xs text-slate-500 font-mono">{cacheNote}</p>}
+      </div>
+
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <button onClick={() => setShowCache(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50">
+          <span>Cached results{cacheList.length > 0 ? ` (${cacheList.length})` : ''}</span>
+          <span className="text-slate-400">{showCache ? '▲' : '▼'}</span>
+        </button>
+        {showCache && (
+          <div className="border-t border-slate-200">
+            {cacheList.length === 0 ? (
+              <p className="px-4 py-3 text-xs text-slate-400 italic">
+                No cached pathway runs yet for this data — run the analysis above to create one.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {cacheList.map(entry => (
+                  <div key={entry.cache_key}
+                    className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2.5 text-xs ${loadedCacheKey === entry.cache_key ? 'bg-indigo-50' : ''}`}>
+                    <span className="font-medium text-slate-700 truncate max-w-[320px]" title={entry.gene_source ?? entry.source_label}>
+                      {entry.gene_source || entry.source_label}
+                    </span>
+                    <span className="text-slate-500">{entry.n_genes.toLocaleString()} genes</span>
+                    <span className="text-slate-500">{entry.methods.join(' + ')}</span>
+                    <span className="text-slate-500">
+                      {entry.databases.map(d => d === 'MSIGDB' && entry.msigdb_collections.length
+                        ? `MSigDB (${entry.msigdb_collections.join(', ')})` : d).join(', ')}
+                    </span>
+                    <span className="text-slate-500">p ≤ {entry.pval_cutoff}</span>
+                    <span className="text-slate-400">({entry.species})</span>
+                    <span className="text-slate-500">{entry.n_tables} result table{entry.n_tables === 1 ? '' : 's'}</span>
+                    <span className="text-slate-400">{new Date(entry.created_at).toLocaleString()}</span>
+                    <button onClick={() => loadCachedEntry(entry)} disabled={status === 'running' || deletingKey === entry.cache_key}
+                      className="ml-auto text-indigo-600 hover:underline font-medium disabled:opacity-50">
+                      {loadedCacheKey === entry.cache_key ? 'Loaded' : 'Load'}
+                    </button>
+                    <button onClick={() => deleteCachedEntry(entry)} disabled={status === 'running' || deletingKey === entry.cache_key}
+                      className="text-slate-400 hover:text-red-500 font-medium disabled:opacity-50">
+                      {deletingKey === entry.cache_key ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -4025,6 +4122,7 @@ function GuideTab() {
         { label: 'Methods run', text: 'GO BP/MF/CC (up/down/all), KEGG, WikiPathways, and all available MSigDB collections — H + C1–C8 for human; for mouse, H + a mouse-specific subset (M1, M2, M3, M5, M8) plus C1–C8 via ortholog mapping — both ORA and GSEA per collection.' },
         { label: 'Live log', text: 'A terminal panel shows R output in real time so you can track progress.' },
         { label: 'Results', text: 'Each method appears as a collapsible section with a paginated table of enriched terms.' },
+        { label: 'Cached results', text: 'Every combination of gene list, species, p-value cutoff, methods, databases, and MSigDB collections is cached against this Seurat object. The "Cached results" panel lists past runs (with where the gene list came from) — click Load to view the results instantly without re-running, or Delete to free up storage. Re-running with identical inputs also returns the cached result instead of recomputing.' },
       ],
     },
     {

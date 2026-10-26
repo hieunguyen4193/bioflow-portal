@@ -186,6 +186,62 @@ def _delete_subcluster_cache_entry(rds_path: str, cache_key: str) -> bool:
     return True
 
 
+# ── Pathway result cache ──────────────────────────────────────────────────────
+# Same filesystem-JSON pattern as the DGE cache. Keyed by the gene list's contents
+# plus every parameter the R script uses (species, p-value cutoff — clusterProfiler's
+# pvalueCutoff, so it changes the result — methods, databases, MSigDB collections).
+def _pathway_cache_dir_for(rds_path: str) -> str:
+    key = hashlib.md5(rds_path.encode()).hexdigest()[:16]
+    d = os.path.join(EXPLORE_DIR, f".pathway_cache_{key}")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _pathway_cache_key(rows: list[dict], species: str, pval_cutoff: float, methods: list[str],
+                       databases: list[str], msigdb_collections: list[str]) -> str:
+    payload = {
+        "genes": hashlib.md5(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
+        "species": species, "pval_cutoff": pval_cutoff, "methods": sorted(methods),
+        "databases": sorted(databases), "msigdb_collections": sorted(msigdb_collections),
+    }
+    return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
+
+
+def _read_pathway_cache_entry(rds_path: str, cache_key: str) -> Optional[dict]:
+    path = os.path.join(_pathway_cache_dir_for(rds_path), f"{cache_key}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return None
+
+
+def _write_pathway_cache_entry(rds_path: str, cache_key: str, entry: dict) -> None:
+    path = os.path.join(_pathway_cache_dir_for(rds_path), f"{cache_key}.json")
+    Path(path).write_text(json.dumps(entry))
+
+
+def _list_pathway_cache(rds_path: str) -> list[dict]:
+    entries = []
+    for p in sorted(Path(_pathway_cache_dir_for(rds_path)).glob("*.json")):
+        try:
+            entry = json.loads(p.read_text())
+        except Exception:
+            continue
+        entries.append({k: v for k, v in entry.items() if k != "result"})
+    entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+    return entries
+
+
+def _delete_pathway_cache_entry(rds_path: str, cache_key: str) -> bool:
+    path = os.path.join(_pathway_cache_dir_for(rds_path), f"{cache_key}.json")
+    if not os.path.exists(path):
+        return False
+    os.remove(path)
+    return True
+
+
 # ── Presets ─────────────────────────────────────────────────────────────────
 @router.get("/presets")
 async def list_presets(
@@ -241,6 +297,7 @@ async def load_preset(
     data["preset_name"] = Path(req.filename).stem
     data["dge_cache"] = _list_dge_cache(rds_path)
     data["subcluster_cache"] = _list_subcluster_cache(rds_path)
+    data["pathway_cache"] = _list_pathway_cache(rds_path)
     assays = data.get("assays") or []
     default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
     if default_assay:
@@ -402,6 +459,7 @@ async def upload_rds(file: UploadFile = File(...), current_user: User = Depends(
     data["session_id"] = session_id
     data["dge_cache"] = _list_dge_cache(rds_path)
     data["subcluster_cache"] = _list_subcluster_cache(rds_path)
+    data["pathway_cache"] = _list_pathway_cache(rds_path)
     assays = data.get("assays") or []
     default_assay = next((a for a in assays if a == "RNA"), assays[0] if assays else None)
     if default_assay:
@@ -1075,6 +1133,9 @@ class PathwayRequest(BaseModel):
     methods:     list[str] = []   # subset of PATHWAY_METHODS
     databases:   list[str] = []   # subset of PATHWAY_DATABASES
     msigdb_collections: list[str] = []   # e.g. ["H", "C2"]; empty = all for the species
+    # Display-only description of where the gene list came from (e.g. which DGE
+    # comparison) — stored with the cached result, not part of the cache key.
+    gene_source: str = ""
 
 
 PATHWAY_METHODS   = {"ORA", "GSEA"}
@@ -1083,8 +1144,29 @@ MSIGDB_COLLECTIONS = {"H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8",
                       "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"}
 
 
+def _write_pathway_result(req: "PathwayRequest", rds_path: str, cache_key: str, n_genes: int,
+                          methods: list[str], databases: list[str], msigdb_collections: list[str],
+                          result: dict) -> None:
+    entry = {
+        "cache_key":          cache_key,
+        "created_at":         datetime.now(timezone.utc).isoformat(),
+        "source_label":       _session_labels.get(req.session_id, os.path.basename(rds_path)),
+        "gene_source":        req.gene_source or None,
+        "species":            req.species,
+        "pval_cutoff":        req.pval_cutoff,
+        "methods":            methods,
+        "databases":          databases,
+        "msigdb_collections": msigdb_collections,
+        "n_genes":            n_genes,
+        "n_tables":           sum(1 for v in result.values() if v),
+        "result":             result,
+    }
+    _write_pathway_cache_entry(rds_path, cache_key, entry)
+
+
 def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: float, species: str,
-                            methods: str, databases: str, msigdb_collections: str):
+                            methods: str, databases: str, msigdb_collections: str,
+                            on_done=None):
     container_script = os.path.join(R_SCRIPTS, "run_pathway_analysis.R")
     log_path = os.path.join(outdir, "run.log")
     cmd = [
@@ -1119,6 +1201,8 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
             _pathway_tasks[task_id].update({"status": "error", "error": full_output[-4000:]})
             return
         parsed = _parse_json_line(json_line)
+        if on_done:
+            on_done(parsed)
         _pathway_tasks[task_id].update({"status": "done", "results": parsed})
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -1131,7 +1215,8 @@ def _run_pathway_background(task_id: str, csv_path: str, outdir: str, pval: floa
 
 @router.post("/pathway")
 async def start_pathway_analysis(req: PathwayRequest, current_user: User = Depends(get_current_user)):
-    if req.session_id not in _sessions:
+    rds_path = _sessions.get(req.session_id)
+    if not rds_path:
         raise HTTPException(404, "Session not found")
     _require_session_owner(req.session_id, current_user)
     if req.species not in ("hsa", "mmu", "auto"):
@@ -1146,30 +1231,42 @@ async def start_pathway_analysis(req: PathwayRequest, current_user: User = Depen
     if not set(msigdb_collections) <= MSIGDB_COLLECTIONS:
         raise HTTPException(400, f"msigdb_collections must be a subset of {sorted(MSIGDB_COLLECTIONS)}")
 
+    rows = json.loads(req.csv_data)
+    if not rows:
+        raise HTTPException(400, "Gene list is empty")
+
+    cache_key = _pathway_cache_key(rows, req.species, req.pval_cutoff, methods, databases, msigdb_collections)
+    cached_entry = _read_pathway_cache_entry(rds_path, cache_key)
+    if cached_entry:
+        return JSONResponse({"cached": True, "cache_key": cache_key,
+                             "created_at": cached_entry.get("created_at"),
+                             "results": cached_entry["result"]})
+
     task_id = str(uuid.uuid4())
     task_dir = os.path.join(EXPLORE_DIR, f"pathway_{task_id}")
     os.makedirs(task_dir, exist_ok=True)
 
     # Write the DGE CSV passed from the frontend
     csv_path = os.path.join(task_dir, "input_genes.csv")
-    rows = json.loads(req.csv_data)
-    if not rows:
-        raise HTTPException(400, "Gene list is empty")
     import csv as _csv
     with open(csv_path, "w", newline="") as f:
         writer = _csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
 
-    _pathway_tasks[task_id] = {"status": "running", "owner": current_user.id}
+    def on_done(result: dict) -> None:
+        _write_pathway_result(req, rds_path, cache_key, len(rows), methods, databases,
+                              msigdb_collections, result)
+
+    _pathway_tasks[task_id] = {"status": "running", "owner": current_user.id, "cache_key": cache_key}
     thread = threading.Thread(
         target=_run_pathway_background,
         args=(task_id, csv_path, task_dir, req.pval_cutoff, req.species,
-              ",".join(methods), ",".join(databases), ",".join(msigdb_collections)),
+              ",".join(methods), ",".join(databases), ",".join(msigdb_collections), on_done),
         daemon=True,
     )
     thread.start()
-    return JSONResponse({"task_id": task_id})
+    return JSONResponse({"cached": False, "task_id": task_id})
 
 
 @router.get("/pathway/{task_id}")
@@ -1181,6 +1278,7 @@ async def get_pathway_result(task_id: str, current_user: User = Depends(get_curr
     response = {"status": task.get("status"), "log": task.get("log", "")}
     if task.get("status") == "done":
         response["results"] = task.get("results")
+        response["cache_key"] = task.get("cache_key")
     if task.get("status") == "error":
         response["error"] = task.get("error")
     return JSONResponse(response)
@@ -1199,6 +1297,38 @@ async def cancel_pathway(task_id: str, current_user: User = Depends(get_current_
         proc.kill()
     task.update({"status": "cancelled"})
     return JSONResponse({"status": "cancelled"})
+
+
+@router.get("/pathway-cache")
+async def list_pathway_cache(session_id: str, current_user: User = Depends(get_current_user)):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
+    return JSONResponse(_list_pathway_cache(rds_path))
+
+
+@router.get("/pathway-cache/{cache_key}")
+async def get_pathway_cache_entry(cache_key: str, session_id: str, current_user: User = Depends(get_current_user)):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
+    entry = _read_pathway_cache_entry(rds_path, cache_key)
+    if not entry:
+        raise HTTPException(404, "Cache entry not found")
+    return JSONResponse(entry)
+
+
+@router.delete("/pathway-cache/{cache_key}")
+async def delete_pathway_cache_entry(cache_key: str, session_id: str, current_user: User = Depends(get_current_user)):
+    rds_path = _sessions.get(session_id)
+    if not rds_path:
+        raise HTTPException(404, "Session not found")
+    _require_session_owner(session_id, current_user)
+    if not _delete_pathway_cache_entry(rds_path, cache_key):
+        raise HTTPException(404, "Cache entry not found")
+    return JSONResponse({"status": "deleted"})
 
 
 # ── Gene Module Score ─────────────────────────────────────────────────────────
