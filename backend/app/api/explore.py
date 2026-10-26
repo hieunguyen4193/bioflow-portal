@@ -38,9 +38,11 @@ router = APIRouter(prefix="/explore", tags=["explore"])
 _sessions: dict[str, str] = {}        # session_id → rds_path
 _session_labels: dict[str, str] = {}  # session_id → human-readable source label (project/file)
 _session_owners: dict[str, str] = {}  # session_id → user_id that created it
+_session_presets: dict[str, str] = {} # session_id → preset project (only for preset-loaded sessions)
 _pathway_tasks: dict[str, dict] = {}
 _dge_tasks: dict[str, dict] = {}
 _subcluster_tasks: dict[str, dict] = {}
+_recluster_tasks: dict[str, dict] = {}
 _module_score_tasks: dict[str, dict] = {}
 
 
@@ -231,6 +233,7 @@ async def load_preset(
     _sessions[session_id] = rds_path
     _session_labels[session_id] = f"{req.project}/{req.filename}"
     _session_owners[session_id] = current_user.id
+    _session_presets[session_id] = req.project
     cache_base = _cache_base_for(rds_path)
     data = _run_r("extract_seurat.R", [rds_path], timeout=180)
     data["session_id"] = session_id
@@ -904,6 +907,162 @@ async def save_subcluster_as_preset(
     os.makedirs(dest_dir, exist_ok=True)
     shutil.copyfile(entry["rds_path"], dest_path)
     return JSONResponse({"project": project, "filename": f"{name}.rds"})
+
+
+# ── Re-clustering at a new resolution ─────────────────────────────────────────
+# Re-runs FindClusters on the object's existing SNN graph and returns the new
+# assignments as one extra metadata column. By default that column only lives in
+# the browser session; with save_to_original the R script also writes it back
+# into the preset .rds itself (temp file + atomic rename), so it shows up for
+# everyone who loads the preset and server-side analyses (DGE, sub-clustering)
+# can group by it.
+_RECLUSTER_COLUMN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+# One in-flight save per preset file — two concurrent saves would each read the
+# original, add their own column, and the second rename would drop the first's.
+_recluster_save_locks: dict[str, threading.Lock] = {}
+
+
+class ReclusterRequest(BaseModel):
+    session_id:         str
+    cluster_resolution: float = 0.8
+    algorithm:          int = 1     # FindClusters: 1 Louvain (Seurat default), 2 Louvain multilevel, 3 SLM
+    reduction:          str = ""    # "" = reuse the stored SNN graph; else rebuild it from this reduction
+    num_pcs:            int = 30    # dims for a rebuilt graph (same default as the Seurat pipeline)
+    column_name:        str
+    save_to_original:   bool = False
+
+
+def _run_recluster_background(task_id: str, req: "ReclusterRequest", rds_path: str,
+                              tmp_rds_path: str, save_lock: Optional[threading.Lock]) -> None:
+    container_name = f"recluster-{task_id}"
+    container_script = os.path.join(R_SCRIPTS, "run_recluster.R")
+    cmd = [
+        "docker", "run", "--rm", "--name", container_name,
+        "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
+        "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
+        DOCKER_IMAGE,
+        "Rscript", "--vanilla", container_script,
+        rds_path, str(req.cluster_resolution), str(req.algorithm), req.reduction, str(req.num_pcs),
+        req.column_name, "true" if req.save_to_original else "false", tmp_rds_path,
+    ]
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        _recluster_tasks[task_id]["proc"] = proc
+        stdout_chunks = []
+        for line in proc.stdout:
+            if _recluster_tasks[task_id].get("status") == "cancelled":
+                proc.kill()
+                return
+            stdout_chunks.append(line)
+            _recluster_tasks[task_id]["log"] = "".join(stdout_chunks)
+        proc.wait(timeout=1800)
+
+        if _recluster_tasks[task_id].get("status") == "cancelled":
+            return
+        full_output = "".join(stdout_chunks)
+        # Scan from the end, "{" only — see the FindClusters progress-bar note in
+        # _run_subcluster_background.
+        json_line = next((l for l in reversed(full_output.splitlines()) if l.strip().startswith("{")), None)
+        if proc.returncode != 0 or not json_line:
+            _recluster_tasks[task_id].update({"status": "error", "error": full_output[-3000:]})
+            return
+        result = _parse_json_line(json_line)
+        _recluster_tasks[task_id].update({"status": "done", "result": result})
+    except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
+        _recluster_tasks[task_id].update({"status": "error", "error": "Re-clustering run timed out (30 min)"})
+    except Exception as exc:
+        _recluster_tasks[task_id].update({"status": "error", "error": str(exc)})
+    finally:
+        _recluster_tasks[task_id].pop("proc", None)
+        # A cancelled/failed save can leave a partially written temp file behind;
+        # the original preset is untouched since the rename never happened.
+        if os.path.exists(tmp_rds_path):
+            try:
+                os.remove(tmp_rds_path)
+            except OSError:
+                pass
+        if save_lock:
+            save_lock.release()
+
+
+@router.post("/recluster/start")
+async def start_recluster(
+    req: ReclusterRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rds_path = _sessions.get(req.session_id)
+    if not rds_path or not os.path.exists(rds_path):
+        raise HTTPException(404, "Session not found — please re-upload your file")
+    _require_session_owner(req.session_id, current_user)
+
+    req.column_name = req.column_name.strip()
+    if not _RECLUSTER_COLUMN_RE.match(req.column_name):
+        raise HTTPException(400, "Column name must start with a letter and contain only letters, digits, '.', '_' and '-'")
+    if req.cluster_resolution <= 0:
+        raise HTTPException(400, "Cluster resolution must be greater than 0")
+    if req.algorithm not in (1, 2, 3):
+        raise HTTPException(400, "algorithm must be 1 (Louvain), 2 (Louvain multilevel) or 3 (SLM)")
+    if req.num_pcs < 2:
+        raise HTTPException(400, "num_pcs must be at least 2")
+    req.reduction = req.reduction.strip()
+    if req.reduction and not _PRESET_NAME_RE.match(req.reduction):
+        raise HTTPException(400, "Invalid reduction name")
+
+    save_lock = None
+    if req.save_to_original:
+        project = _session_presets.get(req.session_id)
+        if not project:
+            raise HTTPException(400, "Only objects loaded from a preset can be saved back to the original")
+        if not await user_has_project_access(db, current_user, project):
+            raise HTTPException(403, "You do not have access to this project")
+        save_lock = _recluster_save_locks.setdefault(rds_path, threading.Lock())
+        if not save_lock.acquire(blocking=False):
+            raise HTTPException(409, "Another re-clustering run is already saving into this preset — try again when it finishes")
+
+    task_id      = str(uuid.uuid4())
+    tmp_rds_path = f"{rds_path}.recluster-{task_id}.tmp"
+    _recluster_tasks[task_id] = {"status": "running", "owner": current_user.id}
+    thread = threading.Thread(
+        target=_run_recluster_background,
+        args=(task_id, req, rds_path, tmp_rds_path, save_lock),
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse({"task_id": task_id})
+
+
+@router.get("/recluster/{task_id}")
+async def get_recluster_status(task_id: str, current_user: User = Depends(get_current_user)):
+    task = _recluster_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
+    response = {"status": task.get("status"), "log": task.get("log", "")}
+    if task.get("status") == "done":
+        response.update(task.get("result", {}))
+    if task.get("status") == "error":
+        response["error"] = task.get("error")
+    return JSONResponse(response)
+
+
+@router.post("/recluster/{task_id}/cancel")
+async def cancel_recluster(task_id: str, current_user: User = Depends(get_current_user)):
+    task = _recluster_tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    _require_task_owner(task, current_user)
+    if task.get("status") != "running":
+        raise HTTPException(400, "Task is not running")
+    task.update({"status": "cancelled"})
+    proc = task.get("proc")
+    if proc:
+        proc.kill()
+    subprocess.run(["docker", "kill", f"recluster-{task_id}"], capture_output=True)
+    return JSONResponse({"status": "cancelled"})
 
 
 # ── Pathway Analysis ─────────────────────────────────────────────────────────

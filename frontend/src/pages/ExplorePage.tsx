@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ReclusterResult, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -2438,6 +2438,223 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
 }
 const SubclusterTabMemo = memo(SubclusterTab)
 
+// ── Re-cluster ─────────────────────────────────────────────────────────────────
+// Re-runs FindClusters at a new resolution on the whole object (reusing its SNN
+// graph) and adds the result as a new metadata column — merged into the session's
+// metadata via onColumnAdded so every other tab can colour/group by it, and
+// optionally written back into the preset .rds itself.
+function ReclusterTab({ meta, sessionId, reduction, onColumnAdded }: any) {
+  const [resolution, setResolution] = useState(0.8)
+  const [algorithm,  setAlgorithm]  = useState(1)
+  const [graphFrom,  setGraphFrom]  = useState('')   // '' = reuse the stored SNN graph
+  const [numPcs,     setNumPcs]     = useState(30)
+  // 2-D embeddings can't sensibly feed FindNeighbors — offer only PCA/integration reductions.
+  const graphReductions = useMemo(() => (
+    Object.keys(meta.reductions).filter(r => !/umap|tsne/i.test(r))
+  ), [meta])
+  // Follows the resolution until the user types their own name.
+  const [customColumn, setCustomColumn] = useState<string | null>(null)
+  const columnName = customColumn ?? `recluster_res.${resolution}`
+  const [saveToOriginal, setSaveToOriginal] = useState(false)
+  const isPreset = !!meta.preset_project
+
+  const [result,     setResult]     = useState<ReclusterResult | null>(null)
+  const [loading,    setLoading]    = useState(false)
+  const [log,        setLog]        = useState('')
+  const [taskId,     setTaskId]     = useState<string | null>(null)
+  const [runLog,     setRunLog]     = useState('')
+  const [runFailed,  setRunFailed]  = useState(false)
+  const [elapsedSec, setElapsedSec] = useState(0)
+  const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const runLogRef  = useRef<HTMLPreElement>(null)
+
+  const queryClient = useQueryClient()
+
+  const columnExists = columnName in meta.metadata
+  const previewVals = useMemo(() => (
+    result && meta.metadata[result.column] ? [...new Set(meta.metadata[result.column] as string[])] : []
+  ), [result, meta])
+
+  useEffect(() => {
+    if (!taskId) { if (elapsedRef.current) clearInterval(elapsedRef.current); return }
+    setElapsedSec(0)
+    elapsedRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000)
+    return () => { if (elapsedRef.current) clearInterval(elapsedRef.current) }
+  }, [taskId])
+
+  useEffect(() => {
+    if (!taskId) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await getReclusterStatus(taskId)
+        if (res.status === 'running') {
+          if (res.log) {
+            setRunLog(res.log)
+            setTimeout(() => { if (runLogRef.current) runLogRef.current.scrollTop = runLogRef.current.scrollHeight }, 50)
+          }
+        } else if (res.status === 'done') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          // Re-align to the session's cell order rather than trusting R's order.
+          const byCell = new Map(res.cells.map((c, i) => [c, res.values[i]]))
+          onColumnAdded?.(res.column, (meta.cells as string[]).map(c => byCell.get(c) ?? 'NA'))
+          setResult(res)
+          setCustomColumn(null)
+          setLog(`Done — ${res.n_clusters} clusters at resolution ${res.resolution}`
+            + (res.built_graph ? ` on a graph rebuilt from "${res.reduction}"` : ` on the stored graph "${res.graph}"`)
+            + (res.saved ? `. Saved into ${meta.preset_project}/${meta.preset_name}.rds.` : '. Added to this session only.'))
+          if (res.saved) queryClient.invalidateQueries({ queryKey: ['explore-presets'] })
+          setLoading(false)
+        } else if (res.status === 'error') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          if (res.log) setRunLog(res.log)
+          setRunFailed(true)
+          setLog('Error: ' + res.error)
+          setLoading(false)
+        } else if (res.status === 'cancelled') {
+          clearInterval(pollRef.current!)
+          setTaskId(null)
+          setLoading(false)
+        }
+      } catch { /* transient poll failure — try again next tick */ }
+    }, 3000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [taskId])
+
+  async function runAnalysis() {
+    if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(columnName)) {
+      toast.error("Column name must start with a letter and contain only letters, digits, '.', '_' and '-'"); return
+    }
+    if (columnExists) { toast.error(`Column "${columnName}" already exists — pick a different name`); return }
+    if (saveToOriginal && !window.confirm(
+      `This will add the column "${columnName}" to the preset file ${meta.preset_project}/${meta.preset_name}.rds ` +
+      `on the server, so everyone who loads this preset will see it. Continue?`)) return
+    setLoading(true); setLog('Running…'); setRunLog(''); setRunFailed(false); setResult(null); setTaskId(null)
+    try {
+      const res = await startRecluster({
+        session_id: sessionId, cluster_resolution: resolution, algorithm, reduction: graphFrom, num_pcs: numPcs,
+        column_name: columnName, save_to_original: saveToOriginal,
+      })
+      setTaskId(res.task_id)
+    } catch (e: any) { setLog('Error: ' + (e.response?.data?.detail || e.message)); setLoading(false) }
+  }
+
+  async function cancelAnalysis() {
+    if (!taskId) return
+    try { await cancelRecluster(taskId) } catch { /* best-effort */ }
+    if (pollRef.current) clearInterval(pollRef.current)
+    setTaskId(null)
+    setLoading(false)
+    setLog(prev => prev + '\n[Cancelled by user]')
+  }
+
+  return (
+    <div className="p-4 space-y-4">
+      <div className="bg-slate-50 rounded-lg p-4 space-y-3">
+        <p className="text-sm text-slate-600">
+          Re-runs clustering on <b>all {meta.cells.length.toLocaleString()}</b> cells at a new resolution and adds the
+          result as a new metadata column. Existing columns (including <code>seurat_clusters</code>) are left unchanged.
+          On integrated objects from the Seurat pipeline the stored graph is the Harmony one — pick
+          "Rebuild from integrated.cca / integrated.rpca" to cluster on those instead.
+        </p>
+        <div className="flex flex-wrap gap-4 items-end">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Cluster resolution</label>
+            <input type="number" value={resolution} step={0.1} min={0.01} onChange={e => setResolution(Number(e.target.value))}
+              className="border border-slate-300 rounded px-2 py-1 text-sm w-20" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Algorithm</label>
+            <select value={algorithm} onChange={e => setAlgorithm(Number(e.target.value))}
+              className="border border-slate-300 rounded px-2 py-1 text-sm">
+              <option value={1}>Louvain (Seurat default)</option>
+              <option value={2}>Louvain (multilevel refinement)</option>
+              <option value={3}>SLM</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Neighbour graph</label>
+            <select value={graphFrom} onChange={e => setGraphFrom(e.target.value)}
+              className="border border-slate-300 rounded px-2 py-1 text-sm">
+              <option value="">Reuse stored graph</option>
+              {graphReductions.map((r: string) => <option key={r} value={r}>Rebuild from {r}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1"
+              title="Dims used when the graph is rebuilt (also used if the object has no stored graph)">
+              PCs in graph
+            </label>
+            <input type="number" value={numPcs} min={2} onChange={e => setNumPcs(Number(e.target.value))}
+              disabled={!graphFrom} className="border border-slate-300 rounded px-2 py-1 text-sm w-20 disabled:opacity-50" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">New column name</label>
+            <input value={columnName} onChange={e => setCustomColumn(e.target.value)}
+              className={`border rounded px-2 py-1 text-sm w-48 font-mono ${columnExists ? 'border-red-400' : 'border-slate-300'}`} />
+          </div>
+          <label className={`flex items-center gap-1.5 text-sm ${isPreset ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
+            title={isPreset ? '' : 'Only available for objects loaded from a preset'}>
+            <input type="checkbox" checked={saveToOriginal && isPreset} disabled={!isPreset}
+              onChange={e => setSaveToOriginal(e.target.checked)} />
+            <span>Add to original preset object</span>
+          </label>
+          <button onClick={runAnalysis} disabled={loading || !columnName}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
+            {taskId ? `Running… ${elapsedSec}s` : loading ? 'Running…' : 'Run re-clustering'}
+          </button>
+          {taskId && (
+            <button onClick={cancelAnalysis}
+              className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded hover:bg-red-50 transition-colors">
+              Cancel
+            </button>
+          )}
+        </div>
+        {columnExists && !taskId && (
+          <p className="text-xs text-red-600">A metadata column named "{columnName}" already exists.</p>
+        )}
+        <p className="text-xs text-slate-400">
+          {saveToOriginal && isPreset
+            ? <>The new column is written into <code>{meta.preset_project}/{meta.preset_name}.rds</code> on the server, so it persists and can be used by DGE, sub-clustering, and other server-side analyses.</>
+            : <>The new column is added to this session only — you can colour by it in every plot tab, but server-side analyses (DGE, sub-clustering, CellChat) read the file on disk and won't see it. Tick "Add to original preset object" to keep it.</>}
+        </p>
+        {(taskId || (runFailed && runLog)) && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-600">R log</span>
+              {taskId
+                ? <span className="text-xs text-amber-600 animate-pulse">● running… {elapsedSec}s elapsed</span>
+                : <span className="text-xs text-red-600">✗ error</span>}
+            </div>
+            <pre ref={runLogRef}
+              className="text-xs font-mono bg-slate-900 text-slate-100 rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap leading-relaxed">
+              {runLog || '(waiting for output…)'}
+            </pre>
+          </div>
+        )}
+        {!taskId && log && <p className="text-xs text-slate-500 font-mono whitespace-pre-wrap">{log}</p>}
+      </div>
+
+      {result && meta.metadata[result.column] && (
+        <div className="bg-white rounded-lg border border-slate-200 p-4 space-y-3">
+          <div className="flex flex-wrap gap-1.5 text-xs">
+            {Object.entries(result.cluster_sizes).map(([cl, n]) => (
+              <span key={cl} className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full font-mono">
+                {cl}: {n.toLocaleString()}
+              </span>
+            ))}
+          </div>
+          <UMAPTabMemo meta={meta} reduction={reduction} colorBy={result.column}
+            splitBy="" selectedClusters={previewVals} />
+        </div>
+      )}
+    </div>
+  )
+}
+const ReclusterTabMemo = memo(ReclusterTab)
+
 // ── Metadata summary ───────────────────────────────────────────────────────────
 interface ColumnStats {
   name: string
@@ -3787,6 +4004,17 @@ function GuideTab() {
       ],
     },
     {
+      tab: 'Re-cluster',
+      icon: '🎯',
+      summary: 'Re-run clustering on the whole object at a new resolution and add the result as a new metadata column.',
+      details: [
+        { label: 'Neighbour graph', text: '"Reuse stored graph" (default) runs only FindClusters on the object\'s existing SNN graph, so the new clusters are directly comparable to the original ones. On integrated objects from the Seurat pipeline that stored graph is the Harmony one (the pipeline builds one graph per integration method and keeps the last). "Rebuild from <reduction>" first runs FindNeighbors on the chosen reduction with "PCs in graph" dims (30 by default, same as the pipeline) — use it to cluster on CCA or RPCA. A rebuilt graph is used for this run only and is not saved into the object.' },
+        { label: 'Resolution / algorithm', text: 'Higher resolution gives more, smaller clusters. Louvain is Seurat\'s default and what the pipeline uses; Louvain with multilevel refinement and SLM are also available. The random seed is Seurat\'s default (0), so the same resolution and graph reproduce the pipeline\'s clusters.' },
+        { label: 'New column', text: 'Results go into a new metadata column (default "recluster_res.<resolution>"); seurat_clusters and all other columns are left untouched. When the run finishes, the sidebar\'s "Colour by" switches to the new column.' },
+        { label: 'Add to original preset object', text: 'Unticked (default): the column exists only in this browser session — usable in every plot tab, but not by server-side analyses such as DGE or sub-clustering. Ticked: the column is also written into the preset .rds on the server, so it persists for everyone who loads that preset and can be used by every analysis. Only available for objects loaded from a preset.' },
+      ],
+    },
+    {
       tab: 'Pathway',
       icon: '🛣️',
       summary: 'Run Over-Representation Analysis (ORA) and Gene Set Enrichment Analysis (GSEA) across GO, KEGG, WikiPathways, and MSigDB.',
@@ -3870,7 +4098,7 @@ function GuideTab() {
 const GuideTabMemo = memo(GuideTab)
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'Module Score', 'DGE — Clusters', 'DGE — Conditions', 'Sub-cluster', 'Pathway', 'CellChat', 'Metadata', 'Guide']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'Module Score', 'DGE — Clusters', 'DGE — Conditions', 'Sub-cluster', 'Re-cluster', 'Pathway', 'CellChat', 'Metadata', 'Guide']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -3935,6 +4163,14 @@ export default function ExplorePage() {
 
   function handleDgeChanged() {
     setDgeVersion(v => v + 1)
+  }
+
+  // A re-clustering run adds one metadata column (values aligned to meta.cells) —
+  // switch "Colour by" to it so the result is visible straight away.
+  function handleColumnAdded(column: string, values: string[]) {
+    setMeta(m => m && { ...m, metadata: { ...m.metadata, [column]: values } })
+    setColorBy(column)
+    setSelectedClusters([...new Set(values)])
   }
 
   function handleLoad(m: SeuratMeta) {
@@ -4064,6 +4300,12 @@ export default function ExplorePage() {
           {visitedTabs.has('Sub-cluster') && (
             <div className={tab === 'Sub-cluster' ? '' : 'hidden'}>
               <SubclusterTabMemo meta={meta} sessionId={meta.session_id} colorBy={colorBy} selectedClusters={selectedClusters} />
+            </div>
+          )}
+          {visitedTabs.has('Re-cluster') && (
+            <div className={tab === 'Re-cluster' ? '' : 'hidden'}>
+              <ReclusterTabMemo meta={meta} sessionId={meta.session_id} reduction={reduction}
+                onColumnAdded={handleColumnAdded} />
             </div>
           )}
           {visitedTabs.has('Pathway') && (

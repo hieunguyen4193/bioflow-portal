@@ -371,6 +371,50 @@ export async function downloadSubclusterRds(session_id: string, cache_key: strin
   URL.revokeObjectURL(url)
 }
 
+// ── Re-clustering ─────────────────────────────────────────────────────────────
+// Re-runs FindClusters at a new resolution on the object's existing SNN graph and
+// returns the assignments as one new metadata column (values aligned to cells).
+// With save_to_original the column is also written back into the preset .rds.
+export interface ReclusterResult {
+  column:        string
+  graph:         string
+  built_graph:   boolean   // true when the graph was rebuilt (reduction picked, or the object had none)
+  reduction:     string | null   // the reduction a rebuilt graph came from
+  resolution:    number
+  n_clusters:    number
+  cluster_sizes: Record<string, number>
+  values:        string[]
+  cells:         string[]
+  saved:         boolean
+}
+
+export async function startRecluster(params: {
+  session_id: string
+  cluster_resolution: number
+  algorithm: number
+  reduction: string   // '' = reuse the stored SNN graph
+  num_pcs: number
+  column_name: string
+  save_to_original: boolean
+}): Promise<{ task_id: string }> {
+  const { data } = await api.post('/explore/recluster/start', params)
+  return data
+}
+
+export async function getReclusterStatus(task_id: string): Promise<
+  { status: 'running'; log?: string }
+  | (ReclusterResult & { status: 'done'; log?: string })
+  | { status: 'error'; error: string; log?: string }
+  | { status: 'cancelled'; log?: string }
+> {
+  const { data } = await api.get(`/explore/recluster/${task_id}`)
+  return data
+}
+
+export async function cancelRecluster(task_id: string): Promise<void> {
+  await api.post(`/explore/recluster/${task_id}/cancel`)
+}
+
 // Same reasoning as downloadSubclusterRds: fetch the rendered HTML report through
 // the authenticated client rather than a bare <a href> to the backend path.
 export async function fetchCellChatReport(task_id: string): Promise<Blob> {
