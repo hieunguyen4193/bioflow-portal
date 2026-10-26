@@ -2561,7 +2561,10 @@ function ReclusterTab({ meta, sessionId, reduction, onColumnAdded }: any) {
         </p>
         <div className="flex flex-wrap gap-4 items-end">
           <div>
-            <label className="text-xs text-slate-500 block mb-1">Cluster resolution</label>
+            <label className="text-xs text-slate-500 block mb-1"
+              title="Granularity of the clustering: higher = more, smaller clusters; lower = fewer, broader clusters. Typical range 0.2–1.5; Seurat's default is 0.8.">
+              Cluster resolution
+            </label>
             <input type="number" value={resolution} step={0.1} min={0.01} onChange={e => setResolution(Number(e.target.value))}
               className="border border-slate-300 rounded px-2 py-1 text-sm w-20" />
           </div>
@@ -2615,6 +2618,56 @@ function ReclusterTab({ meta, sessionId, reduction, onColumnAdded }: any) {
         {columnExists && !taskId && (
           <p className="text-xs text-red-600">A metadata column named "{columnName}" already exists.</p>
         )}
+        <details className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-3 py-2">
+          <summary className="cursor-pointer font-medium text-slate-700">How to choose a cluster resolution</summary>
+          <div className="mt-2 space-y-2 leading-relaxed">
+            <p>
+              The resolution controls how finely the Louvain/SLM algorithm splits the neighbour graph.{' '}
+              <b>Higher values give more, smaller clusters</b>; lower values give fewer, broader ones. It changes
+              the granularity only. The graph, and so which cells are similar to each other, stays the same.
+            </p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li><b>0.1–0.4</b>: coarse, major lineages (e.g. T cells vs B cells vs myeloid).</li>
+              <li><b>0.5–1.0</b>: the usual range for cell types. Seurat's default is 0.8; the Seurat pipeline here defaults to 0.5.</li>
+              <li><b>1.0–2.0+</b>: fine subtypes and cell states. Useful for rare populations, but more clusters
+                differ only by technical effects (cell cycle, mitochondrial or ribosomal content, doublets).</li>
+            </ul>
+            <p>
+              There is no "correct" value. The right resolution is the one whose clusters are biologically
+              interpretable. Bigger datasets usually need a higher resolution to resolve the same populations, and
+              the cluster count doesn't change linearly: a small step can leave it unchanged or split several
+              clusters at once.
+            </p>
+            <p><b>A practical approach:</b></p>
+            <ol className="list-decimal pl-5 space-y-1">
+              <li>Start near the object's current resolution and move in steps of 0.1–0.3. Each run goes into its own column, so you can compare them side by side.</li>
+              <li>Check the clusters against known markers in <b>Feature Plot</b> / <b>Violin Plot</b>, or run <b>DGE — Clusters</b> on the new column (requires "Add to original preset object").</li>
+              <li><b>Under-clustered</b>: one cluster expresses markers of two distinct cell types → increase the resolution.</li>
+              <li><b>Over-clustered</b>: neighbouring clusters share the same markers with no clear distinguishing genes, or tiny clusters appear → decrease it.</li>
+            </ol>
+            <p className="text-slate-500">
+              To focus on one population in more detail, <b>Sub-cluster</b> is usually better than raising the
+              resolution of the whole object. It recomputes variable genes and PCA for just those cells.
+            </p>
+            {(() => {
+              // Clusterings already in the object (Seurat's "<graph>_res.X", the pipeline's
+              // "<reduction>.cluster.X", previous re-cluster runs), as a reference point.
+              const existing = Object.keys(meta.metadata)
+                .filter(c => c === 'seurat_clusters' || /(_res\.|\.cluster\.)\d/.test(c))
+                .map(c => [c, new Set(meta.metadata[c] as string[]).size] as const)
+              return existing.length > 0 && (
+                <div>
+                  <p className="font-medium text-slate-700">Clusterings already in this object:</p>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {existing.map(([c, n]) => (
+                      <span key={c} className="px-2 py-0.5 bg-slate-100 rounded-full font-mono">{c}: {n} clusters</span>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        </details>
         <p className="text-xs text-slate-400">
           {saveToOriginal && isPreset
             ? <>The new column is written into <code>{meta.preset_project}/{meta.preset_name}.rds</code> on the server, so it persists and can be used by DGE, sub-clustering, and other server-side analyses.</>
@@ -4106,7 +4159,8 @@ function GuideTab() {
       summary: 'Re-run clustering on the whole object at a new resolution and add the result as a new metadata column.',
       details: [
         { label: 'Neighbour graph', text: '"Reuse stored graph" (default) runs only FindClusters on the object\'s existing SNN graph, so the new clusters are directly comparable to the original ones. On integrated objects from the Seurat pipeline that stored graph is the Harmony one (the pipeline builds one graph per integration method and keeps the last). "Rebuild from <reduction>" first runs FindNeighbors on the chosen reduction with "PCs in graph" dims (30 by default, same as the pipeline) — use it to cluster on CCA or RPCA. A rebuilt graph is used for this run only and is not saved into the object.' },
-        { label: 'Resolution / algorithm', text: 'Higher resolution gives more, smaller clusters. Louvain is Seurat\'s default and what the pipeline uses; Louvain with multilevel refinement and SLM are also available. The random seed is Seurat\'s default (0), so the same resolution and graph reproduce the pipeline\'s clusters.' },
+        { label: 'Choosing a resolution', text: 'Resolution sets how finely the graph is split: higher gives more, smaller clusters, lower gives fewer, broader ones. Roughly, 0.1–0.4 separates major lineages, 0.5–1.0 is the usual range for cell types (Seurat default 0.8, pipeline default 0.5), and 1.0–2.0+ resolves subtypes and cell states but risks splitting on technical effects. Larger datasets generally need higher values. There is no single correct value: start near the current resolution, step by 0.1–0.3 (each run is its own column), and check the clusters against known markers. Increase the resolution if one cluster mixes markers of distinct cell types; decrease it if neighbouring clusters have no distinguishing markers. The tab\'s "How to choose a cluster resolution" box lists the clusterings already in the object for reference.' },
+        { label: 'Resolution / algorithm', text: 'Louvain is Seurat\'s default and what the pipeline uses; Louvain with multilevel refinement and SLM are also available. The random seed is Seurat\'s default (0), so the same resolution and graph reproduce the pipeline\'s clusters.' },
         { label: 'New column', text: 'Results go into a new metadata column (default "recluster_res.<resolution>"); seurat_clusters and all other columns are left untouched. When the run finishes, the sidebar\'s "Colour by" switches to the new column.' },
         { label: 'Add to original preset object', text: 'Unticked (default): the column exists only in this browser session — usable in every plot tab, but not by server-side analyses such as DGE or sub-clustering. Ticked: the column is also written into the preset .rds on the server, so it persists for everyone who loads that preset and can be used by every analysis. Only available for objects loaded from a preset.' },
       ],
