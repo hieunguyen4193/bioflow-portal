@@ -68,13 +68,15 @@ export interface DgeCacheEntry {
   cache_key:      string
   created_at:     string
   source_label:   string
-  mode:           'clusters' | 'conditions'
+  mode:           'clusters' | 'conditions' | 'conditions2'
   group_by:       string
   assay:          string
   slot:           string
   test_use:       string
   ident1:         string | null
   ident2:         string | null
+  subset_by?:     string | null
+  subset_values?: string | null
   rm_tcr:         boolean
   rm_bcr:         boolean
   min_pct:        number
@@ -92,13 +94,15 @@ export type DGEStartResponse = (DGEResult & { cached: true }) | { cached: false;
 
 export async function startDGE(params: {
   session_id: string
-  mode: 'clusters' | 'conditions'
+  mode: 'clusters' | 'conditions' | 'conditions2'
   group_by: string
   assay: string
   slot: string
   test_use: string
   ident1?: string
   ident2?: string
+  subset_by?: string
+  subset_values?: string
   rm_tcr: boolean
   rm_bcr: boolean
   min_pct: number

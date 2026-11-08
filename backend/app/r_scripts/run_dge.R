@@ -4,7 +4,7 @@ suppressPackageStartupMessages(library(dplyr))
 
 args         <- commandArgs(trailingOnly = TRUE)
 rds_path     <- args[1]
-mode         <- args[2]   # "clusters" | "conditions"
+mode         <- args[2]   # "clusters" | "conditions" | "conditions2"
 group_by     <- args[3]   # metadata column
 assay_name   <- args[4]
 slot_name    <- args[5]
@@ -14,11 +14,29 @@ ident2       <- if (length(args) >= 8 && nchar(args[8]) > 0) trimws(strsplit(arg
 rm_tcr       <- if (length(args) >= 9) args[9] == "true" else TRUE
 rm_bcr       <- if (length(args) >= 10) args[10] == "true" else TRUE
 min_pct      <- if (length(args) >= 11 && nchar(args[11]) > 0) as.numeric(args[11]) else 0.01
+# "conditions2" mode: restrict to cells whose subset_by value is in subset_values
+# (e.g. one cluster) before comparing ident1 vs ident2 on group_by within them.
+subset_by    <- if (length(args) >= 12 && nchar(args[12]) > 0) args[12] else ""
+subset_vals  <- if (length(args) >= 13 && nchar(args[13]) > 0) trimws(strsplit(args[13], ",")[[1]]) else character(0)
 
 s.obj <- readRDS(rds_path)
 if (inherits(s.obj[["RNA"]], "Assay5")) {
   tryCatch(s.obj <- JoinLayers(s.obj), error = function(e) NULL)
 }
+
+if (nchar(subset_by) > 0 && length(subset_vals) > 0) {
+  if (!subset_by %in% colnames(s.obj@meta.data))
+    stop("Subset column '", subset_by, "' not found in metadata")
+  keep <- colnames(s.obj)[as.character(s.obj@meta.data[[subset_by]]) %in% subset_vals]
+  if (length(keep) == 0)
+    stop("No cells match ", subset_by, " in {", paste(subset_vals, collapse = ", "), "}")
+  s.obj <- subset(s.obj, cells = keep)
+  message(sprintf("Subset to %s in {%s}: %d cells", subset_by, paste(subset_vals, collapse = ", "), length(keep)))
+  grp <- table(as.character(s.obj@meta.data[[group_by]]))
+  message("Cells per ", group_by, " within subset: ",
+          paste(sprintf("%s=%d", names(grp), as.integer(grp)), collapse = ", "))
+}
+
 DefaultAssay(s.obj) <- assay_name
 Idents(s.obj)       <- group_by
 

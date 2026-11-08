@@ -76,12 +76,16 @@ def _dge_cache_dir_for(rds_path: str) -> str:
 
 def _dge_cache_key(mode: str, group_by: str, assay: str, slot: str, test_use: str,
                     ident1: list[str], ident2: list[str], rm_tcr: bool, rm_bcr: bool,
-                    min_pct: float) -> str:
+                    min_pct: float, subset_by: str = "", subset_values: Optional[list[str]] = None) -> str:
     payload = {
         "mode": mode, "group_by": group_by, "assay": assay, "slot": slot,
         "test_use": test_use, "ident1": sorted(ident1), "ident2": sorted(ident2),
         "rm_tcr": rm_tcr, "rm_bcr": rm_bcr, "min_pct": min_pct,
     }
+    # Only added when set, so keys for existing (unsubsetted) cache entries stay unchanged.
+    if subset_by and subset_values:
+        payload["subset_by"] = subset_by
+        payload["subset_values"] = sorted(subset_values)
     return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
 
 
@@ -520,6 +524,10 @@ class DGERequest(BaseModel):
     test_use:   str = "wilcox"
     ident1:     Optional[str] = None
     ident2:     Optional[str] = None
+    # "conditions2" mode only: comma-separated values of subset_by to restrict cells
+    # to (e.g. one cluster) before comparing ident1 vs ident2 on group_by.
+    subset_by:     Optional[str] = None
+    subset_values: Optional[str] = None
     rm_tcr:     bool = True
     rm_bcr:     bool = True
     # Real FindMarkers/FindAllMarkers parameter — affects which genes are tested,
@@ -550,6 +558,8 @@ def _write_dge_result(req: "DGERequest", rds_path: str, cache_key: str, result: 
         "test_use":      req.test_use,
         "ident1":        req.ident1 or None,
         "ident2":        req.ident2 or None,
+        "subset_by":     req.subset_by or None,
+        "subset_values": req.subset_values or None,
         "rm_tcr":        req.rm_tcr,
         "rm_bcr":        req.rm_bcr,
         "min_pct":       req.min_pct,
@@ -581,6 +591,7 @@ def _run_dge_background(task_id: str, req: "DGERequest", rds_path: str, cache_ke
         "true" if req.rm_tcr else "false",
         "true" if req.rm_bcr else "false",
         str(req.min_pct),
+        req.subset_by or "", req.subset_values or "",
     ]
     proc = None
     try:
@@ -630,8 +641,12 @@ async def start_dge(req: DGERequest, current_user: User = Depends(get_current_us
 
     ident1_list = [s.strip() for s in (req.ident1 or "").split(",") if s.strip()]
     ident2_list = [s.strip() for s in (req.ident2 or "").split(",") if s.strip()]
+    subset_list = [s.strip() for s in (req.subset_values or "").split(",") if s.strip()]
+    if req.mode == "conditions2" and (not req.subset_by or not subset_list):
+        raise HTTPException(400, "Subset column and at least one subset value are required")
     cache_key = _dge_cache_key(req.mode, req.group_by, req.assay, req.slot, req.test_use,
-                               ident1_list, ident2_list, req.rm_tcr, req.rm_bcr, req.min_pct)
+                               ident1_list, ident2_list, req.rm_tcr, req.rm_bcr, req.min_pct,
+                               req.subset_by or "", subset_list)
 
     cached_entry = _read_dge_cache_entry(rds_path, cache_key)
     if cached_entry:

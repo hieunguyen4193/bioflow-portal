@@ -1388,12 +1388,42 @@ function DgeDistributionPlotPanel({ meta, assay, slot, colorBy, sessionId, genes
 }
 
 // ── DGE ───────────────────────────────────────────────────────────────────────
+// Toggleable chips for picking one or more values of a metadata column — used by
+// DGE — Condition2, where the values come from tab-local column choices rather
+// than the sidebar's "Colour by".
+function MetaValuePicker({ values, selected, onChange, disabled }: {
+  values: string[]; selected: string[]; onChange: (v: string[]) => void; disabled?: string[]
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+      {values.map(v => {
+        const on = selected.includes(v)
+        const off = !on && disabled?.includes(v)
+        return (
+          <button key={v} type="button" disabled={off}
+            onClick={() => onChange(on ? selected.filter(x => x !== v) : [...selected, v])}
+            className={`px-2 py-0.5 rounded-full text-xs border transition-colors disabled:opacity-30 disabled:cursor-not-allowed
+              ${on ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-300 text-slate-600 hover:border-indigo-400'}`}>
+            {v}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeChanged }: any) {
   const [test,    setTest]    = useState('wilcox')
   const [ident1Raw, setIdent1Raw] = useState('')
   const [ident2Raw, setIdent2Raw] = useState('')
   const ident1 = ident1Raw.split(',').map(s => s.trim()).filter(Boolean)
   const ident2 = ident2Raw.split(',').map(s => s.trim()).filter(Boolean)
+  // DGE — Condition2: first subset cells by one column (e.g. cluster 1), then compare
+  // Group 1 vs Group 2 on a second column (e.g. demux group) within that subset.
+  const [subsetBy,   setSubsetBy]   = useState<string>(colorBy)
+  const [subsetVals, setSubsetVals] = useState<string[]>([])
+  const [compareBy,  setCompareBy]  = useState<string>('')
+  const groupBy = mode === 'conditions2' ? compareBy : colorBy
   const [rmTCR,   setRmTCR]   = useState(true)
   const [rmBCR,   setRmBCR]   = useState(true)
   const [minPct,  setMinPct]  = useState(0.01)
@@ -1435,7 +1465,16 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
 
   const results = dgeResult?.markers ?? []
 
-  const groupVals = useMemo(() => [...new Set(meta.metadata[colorBy] ?? [])].sort(), [meta, colorBy])
+  // Categorical columns only — a continuous column (e.g. nCount_RNA) would offer
+  // thousands of meaningless "values" to subset/compare on.
+  const categoricalCols = useMemo(() => Object.keys(meta.metadata)
+    .filter(c => new Set(meta.metadata[c]).size <= 200), [meta])
+  const valuesOf = (col: string) => col
+    ? [...new Set<string>((meta.metadata[col] ?? []).map(String))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    : []
+  const subsetValOptions  = useMemo(() => valuesOf(subsetBy),  [meta, subsetBy])
+  const compareValOptions = useMemo(() => valuesOf(compareBy), [meta, compareBy])
+  const canRun = mode !== 'conditions2' || (subsetBy && subsetVals.length > 0 && compareBy && ident1.length > 0)
 
   async function refreshCacheList() {
     try {
@@ -1490,10 +1529,11 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
     setLoading(true); setLog('Running…'); setRunLog(''); setRunFailed(false); setDgeResult(null); setLoadedCacheKey(null); setTaskId(null)
     try {
       const res = await startDGE({
-        session_id: sessionId, mode, group_by: colorBy,
+        session_id: sessionId, mode, group_by: groupBy,
         assay, slot, test_use: test,
         ident1: ident1.length ? ident1.join(',') : undefined,
         ident2: ident2.length ? ident2.join(',') : undefined,
+        ...(mode === 'conditions2' ? { subset_by: subsetBy, subset_values: subsetVals.join(',') } : {}),
         rm_tcr: rmTCR, rm_bcr: rmBCR, min_pct: minPct,
         pval_cutoff: pval, logfc_cutoff: logfc,
       })
@@ -1530,8 +1570,13 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
       setRmTCR(cached.rm_tcr); setRmBCR(cached.rm_bcr)
       setMinPct(cached.min_pct)
       setPval(cached.pval_cutoff); setLogfc(cached.logfc_cutoff)
-      if (mode === 'conditions') {
+      if (mode === 'conditions' || mode === 'conditions2') {
         setIdent1Raw(cached.ident1 ?? ''); setIdent2Raw(cached.ident2 ?? '')
+      }
+      if (mode === 'conditions2') {
+        setSubsetBy(cached.subset_by ?? '')
+        setSubsetVals((cached.subset_values ?? '').split(',').map(v => v.trim()).filter(Boolean))
+        setCompareBy(cached.group_by)
       }
       const filtered = cached.result.markers.filter((r: any) =>
         r.p_val_adj <= cached.pval_cutoff && Math.abs(Number(r.avg_log2FC)) >= cached.logfc_cutoff)
@@ -1562,7 +1607,9 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
 
   const logfcNote = mode === 'clusters'
     ? 'avg_log2FC > 0: higher in this cluster vs all others. avg_log2FC < 0: lower in this cluster.'
-    : 'avg_log2FC > 0: higher in Group 1 vs Group 2. avg_log2FC < 0: lower in Group 1.'
+    : mode === 'conditions2'
+      ? 'Cells are first restricted to the selected subset, then Group 1 is compared with Group 2 within it. avg_log2FC > 0: higher in Group 1 vs Group 2. avg_log2FC < 0: lower in Group 1.'
+      : 'avg_log2FC > 0: higher in Group 1 vs Group 2. avg_log2FC < 0: lower in Group 1.'
 
   const DGE_COLS = ['gene','p_val','p_val_adj','avg_log2FC','pct.1','pct.2']
 
@@ -1620,6 +1667,48 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
               </div>
             </>
           )}
+          {mode === 'conditions2' && (
+            <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+                <div className="text-xs font-semibold text-slate-600">Condition 1 — subset cells</div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-slate-500">Column</label>
+                  <select value={subsetBy} onChange={e => { setSubsetBy(e.target.value); setSubsetVals([]) }}
+                    className="border border-slate-300 rounded px-2 py-1 text-sm">
+                    <option value="">— select —</option>
+                    {categoricalCols.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                {subsetBy && (
+                  <>
+                    <label className="text-xs text-slate-500 block">Keep cells where <b>{subsetBy}</b> is:</label>
+                    <MetaValuePicker values={subsetValOptions} selected={subsetVals} onChange={setSubsetVals} />
+                  </>
+                )}
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+                <div className="text-xs font-semibold text-slate-600">Condition 2 — compare groups</div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-slate-500">Column</label>
+                  <select value={compareBy} onChange={e => { setCompareBy(e.target.value); setIdent1Raw(''); setIdent2Raw('') }}
+                    className="border border-slate-300 rounded px-2 py-1 text-sm">
+                    <option value="">— select —</option>
+                    {categoricalCols.filter(c => c !== subsetBy).map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                {compareBy && (
+                  <>
+                    <label className="text-xs text-slate-500 block">Group 1</label>
+                    <MetaValuePicker values={compareValOptions} selected={ident1} disabled={ident2}
+                      onChange={v => setIdent1Raw(v.join(','))} />
+                    <label className="text-xs text-slate-500 block">Group 2 <span className="text-slate-400">(none selected = all others in the subset)</span></label>
+                    <MetaValuePicker values={compareValOptions} selected={ident2} disabled={ident1}
+                      onChange={v => setIdent2Raw(v.join(','))} />
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           <div className="flex gap-4 items-center text-sm">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={rmTCR} onChange={e => setRmTCR(e.target.checked)} />
@@ -1630,7 +1719,8 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
               <span>Remove BCR/Ig genes</span>
             </label>
           </div>
-          <button onClick={runAnalysis} disabled={loading}
+          <button onClick={runAnalysis} disabled={loading || !canRun}
+            title={canRun ? undefined : 'Select a subset column + value(s), a comparison column, and Group 1'}
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
             {taskId ? `Running… ${elapsedSec}s` : loading ? 'Running…' : mode === 'clusters' ? 'FindAllMarkers' : 'FindMarkers'}
           </button>
@@ -1695,6 +1785,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
                       <span className="text-slate-500">Group by: <b>{entry.group_by}</b></span>
                     ) : (
                       <span className="text-slate-500">
+                        {entry.subset_by && <><b>{entry.subset_by}</b> ∈ {entry.subset_values} <span className="text-slate-400">·</span> </>}
                         <b>{entry.group_by}</b>: {entry.ident1 || '(all)'} <span className="text-slate-400">vs</span> {entry.ident2 || 'others'}
                       </span>
                     )}
@@ -1783,7 +1874,7 @@ function DGETab({ meta, assay, slot, colorBy, sessionId, mode, reduction, onDgeC
         </div>
       )}
 
-      {results.length > 0 && mode === 'conditions' && (() => {
+      {results.length > 0 && (mode === 'conditions' || mode === 'conditions2') && (() => {
         const allRows = results.filter((r: any) => r.avg_log2FC != null && r.p_val != null)
 
         // use p_val_adj; fall back to p_val when p_val_adj === 0
@@ -3305,7 +3396,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
   useEffect(() => {
     let cancelled = false
     listDgeCache(sessionId).then(list => {
-      if (!cancelled) setConditionsDgeResults(list.filter(e => e.mode === 'conditions'))
+      if (!cancelled) setConditionsDgeResults(list.filter(e => e.mode === 'conditions' || e.mode === 'conditions2'))
     }).catch(() => {})
     return () => { cancelled = true }
   }, [sessionId, dgeVersion])
@@ -3437,7 +3528,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
         absLogFC: Math.abs(Number(r.avg_log2FC ?? r.logFC ?? 0)),
       }))
       csvData = JSON.stringify(rows)
-      geneSource = `DGE ${entry.group_by}: ${entry.ident1 || '(all)'} vs ${entry.ident2 || 'others'} (${entry.test_use})`
+      geneSource = `DGE ${entry.subset_by ? `[${entry.subset_by} ∈ ${entry.subset_values}] ` : ''}${entry.group_by}: ${entry.ident1 || '(all)'} vs ${entry.ident2 || 'others'} (${entry.test_use})`
 
     } else if (csvInput === 'paste') {
       if (!pastedGenes.trim()) { toast.error('Paste a gene list first'); return }
@@ -3599,7 +3690,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
                       onChange={() => setSelectedSaved(i)} className="mt-0.5 accent-indigo-600" />
                     <div>
                       <div className="text-sm font-medium text-slate-700">
-                        {r.source_label} — {r.group_by}: {r.ident1 || '(all)'} vs {r.ident2 || 'others'}
+                        {r.source_label} — {r.subset_by && `[${r.subset_by} ∈ ${r.subset_values}] `}{r.group_by}: {r.ident1 || '(all)'} vs {r.ident2 || 'others'}
                       </div>
                       <div className="text-xs text-slate-400 mt-0.5">
                         {r.n_markers.toLocaleString()} genes ({r.n_significant.toLocaleString()} significant) ·
@@ -4141,6 +4232,17 @@ function GuideTab() {
       ],
     },
     {
+      tab: 'DGE — Condition2',
+      icon: '🎯',
+      summary: 'Run FindMarkers between two groups within a subset of cells — e.g. two demux groups inside cluster 1 only.',
+      details: [
+        { label: 'Condition 1 — subset', text: 'Pick a metadata column (e.g. seurat_clusters) and one or more of its values. Only those cells are kept for the comparison.' },
+        { label: 'Condition 2 — compare', text: 'Pick a second metadata column (e.g. demux group) and choose Group 1 / Group 2 values. Leaving Group 2 empty compares Group 1 against all other cells in the subset.' },
+        { label: 'Statistical test', text: 'Same options and backend as DGE — Conditions.' },
+        { label: 'Results', text: 'Volcano plot and gene table as in DGE — Conditions. Results are cached (subset included in the cache key) and offered to the Pathway tab.' },
+      ],
+    },
+    {
       tab: 'Sub-cluster',
       icon: '🔬',
       summary: 'Subset the clusters currently selected in the sidebar and re-run normalisation, PCA, UMAP, and clustering on just those cells.',
@@ -4250,7 +4352,7 @@ function GuideTab() {
 const GuideTabMemo = memo(GuideTab)
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'Module Score', 'DGE — Clusters', 'DGE — Conditions', 'Sub-cluster', 'Re-cluster', 'Pathway', 'CellChat', 'Metadata', 'Guide']
+const TABS = ['UMAP', 'Feature Plot', 'Violin Plot', 'Box Plot', 'Module Score', 'DGE — Clusters', 'DGE — Conditions', 'DGE — Condition2', 'Sub-cluster', 'Re-cluster', 'Pathway', 'CellChat', 'Metadata', 'Guide']
 
 export default function ExplorePage() {
   const [meta,     setMeta]     = useState<SeuratMeta | null>(null)
@@ -4447,6 +4549,12 @@ export default function ExplorePage() {
             <div className={tab === 'DGE — Conditions' ? '' : 'hidden'}>
               <DGETabMemo meta={meta} assay={assay} slot={slot} colorBy={colorBy}
                 sessionId={meta.session_id} mode="conditions" onDgeChanged={handleDgeChanged} />
+            </div>
+          )}
+          {visitedTabs.has('DGE — Condition2') && (
+            <div className={tab === 'DGE — Condition2' ? '' : 'hidden'}>
+              <DGETabMemo meta={meta} assay={assay} slot={slot} colorBy={colorBy}
+                sessionId={meta.session_id} mode="conditions2" onDgeChanged={handleDgeChanged} />
             </div>
           )}
           {visitedTabs.has('Sub-cluster') && (
