@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef, memo } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef, memo, Fragment } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
@@ -2982,57 +2982,351 @@ function downloadCSVData(rows: Record<string, unknown>[], filename: string) {
   URL.revokeObjectURL(url)
 }
 
-function PathwayResultTable({ rows, label }: { rows: Record<string, unknown>[]; label: string }) {
-  const [search, setSearch] = useState('')
-  const [sortCol, setSortCol] = useState('')
-  const [sortDir, setSortDir] = useState<1 | -1>(-1)
+type PathwayRow = Record<string, unknown>
 
-  if (!rows || rows.length === 0) return <p className="text-xs text-slate-400 p-4">No results.</p>
-  if ('status' in rows[0]) return <p className="text-xs text-slate-400 p-4">{String(rows[0].status)}</p>
+// Results are keyed like ORA.UP.GO / GSEA.KEGG / ORA.FULL.MSigDB.H — split them into
+// (database, column) so the overview grid can lay them out as a matrix instead of
+// one long row of pills.
+const PATHWAY_COLS = [
+  { key: 'ORA.FULL', label: 'ORA · all sig.' },
+  { key: 'ORA.UP',   label: 'ORA · up' },
+  { key: 'ORA.DOWN', label: 'ORA · down' },
+  { key: 'GSEA',     label: 'GSEA' },
+] as const
+const PATHWAY_DB_LABEL: Record<string, string> = { GO: 'GO', KEGG: 'KEGG', WP: 'WikiPathways' }
 
-  const cols = Object.keys(rows[0]).filter(c => c !== 'geneID' && c !== 'idx')
-  const allCols = [...cols, 'geneID']
+function parsePathwayKey(key: string): { db: string; col: string } | null {
+  let m = key.match(/^(ORA\.(?:FULL|UP|DOWN))\.(GO|KEGG|WP)$/) ?? key.match(/^(GSEA)\.(GO|KEGG|WP)$/)
+  if (m) return { col: m[1], db: PATHWAY_DB_LABEL[m[2]] }
+  m = key.match(/^(ORA\.FULL|GSEA)\.MSigDB\.(.+)$/)
+  if (m) return { col: m[1], db: `MSigDB ${MSIGDB_CAT_LABEL[m[2]] ?? m[2]}` }
+  return null
+}
 
-  function toggleSort(col: string) {
-    if (sortCol === col) setSortDir(d => (d === 1 ? -1 : 1) as 1 | -1)
-    else { setSortCol(col); setSortDir(-1) }
+// R emits a single {status: "..."} row when a method/database returned nothing.
+const realRows = (rows?: PathwayRow[]) => (rows && rows.length && !('status' in rows[0]) ? rows : [])
+const padjOf = (r: PathwayRow) => Number(r['p.adjust'] ?? r.pvalue ?? 1)
+const genesOf = (r: PathwayRow) => String(r.geneID ?? '').split('/').filter(Boolean)
+const rowId = (r: PathwayRow) => `${r.ONTOLOGY ?? ''}|${r.ID ?? r.Description}`
+
+// Comma/space-separated terms; a gene matches whole symbols only (case-insensitive),
+// a keyword matches anywhere in the pathway name or ID.
+function splitTerms(q: string) { return q.split(/[,\s]+/).map(t => t.trim().toLowerCase()).filter(Boolean) }
+
+function PathwayOverviewGrid({ results, active, onSelect }: {
+  results: Record<string, PathwayRow[]>; active: string; onSelect: (key: string) => void
+}) {
+  const keys = Object.keys(results)
+  const parsed = keys.map(k => ({ key: k, p: parsePathwayKey(k) }))
+  const dbs = [...new Set(parsed.filter(x => x.p).map(x => x.p!.db))]
+  const cols = PATHWAY_COLS.filter(c => parsed.some(x => x.p?.col === c.key))
+  const other = parsed.filter(x => !x.p).map(x => x.key)
+  const cell = (key: string | undefined) => {
+    if (!key) return <td className="px-2 py-1.5 text-center text-slate-300">·</td>
+    const n = realRows(results[key]).length
+    return (
+      <td className="px-1 py-1 text-center">
+        <button onClick={() => onSelect(key)} title={pathwayLabel(key)}
+          className={`w-full min-w-[64px] px-2 py-1 rounded text-xs font-medium transition-colors
+            ${active === key ? 'bg-indigo-600 text-white'
+              : n === 0 ? 'bg-slate-50 text-slate-300 hover:bg-slate-100'
+              : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}>
+          {n}
+        </button>
+      </td>
+    )
   }
+  return (
+    <div className="space-y-2">
+      <div className="overflow-x-auto">
+        <table className="text-xs">
+          <thead>
+            <tr>
+              <th className="text-left pr-4 py-1 font-medium text-slate-500">Database</th>
+              {cols.map(c => <th key={c.key} className="px-2 py-1 font-medium text-slate-500 whitespace-nowrap">{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {dbs.map(db => (
+              <tr key={db}>
+                <td className="pr-4 py-1 text-slate-700 whitespace-nowrap">{db}</td>
+                {cols.map(c => <Fragment key={c.key}>{cell(parsed.find(x => x.p?.db === db && x.p.col === c.key)?.key)}</Fragment>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {other.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {other.map(k => (
+            <button key={k} onClick={() => onSelect(k)}
+              className={`px-3 py-1 rounded-full text-xs font-medium ${active === k ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+              {pathwayLabel(k)} ({realRows(results[k]).length})
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="text-xs text-slate-400">Numbers = significant pathways in each result. Click one to open it below.</p>
+    </div>
+  )
+}
 
-  const visible = rows
-    .filter(r => !search || Object.values(r).some(v => String(v ?? '').toLowerCase().includes(search.toLowerCase())))
-    .sort((a, b) => {
-      if (!sortCol) return 0
-      const av = a[sortCol]; const bv = b[sortCol]
-      const an = Number(av); const bn = Number(bv)
-      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortDir
-      return String(av ?? '').localeCompare(String(bv ?? '')) * sortDir
-    })
-
-  const safeFilename = label.replace(/[^a-zA-Z0-9_-]/g, '_') + '.csv'
+// One search box over every result table — so finding "interferon" or every pathway
+// containing STAT1 doesn't mean clicking through each method × database in turn.
+function PathwayGlobalSearch({ results, onOpen }: {
+  results: Record<string, PathwayRow[]>; onOpen: (key: string, term: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const terms = splitTerms(query)
+  const hits = useMemo(() => {
+    if (!terms.length) return []
+    const out: { key: string; row: PathwayRow; genes: string[] }[] = []
+    for (const [key, rows] of Object.entries(results)) {
+      for (const row of realRows(rows)) {
+        const name = `${row.Description ?? ''} ${row.ID ?? ''}`.toLowerCase()
+        const genes = genesOf(row).filter(g => terms.includes(g.toLowerCase()))
+        if (genes.length || terms.some(t => name.includes(t))) out.push({ key, row, genes })
+      }
+    }
+    return out.sort((a, b) => padjOf(a.row) - padjOf(b.row))
+  }, [results, query])
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-3">
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search…"
-          className="border border-slate-300 rounded px-3 py-1.5 text-sm w-64 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
-        {search && <button onClick={() => setSearch('')} className="text-xs text-slate-400 hover:text-red-500">✕ Clear</button>}
+        <input value={query} onChange={e => setQuery(e.target.value)}
+          placeholder="Search all results — pathway keyword or gene (e.g. interferon, STAT1)"
+          className="border border-slate-300 rounded px-3 py-1.5 text-sm w-[420px] max-w-full focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+        {query && <button onClick={() => setQuery('')} className="text-xs text-slate-400 hover:text-red-500">✕ Clear</button>}
+        {terms.length > 0 && (
+          <span className="text-xs text-slate-400">
+            {hits.length} match{hits.length === 1 ? '' : 'es'} in {new Set(hits.map(h => h.key)).size} result table(s)
+          </span>
+        )}
+        {hits.length > 0 && (
+          <button onClick={() => downloadCSVData(hits.map(h => ({ result: pathwayLabel(h.key), ...h.row })), 'pathway_search.csv')}
+            className="ml-auto px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-50 text-slate-600">
+            ↓ Download matches
+          </button>
+        )}
+      </div>
+      {hits.length > 0 && (
+        <div className="overflow-auto rounded-lg border border-slate-200 max-h-[40vh]">
+          <table className="text-xs w-full">
+            <thead className="bg-slate-50 border-b sticky top-0">
+              <tr>
+                {['Result', 'Pathway', 'p.adjust', 'NES / GeneRatio', 'Genes', 'Matched genes'].map(h =>
+                  <th key={h} className="text-left px-3 py-2 font-medium whitespace-nowrap">{h}</th>)}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {hits.slice(0, 300).map(({ key, row, genes }, i) => (
+                <tr key={i} onClick={() => onOpen(key, String(row.Description ?? row.ID ?? ''))}
+                  className="hover:bg-indigo-50 cursor-pointer" title="Open in its result table">
+                  <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">{pathwayLabel(key)}</td>
+                  <td className="px-3 py-1.5 text-slate-700 max-w-md truncate" title={String(row.Description ?? '')}>
+                    {row.ONTOLOGY ? <span className="text-slate-400 mr-1">[{String(row.ONTOLOGY)}]</span> : null}
+                    {String(row.Description ?? row.ID ?? '')}
+                  </td>
+                  <td className="px-3 py-1.5 text-slate-600">{padjOf(row).toExponential(2)}</td>
+                  <td className="px-3 py-1.5 text-slate-600">
+                    {'NES' in row ? Number(row.NES).toFixed(2) : String(row.GeneRatio ?? '')}
+                  </td>
+                  <td className="px-3 py-1.5 text-slate-600">{String(row.Count ?? row.setSize ?? '')}</td>
+                  <td className="px-3 py-1.5 font-mono text-indigo-700">{genes.join(', ')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {hits.length > 300 && <p className="text-xs text-slate-400 px-3 py-2">Showing the 300 most significant — refine the search or download all matches.</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Filter bar + dotplot + table for one result. The dotplot follows the table: it shows
+// the ticked pathways, or else the top N of whatever passes the current filters.
+function PathwayResultView({ rows: rawRows, label, initialKeyword = '' }: {
+  rows: PathwayRow[]; label: string; initialKeyword?: string
+}) {
+  const rows = realRows(rawRows)
+  const [keyword,  setKeyword]  = useState(initialKeyword)
+  const [geneQ,    setGeneQ]    = useState('')
+  const [padjMax,  setPadjMax]  = useState(1)
+  const [onts,     setOnts]     = useState<string[]>([])
+  const [subcat,   setSubcat]   = useState('')
+  const [direction, setDirection] = useState<'all' | 'up' | 'down'>('all')
+  const [sortCol,  setSortCol]  = useState('p.adjust')
+  const [sortDir,  setSortDir]  = useState<1 | -1>(1)
+  const [topN,     setTopN]     = useState(20)
+  const [showAll,  setShowAll]  = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  if (!rawRows || rawRows.length === 0) return <p className="text-xs text-slate-400 p-4">No results.</p>
+  if (rows.length === 0) return <p className="text-xs text-slate-400 p-4">{String(rawRows[0].status)}</p>
+
+  const isGSEA = 'NES' in rows[0]
+  const ontologies = 'ONTOLOGY' in rows[0] ? [...new Set(rows.map(r => String(r.ONTOLOGY)))].sort() : []
+  // KEGG results carry a category/subcategory (e.g. "Immune system") per pathway.
+  const subcats = 'subcategory' in rows[0] ? [...new Set(rows.map(r => String(r.subcategory ?? '')).filter(Boolean))].sort() : []
+  const kwTerms = splitTerms(keyword)
+  const geneTerms = splitTerms(geneQ)
+
+  const filtered = rows
+    .filter(r => !kwTerms.length || kwTerms.some(t => `${r.Description ?? ''} ${r.ID ?? ''}`.toLowerCase().includes(t)))
+    .filter(r => {
+      if (!geneTerms.length) return true
+      const g = new Set(genesOf(r).map(x => x.toLowerCase()))
+      return geneTerms.every(t => g.has(t))
+    })
+    .filter(r => padjOf(r) <= padjMax)
+    .filter(r => !onts.length || onts.includes(String(r.ONTOLOGY)))
+    .filter(r => !subcat || String(r.subcategory) === subcat)
+    .filter(r => direction === 'all' || (direction === 'up' ? Number(r.NES) > 0 : Number(r.NES) < 0))
+    .sort((a, b) => {
+      const av = a[sortCol]; const bv = b[sortCol]
+      const an = sortCol === 'GeneRatio' ? parseGeneRatio(av) : Number(av)
+      const bn = sortCol === 'GeneRatio' ? parseGeneRatio(bv) : Number(bv)
+      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortDir
+      return String(av ?? '').localeCompare(String(bv ?? '')) * sortDir
+    })
+
+  const byPadj = [...filtered].sort((a, b) => padjOf(a) - padjOf(b))
+  const plotRows = selected.size > 0 ? rows.filter(r => selected.has(rowId(r))) : byPadj.slice(0, topN)
+
+  // Most useful columns first; anything else the method returns follows, gene list last.
+  const lead = ['Description', 'ONTOLOGY', 'subcategory', 'p.adjust', isGSEA ? 'NES' : 'GeneRatio', isGSEA ? 'setSize' : 'Count']
+  const present = Object.keys(rows[0]).filter(c => c !== 'geneID' && c !== 'idx')
+  const cols = [...lead.filter(c => present.includes(c)), ...present.filter(c => !lead.includes(c)), 'geneID']
+
+  function toggleSort(col: string) {
+    if (sortCol === col) setSortDir(d => (d === 1 ? -1 : 1))
+    else { setSortCol(col); setSortDir(col === 'p.adjust' || col === 'pvalue' || col === 'qvalue' ? 1 : -1) }
+  }
+  function toggleRow(id: string) {
+    setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+  const isFiltered = kwTerms.length || geneTerms.length || padjMax < 1 || onts.length || subcat || direction !== 'all'
+  const safeFilename = label.replace(/[^a-zA-Z0-9_-]/g, '_')
+  const shown = showAll ? filtered : filtered.slice(0, 200)
+
+  return (
+    <div className="space-y-3">
+      {/* Filters */}
+      <div className="flex flex-wrap items-end gap-3 bg-slate-50 rounded-lg p-3">
+        <div>
+          <label className="text-xs text-slate-500 block mb-1">Pathway name contains</label>
+          <input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="e.g. interferon, T cell"
+            className="border border-slate-300 rounded px-2 py-1 text-sm w-56 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+        </div>
+        <div>
+          <label className="text-xs text-slate-500 block mb-1">Contains gene(s) <span className="text-slate-400">(all of)</span></label>
+          <input value={geneQ} onChange={e => setGeneQ(e.target.value)} placeholder="e.g. STAT1, IRF7"
+            className="border border-slate-300 rounded px-2 py-1 text-sm w-44 font-mono focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+        </div>
+        <div>
+          <label className="text-xs text-slate-500 block mb-1">p.adjust ≤</label>
+          <select value={padjMax} onChange={e => setPadjMax(Number(e.target.value))}
+            className="border border-slate-300 rounded px-2 py-1 text-sm">
+            {[1, 0.05, 0.01, 0.001, 1e-5].map(v => <option key={v} value={v}>{v === 1 ? 'any' : v}</option>)}
+          </select>
+        </div>
+        {ontologies.length > 1 && (
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">GO ontology</label>
+            <div className="flex gap-1">
+              {ontologies.map(o => (
+                <button key={o} onClick={() => setOnts(prev => prev.includes(o) ? prev.filter(x => x !== o) : [...prev, o])}
+                  title={{ BP: 'Biological process', CC: 'Cellular component', MF: 'Molecular function' }[o] ?? o}
+                  className={`px-2 py-1 rounded text-xs border ${onts.includes(o) ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-300 text-slate-600'}`}>
+                  {o}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {subcats.length > 1 && (
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">KEGG category</label>
+            <select value={subcat} onChange={e => setSubcat(e.target.value)}
+              className="border border-slate-300 rounded px-2 py-1 text-sm max-w-[220px]">
+              <option value="">All</option>
+              {subcats.map(c => <option key={c} value={c}>{c} ({rows.filter(r => r.subcategory === c).length})</option>)}
+            </select>
+          </div>
+        )}
+        {isGSEA && (
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Direction</label>
+            <select value={direction} onChange={e => setDirection(e.target.value as any)}
+              className="border border-slate-300 rounded px-2 py-1 text-sm">
+              <option value="all">All</option>
+              <option value="up">Activated (NES &gt; 0)</option>
+              <option value="down">Suppressed (NES &lt; 0)</option>
+            </select>
+          </div>
+        )}
+        {isFiltered ? (
+          <button onClick={() => { setKeyword(''); setGeneQ(''); setPadjMax(1); setOnts([]); setSubcat(''); setDirection('all') }}
+            className="text-xs text-slate-400 hover:text-red-500 py-1.5">✕ Reset filters</button>
+        ) : null}
+        <span className="text-xs text-slate-500 py-1.5 ml-auto">{filtered.length} of {rows.length} pathways</span>
+      </div>
+
+      {/* Dotplot */}
+      <div>
+        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-1">
+          {selected.size > 0 ? (
+            <>
+              <span>Plotting <b>{selected.size}</b> ticked pathway{selected.size === 1 ? '' : 's'}</span>
+              <button onClick={() => setSelected(new Set())} className="text-indigo-600 hover:underline">Clear selection</button>
+            </>
+          ) : (
+            <>
+              <span>Plotting top</span>
+              <select value={topN} onChange={e => setTopN(Number(e.target.value))}
+                className="border border-slate-300 rounded px-1.5 py-0.5 text-xs">
+                {[10, 20, 30, 50].map(n => <option key={n}>{n}</option>)}
+              </select>
+              <span>{isFiltered ? 'filtered ' : ''}pathways by p.adjust — tick rows in the table to plot your own selection.</span>
+            </>
+          )}
+        </div>
+        {plotRows.length > 0
+          ? <PathwayDotplot rows={plotRows} label={label} />
+          : <p className="text-xs text-slate-400 p-4">No pathways match the current filters.</p>}
+      </div>
+
+      {/* Table */}
+      <div className="flex items-center gap-3">
         <span className="text-xs text-slate-400">
-          Showing {Math.min(visible.length, 200)} of {visible.length} pathways
+          Showing {shown.length} of {filtered.length}
+          {!showAll && filtered.length > 200 && (
+            <button onClick={() => setShowAll(true)} className="ml-2 text-indigo-600 hover:underline">show all</button>
+          )}
         </span>
-        <button onClick={() => downloadCSVData(rows, safeFilename)}
-          className="ml-auto px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-50 text-slate-600 flex items-center gap-1">
-          ↓ Download CSV
+        <button onClick={() => downloadCSVData(filtered, `${safeFilename}${isFiltered ? '_filtered' : ''}.csv`)}
+          disabled={!filtered.length}
+          className="ml-auto px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-50 text-slate-600 disabled:opacity-50">
+          ↓ Download {isFiltered ? 'filtered ' : ''}CSV
         </button>
+        {isFiltered ? (
+          <button onClick={() => downloadCSVData(rows, `${safeFilename}.csv`)}
+            className="px-3 py-1.5 text-xs border border-slate-300 rounded hover:bg-slate-50 text-slate-600">
+            ↓ Download all
+          </button>
+        ) : null}
       </div>
       <div className="overflow-auto rounded-lg border border-slate-200 max-h-[55vh]">
         <table className="text-xs w-full">
           <thead className="bg-slate-50 border-b sticky top-0">
             <tr>
-              {allCols.map(c => (
+              <th className="px-2 py-2" title="Tick to plot"></th>
+              {cols.map(c => (
                 <th key={c} onClick={() => c !== 'geneID' && toggleSort(c)}
                   className={`text-left px-3 py-2 font-medium whitespace-nowrap select-none ${c !== 'geneID' ? 'cursor-pointer hover:bg-slate-100' : ''}`}>
-                  {c === '_row' ? 'ID' : c}
+                  {c}
                   {c !== 'geneID' && (
                     <span className="ml-1 text-slate-400">
                       {sortCol === c ? (sortDir === 1 ? '▲' : '▼') : '⇅'}
@@ -3043,16 +3337,27 @@ function PathwayResultTable({ rows, label }: { rows: Record<string, unknown>[]; 
             </tr>
           </thead>
           <tbody className="divide-y">
-            {visible.slice(0, 200).map((row, i) => (
-              <tr key={i} className="hover:bg-slate-50">
-                {allCols.map(c => (
-                  <td key={c} className="px-3 py-1.5 text-slate-600 max-w-xs truncate whitespace-nowrap"
-                    title={String(row[c] ?? '')}>
-                    {String(row[c] ?? '')}
+            {shown.map(row => {
+              const id = rowId(row)
+              return (
+                <tr key={id} className={selected.has(id) ? 'bg-indigo-50' : 'hover:bg-slate-50'}>
+                  <td className="px-2 py-1.5">
+                    <input type="checkbox" checked={selected.has(id)} onChange={() => toggleRow(id)} className="accent-indigo-600" />
                   </td>
-                ))}
-              </tr>
-            ))}
+                  {cols.map(c => (
+                    <td key={c} className={`px-3 py-1.5 text-slate-600 truncate whitespace-nowrap ${c === 'Description' ? 'max-w-sm text-slate-800' : 'max-w-xs'}`}
+                      title={String(row[c] ?? '')}>
+                      {c === 'geneID' && geneTerms.length
+                        ? genesOf(row).map((g, i) => (
+                            <Fragment key={g}>{i > 0 && '/'}
+                              <span className={geneTerms.includes(g.toLowerCase()) ? 'font-semibold text-indigo-700' : ''}>{g}</span>
+                            </Fragment>))
+                        : String(row[c] ?? '')}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -3115,15 +3420,12 @@ function PathwayDotplot({ rows, label }: { rows: Record<string, unknown>[]; labe
   const adjCol = 'p.adjust' in rows[0] ? 'p.adjust' : 'pvalue'
   const isGSEA = 'NES' in rows[0]
 
-  // Sort by GeneRatio (ORA) or |NES| (GSEA) descending; take top 20
-  // Reverse at the end so the highest ratio appears at the top of the y-axis
-  const sortKey = isGSEA
-    ? (r: Record<string, unknown>) => Math.abs(Number(r.NES ?? 0))
+  // The caller picks which pathways to plot; order them by GeneRatio (ORA) or NES
+  // (GSEA) ascending so the highest value appears at the top of the y-axis.
+  const xOf = isGSEA
+    ? (r: Record<string, unknown>) => Number(r.NES ?? 0)
     : (r: Record<string, unknown>) => parseGeneRatio(r.GeneRatio ?? r.generatio ?? 0)
-  const top = [...rows]
-    .sort((a, b) => sortKey(b) - sortKey(a))
-    .slice(0, 20)
-    .reverse()
+  const top = [...rows].sort((a, b) => xOf(a) - xOf(b))
 
   const labels = top.map(r => String(r.Description ?? r.ID ?? ''))
   const padj   = top.map(r => Number(r[adjCol] ?? 1))
@@ -3131,9 +3433,7 @@ function PathwayDotplot({ rows, label }: { rows: Record<string, unknown>[]; labe
   const pMax   = Math.max(...padj)
 
   // x: GeneRatio (ORA) or NES (GSEA, can be negative = down-regulated)
-  const x      = isGSEA
-    ? top.map(r => Number(r.NES ?? 0))
-    : top.map(r => parseGeneRatio(r.GeneRatio ?? r.generatio ?? 0))
+  const x      = top.map(xOf)
   const xLabel = isGSEA ? 'NES' : 'GeneRatio'
 
   // Dot size proportional to Count (ORA) or setSize (GSEA)
@@ -3418,6 +3718,7 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
   const [error,       setError]       = useState<string | null>(null)
   const [log,         setLog]         = useState<string>('')
   const [activeMethod, setActiveMethod] = useState<string>('')
+  const [focusTerm,    setFocusTerm]    = useState('')  // prefilled keyword when opened from the global search
   const logRef = useRef<HTMLPreElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -3433,7 +3734,9 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
 
   function showResults(r: Record<string, Record<string, unknown>[]>) {
     setResults(r)
-    setActiveMethod(Object.keys(r)[0] ?? '')
+    setFocusTerm('')
+    // Open the first result that actually found something, not just the first key.
+    setActiveMethod(Object.keys(r).find(k => realRows(r[k]).length > 0) ?? Object.keys(r)[0] ?? '')
     setStatus('done')
   }
 
@@ -3580,7 +3883,6 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
     }
   }
 
-  const methods = results ? Object.keys(results) : []
 
   return (
     <div className="p-4 space-y-4">
@@ -3805,22 +4107,18 @@ function PathwayTab({ meta, sessionId, dgeVersion = 0 }: {
         <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
           <h3 className="font-semibold text-slate-700">Results</h3>
 
-          {/* Method selector */}
-          <div className="flex flex-wrap gap-1">
-            {methods.map(m => (
-              <button key={m} onClick={() => setActiveMethod(m)}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
-                  ${activeMethod === m ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-                {pathwayLabel(m)}
-              </button>
-            ))}
-          </div>
+          <PathwayGlobalSearch results={results}
+            onOpen={(key, term) => { setActiveMethod(key); setFocusTerm(term) }} />
+
+          <PathwayOverviewGrid results={results} active={activeMethod}
+            onSelect={key => { setActiveMethod(key); setFocusTerm('') }} />
 
           {activeMethod && results[activeMethod] && (
-            <div className="space-y-4">
+            <div className="space-y-4 border-t border-slate-200 pt-4">
+              <h4 className="text-sm font-semibold text-slate-700">{pathwayLabel(activeMethod)}</h4>
               <PathwayMethodExplanation methodKey={activeMethod} rows={results[activeMethod]} />
-              <PathwayDotplot rows={results[activeMethod]} label={pathwayLabel(activeMethod)} />
-              <PathwayResultTable rows={results[activeMethod]} label={pathwayLabel(activeMethod)} />
+              <PathwayResultView key={`${activeMethod}|${focusTerm}`} rows={results[activeMethod]}
+                label={pathwayLabel(activeMethod)} initialKeyword={focusTerm} />
             </div>
           )}
         </div>

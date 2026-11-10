@@ -24,6 +24,25 @@ if (inherits(s.obj[["RNA"]], "Assay5")) {
   tryCatch(s.obj <- JoinLayers(s.obj), error = function(e) NULL)
 }
 
+# PrepSCTFindMarkers must run on the FULL object, before any cell subsetting.
+# It re-corrects UMI counts across all SCT models (one per sample when the data were
+# integrated) to a common median library size. Running it after subset() fails:
+# the subset leaves SCT models with only some of their cells, or none at all, and
+# the re-correction errors out. That error used to be swallowed, so FindMarkers
+# then failed with "Object contains multiple models with unequal library sizes".
+# After prepping here, the corrected counts/data carry through subset(), and
+# FindMarkers is called with recorrect_umi = FALSE (Seurat's documented approach for
+# DE on a subset of an SCT assay).
+sct_prepped <- FALSE
+if (assay_name == "SCT") {
+  tryCatch({
+    s.obj <- PrepSCTFindMarkers(s.obj, assay = "SCT", verbose = TRUE)
+    sct_prepped <- TRUE
+  }, error = function(e) {
+    message("PrepSCTFindMarkers failed: ", conditionMessage(e))
+  })
+}
+
 if (nchar(subset_by) > 0 && length(subset_vals) > 0) {
   if (!subset_by %in% colnames(s.obj@meta.data))
     stop("Subset column '", subset_by, "' not found in metadata")
@@ -77,10 +96,6 @@ message(sprintf("Excluded genes — TCR: %d, BCR/Ig: %d",
                 length(BCRgenes.to.exclude) * rm_bcr))
 
 features <- setdiff(all.genes, excluded)
-
-if (assay_name == "SCT") {
-  tryCatch(s.obj <- PrepSCTFindMarkers(s.obj), error = function(e) NULL)
-}
 
 # DESeq2 requires raw counts and the package loaded
 effective_slot <- if (test_use == "DESeq2") "counts" else slot_name
@@ -180,15 +195,18 @@ de_warnings <- character(0)
 # cluster's fit (streamed live to the frontend's polling log) — otherwise, for a
 # slow test like DESeq2/MAST, the log stays completely silent for the entire run
 # and there's no way to tell it's progressing vs. stuck.
+# Counts were already re-corrected on the full object above. Don't let FindMarkers
+# redo it on the (possibly subset) object.
+sct_args <- if (sct_prepped) list(recorrect_umi = FALSE) else list()
 run_markers <- function() {
   if (mode == "clusters") {
-    FindAllMarkers(s.obj, assay = assay_name, group.by = group_by,
+    do.call(FindAllMarkers, c(list(s.obj, assay = assay_name, group.by = group_by,
                     test.use = test_use, slot = effective_slot, min.pct = min_pct,
-                    features = features, verbose = TRUE)
+                    features = features, verbose = TRUE), sct_args))
   } else {
-    FindMarkers(s.obj, ident.1 = ident1, ident.2 = if (length(ident2) > 0) ident2 else NULL,
+    do.call(FindMarkers, c(list(s.obj, ident.1 = ident1, ident.2 = if (length(ident2) > 0) ident2 else NULL,
                 assay = assay_name, test.use = test_use, slot = effective_slot, min.pct = min_pct,
-                features = features, verbose = TRUE) %>%
+                features = features, verbose = TRUE), sct_args)) %>%
       tibble::rownames_to_column("gene") %>%
       mutate(cluster = paste(paste(ident1, collapse = "+"), "vs", if (length(ident2) > 0) paste(ident2, collapse = "+") else "others"))
   }
