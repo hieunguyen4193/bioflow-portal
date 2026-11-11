@@ -38,6 +38,15 @@ export async function loadPreset(project: string, filename: string): Promise<Seu
   return data
 }
 
+// Direct browser download URL (token in query string, like job-output downloads).
+// Preset .rds files can be several GB, so we let the browser stream them to disk
+// rather than buffering a blob through axios.
+export function presetDownloadUrl(project: string, filename: string): string {
+  const token = localStorage.getItem('token') ?? ''
+  const q = new URLSearchParams({ project, filename, token })
+  return `/api/explore/presets/download?${q.toString()}`
+}
+
 export async function uploadRds(file: File): Promise<SeuratMeta> {
   const form = new FormData()
   form.append('file', file)

@@ -11,12 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import decode_token
 from app.models.user import User
 from app.services.auth import get_current_user
 from app.services.expr_cache import (
@@ -269,6 +271,41 @@ async def list_presets(
             ],
         })
     return projects
+
+
+@router.get("/presets/download")
+async def download_preset(
+    project: str,
+    filename: str,
+    token: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream a preset .rds file to the browser.
+
+    Preset objects are often several GB, so the frontend points a plain <a href>
+    at this endpoint and the browser streams the file to disk, instead of
+    buffering it in memory as a blob. A plain link can't send an Authorization
+    header, so the JWT comes in as a query param (same scheme as job-output
+    downloads in jobs.py)."""
+    username = decode_token(token)
+    if not username:
+        raise HTTPException(401, "Invalid token")
+    user = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(401, "User not found")
+
+    if "/" in project or "\\" in project or "/" in filename or "\\" in filename or not filename.endswith(".rds"):
+        raise HTTPException(400, "Invalid path")
+    if not await user_has_project_access(db, user, project):
+        raise HTTPException(403, "You do not have access to this project")
+
+    root = os.path.realpath(PRESETS_DIR)
+    rds_path = os.path.realpath(os.path.join(root, project, filename))
+    if not rds_path.startswith(root + os.sep):
+        raise HTTPException(403, "Access denied")
+    if not os.path.isfile(rds_path):
+        raise HTTPException(404, "Preset file not found")
+    return FileResponse(rds_path, media_type="application/octet-stream", filename=filename)
 
 
 class PresetLoadRequest(BaseModel):

@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, presetDownloadUrl, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -4440,6 +4440,21 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
                   >
                     {loadingPreset ? 'Loading…' : 'Load'}
                   </button>
+                  {file ? (
+                    <a
+                      href={presetDownloadUrl(proj.project, file.filename)}
+                      download={file.filename}
+                      title={`Download ${file.filename} (${file.size_mb} MB)`}
+                      className="px-4 py-2 border border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-sm font-medium rounded-lg transition-colors"
+                    >
+                      Download
+                    </a>
+                  ) : (
+                    <button disabled
+                      className="px-4 py-2 border border-slate-200 text-slate-400 text-sm font-medium rounded-lg opacity-40 cursor-not-allowed">
+                      Download
+                    </button>
+                  )}
                 </div>
               )
             })()}
