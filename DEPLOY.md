@@ -1,4 +1,4 @@
-# Pipeline Portal — Deployment Guide
+# BioInfoLab — Deployment Guide
 
 ## Prerequisites
 

@@ -1,6 +1,6 @@
 ---
 title: "CellChat analysis — `r params$sample.id`"
-author: "BioFlow Portal"
+author: "BioInfoLab"
 date: "Last update on `r format(Sys.time(), '%d %B, %Y')`"
 output:
   html_document:

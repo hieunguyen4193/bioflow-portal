@@ -1,4 +1,4 @@
-# Pipeline Portal
+# BioInfoLab
 
 A self-hosted web application for running Nextflow bioinformatics pipelines and interactively exploring single-cell RNA-seq data.
 
