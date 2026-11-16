@@ -4838,15 +4838,18 @@ export default function ExplorePage() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Tab bar */}
-        <div className="flex border-b border-slate-200 bg-white px-4 gap-1 shrink-0">
-          {TABS.map(t => (
-            <button key={t} onClick={() => switchTab(t)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap
-                ${tab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
-              {t}
-            </button>
-          ))}
-          <div className="ml-auto flex items-center gap-3 px-3">
+        {/* Tabs wrap onto extra rows when they don't fit, so none are cut off on narrow screens. */}
+        <div className="flex items-start border-b border-slate-200 bg-white px-4 shrink-0">
+          <div className="flex flex-wrap gap-x-1 flex-1 min-w-0">
+            {TABS.map(t => (
+              <button key={t} onClick={() => switchTab(t)}
+                className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap
+                  ${tab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="shrink-0 flex items-center gap-3 pl-3 py-2.5">
             {cacheStatus === 'building' && (
               <span className="flex items-center gap-1.5 text-xs text-amber-600">
                 <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
