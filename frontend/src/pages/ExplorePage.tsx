@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, presetDownloadUrl, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, presetDownloadUrl, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, SubclusterIntegration, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -2146,6 +2146,14 @@ function DgeClusterResultPanel({ cl, results, mode, search, setSearch, sortCol, 
 // UMAPTab already reads to decide what's shown, so picking clusters there and
 // switching to this tab is the whole "choose a cluster name, choose clusters"
 // workflow, with no separate selector duplicating that UI.
+// Reduction names the Seurat pipeline's S8 step gives each integration method.
+const INTEGRATION_REDUCTIONS: Record<Exclude<SubclusterIntegration, 'none'>, string> = {
+  cca: 'integrated.cca', rpca: 'integrated.rpca', harmony: 'harmony',
+}
+const INTEGRATION_LABELS: Record<SubclusterIntegration, string> = {
+  none: 'None', cca: 'CCA', rpca: 'RPCA', harmony: 'Harmony',
+}
+
 function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }: any) {
   const [useSctransform,    setUseSctransform]    = useState(false)
   const [varsToRegress,     setVarsToRegress]     = useState('percent.mt')
@@ -2155,6 +2163,18 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
   const [clusterResolution, setClusterResolution] = useState(0.5)
   const [rmTCR, setRmTCR] = useState(true)
   const [rmBCR, setRmBCR] = useState(true)
+
+  // Integrated parent objects (pipeline S8 reductions) must be re-integrated after
+  // subsetting, or the new UMAP/clusters are unintegrated. Default to the first
+  // integration the object carries; the user can override or turn it off.
+  const detectedIntegrations = useMemo(() => (
+    (Object.entries(INTEGRATION_REDUCTIONS) as [SubclusterIntegration, string][])
+      .filter(([, red]) => red in (meta.reductions ?? {}))
+      .map(([m]) => m)
+  ), [meta])
+  const [integration, setIntegration] = useState<SubclusterIntegration>(detectedIntegrations[0] ?? 'none')
+  const metaColumns = Object.keys(meta.metadata ?? {})
+  const [batchCol, setBatchCol] = useState<string>(metaColumns.includes('name') ? 'name' : (metaColumns[0] ?? 'name'))
 
   const [result,   setResult]   = useState<SubclusterResult | null>(null)
   const [loading,  setLoading]  = useState(false)
@@ -2248,6 +2268,7 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
         use_sctransform: useSctransform, vars_to_regress: varsToRegress,
         num_pca: numPCA, num_pcs_umap: numPcsUmap, num_pcs_cluster: numPcsCluster,
         cluster_resolution: clusterResolution, rm_tcr: rmTCR, rm_bcr: rmBCR,
+        integration, batch_col: batchCol,
       })
       if (res.cached) {
         setResult(res)
@@ -2281,6 +2302,8 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
       setNumPCA(cached.num_pca); setNumPcsUmap(cached.num_pcs_umap); setNumPcsCluster(cached.num_pcs_cluster)
       setClusterResolution(cached.cluster_resolution)
       setRmTCR(cached.rm_tcr); setRmBCR(cached.rm_bcr)
+      setIntegration(cached.integration ?? 'none')
+      if (cached.batch_col) setBatchCol(cached.batch_col)
       setResult(cached.result)
       setLoadedCacheKey(cached.cache_key)
       setLog(`Loaded from cache (run at ${new Date(cached.created_at).toLocaleString()}) — ${cached.result.n_cells_before.toLocaleString()} → ${cached.result.n_cells_after.toLocaleString()} cells.`)
@@ -2334,7 +2357,15 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
           Subsets the <b>{selectedClusters.length}</b> selected value{selectedClusters.length === 1 ? '' : 's'} of{' '}
           <b>{colorBy}</b> (set in the sidebar's "Subset clusters" list) and re-runs normalisation, PCA, UMAP, and
           clustering on just those cells.
+          {integration !== 'none' && <> The subset is re-integrated with <b>{INTEGRATION_LABELS[integration]}</b> over{' '}
+            <b>{batchCol}</b> before UMAP and clustering.</>}
         </p>
+        {detectedIntegrations.length > 0 && integration === 'none' && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            This object is integrated ({detectedIntegrations.map(m => INTEGRATION_LABELS[m]).join(', ')}). Without
+            re-integration, the sub-cluster UMAP and clusters will not be batch-corrected.
+          </p>
+        )}
         {selectedClusters.length > 0 && (
           <p className="text-xs text-slate-500 font-mono">{selectedClusters.join(', ')}</p>
         )}
@@ -2347,6 +2378,27 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
               <option value="sct">SCTransform</option>
             </select>
           </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Integration</label>
+            <select value={integration} onChange={e => setIntegration(e.target.value as SubclusterIntegration)}
+              className="border border-slate-300 rounded px-2 py-1 text-sm">
+              <option value="none">None</option>
+              {(['cca', 'rpca', 'harmony'] as SubclusterIntegration[]).map(m => (
+                <option key={m} value={m}>
+                  {INTEGRATION_LABELS[m]}{detectedIntegrations.includes(m) ? ' (detected)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          {integration !== 'none' && (
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">Sample column</label>
+              <select value={batchCol} onChange={e => setBatchCol(e.target.value)}
+                className="border border-slate-300 rounded px-2 py-1 text-sm max-w-[10rem]">
+                {metaColumns.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          )}
           <div>
             <label className="text-xs text-slate-500 block mb-1">Vars to regress (CSV)</label>
             <input value={varsToRegress} onChange={e => setVarsToRegress(e.target.value)}
@@ -2422,6 +2474,9 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
             <p className="text-sm text-slate-600">
               <b>{result.n_cells_before.toLocaleString()}</b> → <b>{result.n_cells_after.toLocaleString()}</b> cells
               · {result.species} detected
+              · {result.integration && result.integration !== 'none'
+                  ? <>re-integrated with {INTEGRATION_LABELS[result.integration]} over {result.batch_col}</>
+                  : 'not integrated'}
               · TCR excluded: {result.excluded_tcr.length}, BCR/Ig excluded: {result.excluded_bcr.length}
             </p>
             {result.cache_key && (
@@ -2499,6 +2554,11 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
                       <b>{entry.group_by}</b>: {entry.clusters.join(', ')}
                     </span>
                     <span className="text-slate-500">{entry.use_sctransform ? 'SCTransform' : 'LogNormalize'}</span>
+                    {entry.integration && entry.integration !== 'none' && (
+                      <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">
+                        {INTEGRATION_LABELS[entry.integration]} ({entry.batch_col})
+                      </span>
+                    )}
                     <span className="text-slate-500">res {entry.cluster_resolution}</span>
                     {entry.rm_tcr && <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-full">TCR removed</span>}
                     {entry.rm_bcr && <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full">BCR removed</span>}

@@ -22,10 +22,11 @@ install_bioc <- function(...) {
 
 # ── CRAN ─────────────────────────────────────────────────────────────────────
 # readxl/tidyr/matrixStats: module_score.R (gene-list upload + AddModuleScore)
+# harmony: run_subcluster.R re-integration (HarmonyIntegration) of integrated objects
 install_cran(
   "dplyr", "jsonlite", "rmarkdown", "ggplot2", "patchwork",
   "stringr", "tibble", "DT", "hash", "msigdbr",
-  "readxl", "tidyr", "matrixStats"
+  "readxl", "tidyr", "matrixStats", "harmony"
 )
 
 # ── Bioconductor ─────────────────────────────────────────────────────────────
@@ -48,7 +49,7 @@ if (!already("CellChat")) {
 
 message("\nInstalled package versions:")
 pkgs <- c("CellChat", "clusterProfiler", "org.Hs.eg.db", "org.Mm.eg.db",
-          "msigdbr", "dplyr", "ggplot2", "rmarkdown", "DESeq2", "MAST")
+          "msigdbr", "dplyr", "ggplot2", "rmarkdown", "DESeq2", "MAST", "harmony")
 for (p in pkgs) {
   v <- tryCatch(as.character(packageVersion(p)), error = function(e) "MISSING")
   message(sprintf("  %-25s %s", p, v))

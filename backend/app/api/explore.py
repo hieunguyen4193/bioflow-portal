@@ -141,13 +141,19 @@ def _subcluster_cache_dir_for(rds_path: str) -> str:
 def _subcluster_cache_key(group_by: str, clusters: list[str], use_sctransform: bool,
                           vars_to_regress: str, num_pca: int, num_pcs_umap: int,
                           num_pcs_cluster: int, cluster_resolution: float,
-                          rm_tcr: bool, rm_bcr: bool) -> str:
+                          rm_tcr: bool, rm_bcr: bool,
+                          integration: str = "none", batch_col: str = "name") -> str:
     payload = {
         "group_by": group_by, "clusters": sorted(clusters),
         "use_sctransform": use_sctransform, "vars_to_regress": vars_to_regress,
         "num_pca": num_pca, "num_pcs_umap": num_pcs_umap, "num_pcs_cluster": num_pcs_cluster,
         "cluster_resolution": cluster_resolution, "rm_tcr": rm_tcr, "rm_bcr": rm_bcr,
     }
+    # Only part of the key when integrating, so results cached before the
+    # integration option existed (always unintegrated) still match "none".
+    if integration != "none":
+        payload["integration"] = integration
+        payload["batch_col"] = batch_col
     return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
 
 
@@ -778,6 +784,8 @@ class SubclusterRequest(BaseModel):
     cluster_resolution: float = 0.5
     rm_tcr:             bool = True
     rm_bcr:             bool = True
+    integration:        str = "none"   # "none" | "cca" | "rpca" | "harmony"
+    batch_col:          str = "name"   # sample column to integrate over
 
 
 def _write_subcluster_result(req: "SubclusterRequest", rds_path: str, cache_key: str,
@@ -796,6 +804,8 @@ def _write_subcluster_result(req: "SubclusterRequest", rds_path: str, cache_key:
         "cluster_resolution": req.cluster_resolution,
         "rm_tcr":             req.rm_tcr,
         "rm_bcr":             req.rm_bcr,
+        "integration":        result.get("integration", req.integration),
+        "batch_col":          result.get("batch_col"),
         "species":            result.get("species", "unknown"),
         "n_cells_before":     result.get("n_cells_before"),
         "n_cells_after":      result.get("n_cells_after"),
@@ -823,7 +833,7 @@ def _run_subcluster_background(task_id: str, req: "SubclusterRequest", rds_path:
         str(req.num_pca), str(req.num_pcs_umap), str(req.num_pcs_cluster),
         str(req.cluster_resolution),
         "true" if req.rm_tcr else "false", "true" if req.rm_bcr else "false",
-        out_rds_path,
+        out_rds_path, req.integration, req.batch_col,
     ]
     proc = None
     try:
@@ -873,11 +883,13 @@ async def start_subcluster(req: SubclusterRequest, current_user: User = Depends(
     clusters_list = [c.strip() for c in req.clusters.split(",") if c.strip()]
     if not clusters_list:
         raise HTTPException(400, "Select at least one cluster to sub-cluster")
+    if req.integration not in ("none", "cca", "rpca", "harmony"):
+        raise HTTPException(400, "integration must be one of none, cca, rpca, harmony")
 
     cache_key = _subcluster_cache_key(
         req.group_by, clusters_list, req.use_sctransform, req.vars_to_regress,
         req.num_pca, req.num_pcs_umap, req.num_pcs_cluster, req.cluster_resolution,
-        req.rm_tcr, req.rm_bcr,
+        req.rm_tcr, req.rm_bcr, req.integration, req.batch_col,
     )
 
     cached_entry = _read_subcluster_cache_entry(rds_path, cache_key)

@@ -325,12 +325,17 @@ export interface SubclusterResult {
   species:        string
   excluded_tcr:   string[]
   excluded_bcr:   string[]
+  integration?:   SubclusterIntegration
+  batch_col?:     string | null
   reductions:     Record<string, { x: number[]; y: number[]; cells: string[] }>
   metadata:       Record<string, string[]>
   cells:          string[]
   cache_key?:     string
   cached?:        boolean
 }
+
+export type SubclusterIntegration = 'none' | 'cca' | 'rpca' | 'harmony'
+
 
 export interface SubclusterCacheEntry {
   cache_key:          string
@@ -346,6 +351,8 @@ export interface SubclusterCacheEntry {
   cluster_resolution: number
   rm_tcr:             boolean
   rm_bcr:             boolean
+  integration?:       SubclusterIntegration   // absent on entries cached before integration support
+  batch_col?:         string | null
   species:            string
   n_cells_before:     number
   n_cells_after:      number
@@ -367,6 +374,8 @@ export async function startSubcluster(params: {
   cluster_resolution: number
   rm_tcr: boolean
   rm_bcr: boolean
+  integration: SubclusterIntegration
+  batch_col: string
 }): Promise<SubclusterStartResponse> {
   const { data } = await api.post<SubclusterStartResponse>('/explore/subcluster/start', params)
   return data

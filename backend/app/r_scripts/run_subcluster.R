@@ -16,6 +16,10 @@ cluster_resolution  <- as.numeric(args[9])
 rm_tcr              <- tolower(args[10]) == "true"
 rm_bcr              <- tolower(args[11]) == "true"
 out_rds_path        <- args[12]
+# Integration: "auto" (detect from the parent object), "none", "cca", "rpca" or "harmony".
+integration_arg     <- if (length(args) >= 13 && nchar(args[13]) > 0) tolower(args[13]) else "auto"
+# Metadata column holding the sample/batch the integration is done over.
+batch_col           <- if (length(args) >= 14 && nchar(args[14]) > 0) args[14] else "name"
 
 clusters        <- trimws(strsplit(clusters_arg, ",")[[1]])
 vars.to.regress <- if (nchar(vars_to_regress_arg) > 0) trimws(strsplit(vars_to_regress_arg, ",")[[1]]) else character(0)
@@ -38,8 +42,32 @@ if (n_keep < 20)
   stop(sprintf("Only %d cells match the selected clusters (%s) in '%s' — need at least 20 to re-cluster.",
                n_keep, paste(clusters, collapse = ", "), group_by))
 
+# ── Integrated parent object? ─────────────────────────────────────────────────────
+# The Seurat pipeline (S8) integrates with IntegrateLayers into the reductions
+# "integrated.cca" / "integrated.rpca" / "harmony". After subsetting, the integration
+# has to be redone on the subset, otherwise the new PCA/UMAP/clusters are
+# unintegrated. "auto" picks the first of these the parent object has.
+red_names <- c(cca = "integrated.cca", rpca = "integrated.rpca", harmony = "harmony")
+detected  <- names(red_names)[red_names %in% names(s.obj@reductions)]
+message("Integrations found in parent object: ",
+        if (length(detected)) paste(detected, collapse = ", ") else "none")
+
+integration <- if (integration_arg == "auto") (if (length(detected)) detected[1] else "none") else integration_arg
+if (!integration %in% c("none", names(red_names)))
+  stop("Unknown integration method '", integration_arg, "' (use auto, none, cca, rpca or harmony).")
+
 s.obj <- subset(s.obj, cells = colnames(s.obj)[keep])
 message(sprintf("Subset: %d -> %d cells", n_cells_before, ncol(s.obj)))
+
+if (integration != "none") {
+  if (!batch_col %in% colnames(s.obj@meta.data))
+    stop(sprintf("Sample column '%s' not found in this Seurat object.", batch_col))
+  n_batches <- length(unique(as.character(s.obj@meta.data[[batch_col]])))
+  if (n_batches < 2)
+    stop(sprintf("The selected cells all come from one value of '%s' — nothing to integrate. Choose 'None' for integration.", batch_col))
+  message(sprintf("Re-integrating the subset with %s over '%s' (%d samples)",
+                  toupper(integration), batch_col, n_batches))
+}
 
 # Drop prior reductions/graphs/scale.data from the parent object — they describe the
 # full dataset, not this subset, and would otherwise linger as stale/misleading state
@@ -73,22 +101,48 @@ if (rm_bcr) remove.genes <- c(remove.genes, BCRgenes.to.exclude)
 message(sprintf("Excluded from PCA — TCR: %d, BCR/Ig: %d",
                 length(TCRgenes.to.exclude) * rm_tcr, length(BCRgenes.to.exclude) * rm_bcr))
 
-# ── Re-normalise and re-cluster the subset from scratch ───────────────────────────
+# ── Re-normalise, (re-integrate) and re-cluster the subset ───────────────────────
+# Same steps as the pipeline's S8: split RNA into one layer per sample, normalise,
+# PCA, IntegrateLayers, then neighbours/clusters/UMAP on the integrated reduction.
+if (integration != "none") {
+  s.obj[["RNA"]] <- split(s.obj[["RNA"]], f = as.character(s.obj@meta.data[[batch_col]]))
+}
+
 if (use_sctransform) {
   s.obj <- SCTransform(s.obj, vars.to.regress = vars.to.regress, verbose = TRUE)
+  normalization_method <- "SCT"
 } else {
   s.obj <- NormalizeData(s.obj, verbose = FALSE)
   s.obj <- FindVariableFeatures(s.obj, selection.method = "vst", verbose = FALSE)
   s.obj <- ScaleData(s.obj, features = VariableFeatures(s.obj),
                       vars.to.regress = if (length(vars.to.regress) > 0) vars.to.regress else NULL,
                       verbose = FALSE)
+  normalization_method <- "LogNormalize"
 }
 
 pca_features <- setdiff(VariableFeatures(s.obj), remove.genes)
 s.obj <- RunPCA(s.obj, npcs = num_pca, features = pca_features, reduction.name = "pca", verbose = TRUE)
-s.obj <- RunUMAP(s.obj, dims = 1:num_pcs_umap, reduction = "pca", reduction.name = "umap", verbose = TRUE)
-s.obj <- FindNeighbors(s.obj, dims = 1:num_pcs_cluster, reduction = "pca", verbose = TRUE)
+
+use_reduction <- "pca"
+if (integration != "none") {
+  if (integration == "harmony" && !requireNamespace("harmony", quietly = TRUE)) {
+    message("Installing harmony...")
+    install.packages("harmony", repos = "https://cloud.r-project.org", quiet = TRUE)
+  }
+  method_fn <- switch(integration, cca = CCAIntegration, rpca = RPCAIntegration, harmony = HarmonyIntegration)
+  s.obj <- IntegrateLayers(s.obj, method = method_fn, orig.reduction = "pca",
+                           new.reduction = red_names[[integration]],
+                           normalization.method = normalization_method, verbose = TRUE)
+  use_reduction <- red_names[[integration]]
+}
+
+s.obj <- RunUMAP(s.obj, dims = 1:num_pcs_umap, reduction = use_reduction, reduction.name = "umap", verbose = TRUE)
+s.obj <- FindNeighbors(s.obj, dims = 1:num_pcs_cluster, reduction = use_reduction, verbose = TRUE)
 s.obj <- FindClusters(s.obj, resolution = cluster_resolution, random.seed = 42, verbose = TRUE)
+
+if (integration != "none") {
+  s.obj <- JoinLayers(s.obj, assay = "RNA")
+}
 
 saveRDS(s.obj, out_rds_path)
 message(sprintf("Saved sub-clustered object: %s", out_rds_path))
@@ -112,6 +166,9 @@ result <- list(
   species        = if (is_human) "human" else "mouse",
   excluded_tcr   = if (rm_tcr) as.list(TCRgenes.to.exclude) else list(),
   excluded_bcr   = if (rm_bcr) as.list(BCRgenes.to.exclude) else list(),
+  integration    = integration,
+  detected_integrations = as.list(detected),
+  batch_col      = if (integration != "none") batch_col else NA,
   reductions     = reductions,
   metadata       = meta_out,
   cells          = rownames(meta)
