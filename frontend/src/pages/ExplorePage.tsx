@@ -2147,11 +2147,11 @@ function DgeClusterResultPanel({ cl, results, mode, search, setSearch, sortCol, 
 // switching to this tab is the whole "choose a cluster name, choose clusters"
 // workflow, with no separate selector duplicating that UI.
 // Reduction names the Seurat pipeline's S8 step gives each integration method.
-const INTEGRATION_REDUCTIONS: Record<Exclude<SubclusterIntegration, 'none'>, string> = {
+const INTEGRATION_REDUCTIONS: Record<'cca' | 'rpca' | 'harmony', string> = {
   cca: 'integrated.cca', rpca: 'integrated.rpca', harmony: 'harmony',
 }
 const INTEGRATION_LABELS: Record<SubclusterIntegration, string> = {
-  none: 'None', cca: 'CCA', rpca: 'RPCA', harmony: 'Harmony',
+  none: 'None', cca: 'CCA', rpca: 'RPCA', harmony: 'Harmony', all: 'CCA + RPCA + Harmony',
 }
 
 function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }: any) {
@@ -2165,14 +2165,16 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
   const [rmBCR, setRmBCR] = useState(true)
 
   // Integrated parent objects (pipeline S8 reductions) must be re-integrated after
-  // subsetting, or the new UMAP/clusters are unintegrated. Default to the first
-  // integration the object carries; the user can override or turn it off.
+  // subsetting, or the new UMAP/clusters are unintegrated. Default to what the
+  // object carries — all three (as the pipeline produces) -> "all", otherwise the
+  // first one found; the user can override or turn it off.
   const detectedIntegrations = useMemo(() => (
     (Object.entries(INTEGRATION_REDUCTIONS) as [SubclusterIntegration, string][])
       .filter(([, red]) => red in (meta.reductions ?? {}))
       .map(([m]) => m)
   ), [meta])
-  const [integration, setIntegration] = useState<SubclusterIntegration>(detectedIntegrations[0] ?? 'none')
+  const allDetected = detectedIntegrations.length === 3
+  const [integration, setIntegration] = useState<SubclusterIntegration>(allDetected ? 'all' : (detectedIntegrations[0] ?? 'none'))
   const metaColumns = Object.keys(meta.metadata ?? {})
   const [batchCol, setBatchCol] = useState<string>(metaColumns.includes('name') ? 'name' : (metaColumns[0] ?? 'name'))
 
@@ -2206,9 +2208,36 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
   const subclusterMeta = useMemo(() => (
     result ? { reductions: result.reductions, cells: result.cells, metadata: result.metadata } : null
   ), [result])
-  const subclusterColorBy = result?.metadata.seurat_clusters
-    ? 'seurat_clusters'
-    : Object.keys(result?.metadata ?? {})[0] ?? ''
+  // With "all" integrations the result has one UMAP + cluster column per method
+  // (integrated_cca_UMAP / integrated_cca.cluster.<res>, ...) instead of a single
+  // umap / seurat_clusters, so the preview lets the user pick which to show.
+  const previewReductions = useMemo(() => (
+    Object.keys(result?.reductions ?? {}).filter(r => /umap/i.test(r))
+  ), [result])
+  const previewColorCols = useMemo(() => (
+    Object.keys(result?.metadata ?? {}).filter(c => c === 'seurat_clusters' || /\.cluster\./.test(c))
+  ), [result])
+  const [previewReduction, setPreviewReduction] = useState('')
+  const [previewColorBy,   setPreviewColorBy]   = useState('')
+  // The new clusters for a UMAP, e.g. harmony_UMAP -> harmony.cluster.0.5. (The subset
+  // also carries the parent's old cluster columns, so don't just take the first one.)
+  function clustersFor(red: string) {
+    if (red === 'umap' && previewColorCols.includes('seurat_clusters')) return 'seurat_clusters'
+    const tag = red.replace(/_UMAP$/, '')
+    return previewColorCols.find(c => c.startsWith(tag + '.cluster.'))
+  }
+  useEffect(() => {
+    const red = previewReductions.includes('umap') ? 'umap'
+      : (previewReductions.find(r => r.startsWith('integrated_cca')) ?? previewReductions[0] ?? '')
+    setPreviewReduction(red)
+    setPreviewColorBy(clustersFor(red) ?? previewColorCols[0] ?? '')
+  }, [previewReductions, previewColorCols])
+  function pickPreviewReduction(red: string) {
+    setPreviewReduction(red)
+    const match = clustersFor(red)
+    if (match) setPreviewColorBy(match)
+  }
+  const subclusterColorBy = previewColorBy || (Object.keys(result?.metadata ?? {})[0] ?? '')
   const subclusterClusterVals = useMemo(() => (
     result ? [...new Set(result.metadata[subclusterColorBy] ?? [])] : []
   ), [result, subclusterColorBy])
@@ -2388,6 +2417,7 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
                   {INTEGRATION_LABELS[m]}{detectedIntegrations.includes(m) ? ' (detected)' : ''}
                 </option>
               ))}
+              <option value="all">{INTEGRATION_LABELS.all}{allDetected ? ' (detected)' : ''}</option>
             </select>
           </div>
           {integration !== 'none' && (
@@ -2524,8 +2554,30 @@ function SubclusterTab({ meta, sessionId, colorBy, selectedClusters, onChanged }
             </div>
           )}
           {subclusterMeta && (
-            <UMAPTabMemo meta={subclusterMeta} reduction="umap" colorBy={subclusterColorBy}
-              splitBy="" selectedClusters={subclusterClusterVals} />
+            <>
+              {(previewReductions.length > 1 || previewColorCols.length > 1) && (
+                <div className="flex flex-wrap gap-4 items-end">
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">UMAP</label>
+                    <select value={previewReduction} onChange={e => pickPreviewReduction(e.target.value)}
+                      className="border border-slate-300 rounded px-2 py-1 text-sm">
+                      {previewReductions.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Colour by</label>
+                    <select value={previewColorBy} onChange={e => setPreviewColorBy(e.target.value)}
+                      className="border border-slate-300 rounded px-2 py-1 text-sm">
+                      {previewColorCols.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+              {previewReduction && (
+                <UMAPTabMemo meta={subclusterMeta} reduction={previewReduction} colorBy={subclusterColorBy}
+                  splitBy="" selectedClusters={subclusterClusterVals} />
+              )}
+            </>
           )}
         </div>
       )}

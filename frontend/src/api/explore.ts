@@ -334,7 +334,7 @@ export interface SubclusterResult {
   cached?:        boolean
 }
 
-export type SubclusterIntegration = 'none' | 'cca' | 'rpca' | 'harmony'
+export type SubclusterIntegration = 'none' | 'cca' | 'rpca' | 'harmony' | 'all'   // all = CCA + RPCA + Harmony
 
 
 export interface SubclusterCacheEntry {

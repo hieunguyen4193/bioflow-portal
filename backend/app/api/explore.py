@@ -784,7 +784,7 @@ class SubclusterRequest(BaseModel):
     cluster_resolution: float = 0.5
     rm_tcr:             bool = True
     rm_bcr:             bool = True
-    integration:        str = "none"   # "none" | "cca" | "rpca" | "harmony"
+    integration:        str = "none"   # "none" | "cca" | "rpca" | "harmony" | "all"
     batch_col:          str = "name"   # sample column to integrate over
 
 
@@ -883,8 +883,8 @@ async def start_subcluster(req: SubclusterRequest, current_user: User = Depends(
     clusters_list = [c.strip() for c in req.clusters.split(",") if c.strip()]
     if not clusters_list:
         raise HTTPException(400, "Select at least one cluster to sub-cluster")
-    if req.integration not in ("none", "cca", "rpca", "harmony"):
-        raise HTTPException(400, "integration must be one of none, cca, rpca, harmony")
+    if req.integration not in ("none", "cca", "rpca", "harmony", "all"):
+        raise HTTPException(400, "integration must be one of none, cca, rpca, harmony, all")
 
     cache_key = _subcluster_cache_key(
         req.group_by, clusters_list, req.use_sctransform, req.vars_to_regress,

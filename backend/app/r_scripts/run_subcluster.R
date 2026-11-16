@@ -16,7 +16,8 @@ cluster_resolution  <- as.numeric(args[9])
 rm_tcr              <- tolower(args[10]) == "true"
 rm_bcr              <- tolower(args[11]) == "true"
 out_rds_path        <- args[12]
-# Integration: "auto" (detect from the parent object), "none", "cca", "rpca" or "harmony".
+# Integration: "auto" (detect from the parent object), "none", "cca", "rpca", "harmony",
+# or "all" (CCA + RPCA + Harmony, same as the pipeline's S8 step).
 integration_arg     <- if (length(args) >= 13 && nchar(args[13]) > 0) tolower(args[13]) else "auto"
 # Metadata column holding the sample/batch the integration is done over.
 batch_col           <- if (length(args) >= 14 && nchar(args[14]) > 0) args[14] else "name"
@@ -53,8 +54,9 @@ message("Integrations found in parent object: ",
         if (length(detected)) paste(detected, collapse = ", ") else "none")
 
 integration <- if (integration_arg == "auto") (if (length(detected)) detected[1] else "none") else integration_arg
-if (!integration %in% c("none", names(red_names)))
-  stop("Unknown integration method '", integration_arg, "' (use auto, none, cca, rpca or harmony).")
+if (!integration %in% c("none", "all", names(red_names)))
+  stop("Unknown integration method '", integration_arg, "' (use auto, none, cca, rpca, harmony or all).")
+methods <- if (integration == "all") names(red_names) else if (integration == "none") character(0) else integration
 
 s.obj <- subset(s.obj, cells = colnames(s.obj)[keep])
 message(sprintf("Subset: %d -> %d cells", n_cells_before, ncol(s.obj)))
@@ -66,7 +68,7 @@ if (integration != "none") {
   if (n_batches < 2)
     stop(sprintf("The selected cells all come from one value of '%s' — nothing to integrate. Choose 'None' for integration.", batch_col))
   message(sprintf("Re-integrating the subset with %s over '%s' (%d samples)",
-                  toupper(integration), batch_col, n_batches))
+                  paste(toupper(methods), collapse = " + "), batch_col, n_batches))
 }
 
 # Drop prior reductions/graphs/scale.data from the parent object — they describe the
@@ -123,22 +125,38 @@ if (use_sctransform) {
 pca_features <- setdiff(VariableFeatures(s.obj), remove.genes)
 s.obj <- RunPCA(s.obj, npcs = num_pca, features = pca_features, reduction.name = "pca", verbose = TRUE)
 
-use_reduction <- "pca"
-if (integration != "none") {
-  if (integration == "harmony" && !requireNamespace("harmony", quietly = TRUE)) {
-    message("Installing harmony...")
-    install.packages("harmony", repos = "https://cloud.r-project.org", quiet = TRUE)
-  }
-  method_fn <- switch(integration, cca = CCAIntegration, rpca = RPCAIntegration, harmony = HarmonyIntegration)
-  s.obj <- IntegrateLayers(s.obj, method = method_fn, orig.reduction = "pca",
-                           new.reduction = red_names[[integration]],
+if ("harmony" %in% methods && !requireNamespace("harmony", quietly = TRUE)) {
+  message("Installing harmony...")
+  install.packages("harmony", repos = "https://cloud.r-project.org", quiet = TRUE)
+}
+method_fns <- list(cca = CCAIntegration, rpca = RPCAIntegration, harmony = HarmonyIntegration)
+for (m in methods) {
+  message(sprintf("Integrating with %s ...", toupper(m)))
+  s.obj <- IntegrateLayers(s.obj, method = method_fns[[m]], orig.reduction = "pca",
+                           new.reduction = red_names[[m]],
                            normalization.method = normalization_method, verbose = TRUE)
-  use_reduction <- red_names[[integration]]
 }
 
-s.obj <- RunUMAP(s.obj, dims = 1:num_pcs_umap, reduction = use_reduction, reduction.name = "umap", verbose = TRUE)
-s.obj <- FindNeighbors(s.obj, dims = 1:num_pcs_cluster, reduction = use_reduction, verbose = TRUE)
-s.obj <- FindClusters(s.obj, resolution = cluster_resolution, random.seed = 42, verbose = TRUE)
+if (integration == "all") {
+  # Same as the pipeline's S8: one clustering + UMAP per integration, named
+  # "<method>.cluster.<res>" and "<method>_UMAP"; no single seurat_clusters column.
+  for (m in methods) {
+    red <- red_names[[m]]
+    tag <- gsub("[^a-zA-Z0-9]", "_", red)
+    s.obj <- FindNeighbors(s.obj, dims = 1:num_pcs_cluster, reduction = red, verbose = TRUE)
+    s.obj <- FindClusters(s.obj, resolution = cluster_resolution, random.seed = 42,
+                          cluster.name = sprintf("%s.cluster.%s", tag, cluster_resolution), verbose = TRUE)
+    s.obj <- RunUMAP(s.obj, dims = 1:num_pcs_umap, reduction = red,
+                     reduction.name = sprintf("%s_UMAP", tag), verbose = TRUE)
+    message("Done: ", red)
+  }
+  s.obj$seurat_clusters <- NULL
+} else {
+  use_reduction <- if (length(methods)) red_names[[methods]] else "pca"
+  s.obj <- RunUMAP(s.obj, dims = 1:num_pcs_umap, reduction = use_reduction, reduction.name = "umap", verbose = TRUE)
+  s.obj <- FindNeighbors(s.obj, dims = 1:num_pcs_cluster, reduction = use_reduction, verbose = TRUE)
+  s.obj <- FindClusters(s.obj, resolution = cluster_resolution, random.seed = 42, verbose = TRUE)
+}
 
 if (integration != "none") {
   s.obj <- JoinLayers(s.obj, assay = "RNA")
