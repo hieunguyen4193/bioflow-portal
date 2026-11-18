@@ -215,7 +215,7 @@ function CacheManagerButton({ sessionId, onChanged }: { sessionId: string; onCha
 function Sidebar({
   meta, reduction, setReduction, colorBy, setColorBy,
   assay, setAssay, slot, setSlot,
-  splitBy, setSplitBy,
+  splitBy, setSplitBy, splitPlots, setSplitPlots,
   selectedClusters, setSelectedClusters,
 }: any) {
   const meta_cols = Object.keys(meta.metadata)
@@ -283,6 +283,11 @@ function Sidebar({
           <option value="">None</option>
           {meta_cols.map(c => <option key={c}>{c}</option>)}
         </select>
+        <label className={`mt-1.5 flex items-center gap-1.5 text-xs ${splitBy ? 'text-slate-600 cursor-pointer' : 'text-slate-300'}`}>
+          <input type="checkbox" checked={splitPlots} disabled={!splitBy}
+            onChange={e => setSplitPlots(e.target.checked)} />
+          Also apply to Feature / Violin / Box plots
+        </label>
       </div>
 
       <div>
@@ -459,6 +464,7 @@ const UMAPTabMemo = memo(UMAPTab)
 async function downloadPlotGridPdf(
   genes: string[], gridCols: number, panelW: number, panelH: number,
   plotRefs: { current: Record<string, any> }, filenamePrefix: string,
+  filenameParts: string[] = genes,
 ): Promise<void> {
   if (genes.length === 0) return
   const PlotlyLib = (window as any).Plotly
@@ -488,7 +494,7 @@ async function downloadPlotGridPdf(
     })
   }
 
-  doc.save(`${filenamePrefix}_${genes.join('_').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`)
+  doc.save(`${filenamePrefix}_${filenameParts.join('_').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`)
 }
 
 // ── Feature plot ───────────────────────────────────────────────────────────────
@@ -501,7 +507,7 @@ const FP_PANEL_SIZES: Record<number, { w: number; h: number; dot: number; fontSi
   4: { w: 300, h: 280, dot: 3, fontSize: 11 },
 }
 
-function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorBy, sessionId }: any) {
+function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorBy, splitBy, sessionId }: any) {
   const [geneInput,      setGeneInput]      = useState('')
   const [exprData,       setExprData]       = useState<Record<string, number[]> | null>(null)
   const [cells,          setCells]          = useState<string[]>([])
@@ -512,8 +518,27 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
 
   const red = meta.reductions[reduction]
   const validGenes = exprData ? Object.keys(exprData) : []
-  const gridCols = validGenes.length === 0 ? 1 : validGenes.length === 1 ? 1 : validGenes.length <= 4 ? 2 : validGenes.length <= 9 ? 3 : 4
-  const { w: panelW, h: panelH, dot: panelDot, fontSize: panelFontSize } = FP_PANEL_SIZES[gridCols]
+
+  // Split-by (when enabled in the sidebar): one row per gene, one column per split
+  // group — the layout of Seurat's FeaturePlot(split.by = ...).
+  const metaIndex = useMemo(
+    () => Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i])),
+    [meta.cells]
+  )
+  const splitMeta = useMemo<string[]>(() => {
+    if (!splitBy || !red) return []
+    const vals = meta.metadata[splitBy] ?? []
+    return red.cells.map((c: string) => String(vals[metaIndex[c]] ?? ''))
+  }, [splitBy, red, meta, metaIndex])
+  const splitGroups = useMemo<string[]>(() => [...new Set(splitMeta)], [splitMeta])
+  const isSplit = splitGroups.length > 0
+  const panelKeys = isSplit ? validGenes.flatMap(g => splitGroups.map(s => `${g}__${s}`)) : validGenes
+
+  const gridCols = isSplit
+    ? splitGroups.length
+    : validGenes.length === 0 ? 1 : validGenes.length === 1 ? 1 : validGenes.length <= 4 ? 2 : validGenes.length <= 9 ? 3 : 4
+  const sizeTier = isSplit ? Math.min(4, gridCols) : gridCols
+  const { w: panelW, h: panelH, dot: panelDot, fontSize: panelFontSize } = FP_PANEL_SIZES[sizeTier]
 
   async function fetchExpr() {
     const genes = geneInput.split(',').map((g: string) => g.trim()).filter(Boolean)
@@ -550,23 +575,21 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
 
     const idxMap        = Object.fromEntries(cells.map((c: string, i: number) => [c, i]))
     const colorVals     = meta.metadata[colorBy] ?? []
-    const metaIndex     = Object.fromEntries(meta.cells.map((c: string, i: number) => [c, i]))
     const clusterGroups = [...new Set(colorVals)] as string[]
+    const fullIndices   = red.cells.map((_: string, i: number) => i)
 
-    // Subsample indices for rendering — evenly spaced to preserve spatial coverage
-    const n_cells  = red.cells.length
-    const step     = n_cells > MAX_FP_POINTS ? n_cells / MAX_FP_POINTS : 1
-    const subIdx   = Array.from({ length: Math.min(n_cells, MAX_FP_POINTS) }, (_, i) => Math.floor(i * step))
-    const subCells = subIdx.map((i: number) => red.cells[i])
-    const subX     = subIdx.map((i: number) => red.x[i])
-    const subY     = subIdx.map((i: number) => red.y[i])
+    // Evenly spaced subsample (preserves spatial coverage) — per split group, so
+    // every panel gets up to MAX_FP_POINTS points rather than sharing one budget.
+    const subsample = (idx: number[]) => {
+      const step = idx.length > MAX_FP_POINTS ? idx.length / MAX_FP_POINTS : 1
+      return Array.from({ length: Math.min(idx.length, MAX_FP_POINTS) }, (_, i) => idx[Math.floor(i * step)])
+    }
 
     // Centroid label — one boxed annotation per cluster (full cell list for accuracy).
     // A plain text trace reads poorly against similarly-coloured points, so give each
     // label a white pill background instead.
-    const fullIndices = red.cells.map((_: string, i: number) => i)
-    const clusterAnnotations = clusterGroups.map(g => {
-      const idx = fullIndices.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
+    const makeAnnotations = (panelIdx: number[]) => clusterGroups.map(g => {
+      const idx = panelIdx.filter((i: number) => colorVals[metaIndex[red.cells[i]]] === g)
       if (!idx.length) return null
       return {
         x: idx.reduce((s: number, i: number) => s + red.x[i], 0) / idx.length,
@@ -581,61 +604,81 @@ function FeaturePlotTab({ meta, reduction, assay, slot, selectedClusters, colorB
       }
     }).filter(Boolean)
 
+    // One entry per panel column: all cells when unsplit, else each split group's cells
+    const panels = (isSplit
+      ? splitGroups.map(grp => ({ grp: grp as string | null, idx: fullIndices.filter((i: number) => splitMeta[i] === grp) }))
+      : [{ grp: null as string | null, idx: fullIndices }]
+    ).map(p => ({ ...p, sub: subsample(p.idx), annotations: makeAnnotations(p.idx) }))
+
+    // Fix every split panel's axes to the full extent so the same coordinates line
+    // up across panels (same reasoning as UMAPTab). Padded by 5% like Plotly's autorange.
+    let axisRange: { x: number[]; y: number[] } | null = null
+    if (isSplit && red.x.length) {
+      let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity
+      for (let i = 0; i < red.x.length; i++) {
+        xMin = Math.min(xMin, red.x[i]); xMax = Math.max(xMax, red.x[i])
+        yMin = Math.min(yMin, red.y[i]); yMax = Math.max(yMax, red.y[i])
+      }
+      const xPad = (xMax - xMin) * 0.05 || 1
+      const yPad = (yMax - yMin) * 0.05 || 1
+      axisRange = { x: [xMin - xPad, xMax + xPad], y: [yMin - yPad, yMax + yPad] }
+    }
+
     return (
       <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
-        {validGenes.map(gene => {
+        {validGenes.flatMap(gene => {
           const exprVals = exprData[gene]
           const allColor = red.cells.map((c: string) => exprVals[idxMap[c]] ?? 0)
-          const subColor = subIdx.map((i: number) => allColor[i])
-          const cmin = Math.min(...allColor)
-          const cmax = Math.max(...allColor)
+          // Colour scale shared across a gene's split panels so they're directly comparable
+          let cmin = Infinity, cmax = -Infinity
+          for (const v of allColor) { cmin = Math.min(cmin, v); cmax = Math.max(cmax, v) }
 
-          // Sort ascending by expression so high-expression points render on top
-          const order = Array.from({ length: subColor.length }, (_, i) => i)
-            .sort((a, b) => subColor[a] - subColor[b])
-          const sortedX     = order.map(i => subX[i])
-          const sortedY     = order.map(i => subY[i])
-          const sortedColor = order.map(i => subColor[i])
+          return panels.map(({ grp, sub, annotations }) => {
+            const refKey = grp === null ? gene : `${gene}__${grp}`
+            // Sort ascending by expression so high-expression points render on top
+            const order = [...sub].sort((a, b) => allColor[a] - allColor[b])
 
-          const markerTrace = {
-            type: 'scatter' as const,
-            mode: 'markers' as const,
-            x: sortedX, y: sortedY,
-            marker: {
-              color: sortedColor,
-              colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
-              cmin, cmax,
-              size: dot, opacity: 0.85,
-              showscale: true,
-              colorbar: { thickness: 10, len: 0.55, x: 1.02 },
-            },
-            hoverinfo: 'skip' as const,
-            name: gene,
-          }
+            const markerTrace = {
+              type: 'scatter' as const,
+              mode: 'markers' as const,
+              x: order.map(i => red.x[i]), y: order.map(i => red.y[i]),
+              marker: {
+                color: order.map(i => allColor[i]),
+                colorscale: [[0, '#d3d3d3'], [0.05, '#c6dbef'], [0.2, '#6baed6'], [0.5, '#2171b5'], [1, '#08306b']],
+                cmin, cmax,
+                size: dot, opacity: 0.85,
+                showscale: true,
+                colorbar: { thickness: 10, len: 0.55, x: 1.02 },
+              },
+              hoverinfo: 'skip' as const,
+              name: gene,
+            }
 
-          return (
-            <Plot key={`fp-${gene}-${reduction}`} data={[markerTrace]} layout={{
-              width: w, height: h,
-              title: { text: gene, font: { size: fontSize } },
-              xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 } },
-              yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 } },
-              annotations: clusterAnnotations,
-              margin: { t: 40, l: 50, r: 55, b: 45 },
-              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-            }} config={{ responsive: false }}
-              onInitialized={(_: any, gd: any) => { plotRefs.current[gene] = gd }}
-              onUpdate={(_: any, gd: any) => { plotRefs.current[gene] = gd }} />
-          )
+            return (
+              <Plot key={`fp-${refKey}-${reduction}`} data={[markerTrace]} layout={{
+                width: w, height: h,
+                title: { text: grp === null ? gene : `${gene} — ${grp}`, font: { size: fontSize } },
+                xaxis: { title: `${reduction}_1`, showgrid: false, zeroline: false, constrain: 'domain', titlefont: { size: fontSize - 2 }, range: axisRange?.x },
+                yaxis: { title: `${reduction}_2`, showgrid: false, zeroline: false, scaleanchor: 'x', scaleratio: 1, titlefont: { size: fontSize - 2 }, range: axisRange?.y },
+                annotations,
+                margin: { t: 40, l: 50, r: 55, b: 45 },
+                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+              }} config={{ responsive: false }}
+                onInitialized={(_: any, gd: any) => { plotRefs.current[refKey] = gd }}
+                onUpdate={(_: any, gd: any) => { plotRefs.current[refKey] = gd }} />
+            )
+          })
         })}
       </div>
     )
-  }, [exprData, cells, red, meta, colorBy, reduction, validGenes, gridCols, panelW, panelH, panelDot, panelFontSize])
+  }, [exprData, cells, red, meta, metaIndex, colorBy, reduction, validGenes, isSplit, splitGroups, splitMeta, gridCols, panelW, panelH, panelDot, panelFontSize])
 
   const [pdfExporting, setPdfExporting] = useState(false)
   async function handleDownloadPdf() {
     setPdfExporting(true)
     try {
-      await downloadPlotGridPdf(validGenes, gridCols, panelW, panelH, plotRefs, 'FeaturePlot')
+      await downloadPlotGridPdf(panelKeys, gridCols, panelW, panelH, plotRefs, 'FeaturePlot',
+        isSplit ? [...validGenes, 'split', splitBy] : validGenes)
     } catch (e) {
       toast.error('Download failed: ' + String(e))
     } finally {
@@ -696,7 +739,7 @@ const DIST_PANEL_SIZES: Record<number, { w: number; h: number; fontSize: number 
 // Shared by the Violin Plot and Box Plot tabs — identical in every way except the
 // Plotly trace type and a couple of trace-only options, so both tabs are just this
 // component mounted with a different `plotType`.
-function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, sessionId, plotType }: any) {
+function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, splitBy, sessionId, plotType }: any) {
   const [geneInput,      setGeneInput]      = useState('')
   const [exprData,       setExprData]       = useState<Record<string, number[]> | null>(null)
   const [cells,          setCells]          = useState<string[]>([])
@@ -708,6 +751,14 @@ function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, ses
   const colorVals = meta.metadata[colorBy] ?? []
   const colorMap  = catColorMap(colorVals)
   const groups    = ([...new Set(colorVals)] as string[]).sort()
+  // Split-by (when enabled in the sidebar): within each cluster, one violin/box per
+  // split group, coloured by split group — like Seurat's VlnPlot(split.by = ...).
+  const splitVals   = useMemo<string[]>(
+    () => splitBy ? (meta.metadata[splitBy] ?? []).map((v: any) => String(v ?? '')) : [],
+    [meta, splitBy]
+  )
+  const splitGroups = useMemo(() => [...new Set(splitVals)], [splitVals])
+  const splitColors = useMemo(() => catColorMap(splitGroups), [splitGroups])
   const validGenes = exprData ? Object.keys(exprData) : []
   const gridCols   = validGenes.length === 0 ? 1 : validGenes.length === 1 ? 1 : validGenes.length <= 4 ? 2 : validGenes.length <= 9 ? 3 : 4
   const { w: panelW, h: panelH, fontSize: panelFontSize } = DIST_PANEL_SIZES[gridCols]
@@ -757,11 +808,22 @@ function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, ses
     const cols = gridCols
     const w = panelW, h = panelH, fontSize = panelFontSize
     const idxMap = Object.fromEntries(cells.map((c, i) => [c, i]))
+    const groupSet = new Set(groups)
 
     return (
       <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, ${w}px)`, gap: 12 }}>
         {validGenes.map(gene => {
-          const traces = groups.map(grp => {
+          const traces = splitBy ? splitGroups.map(sg => {
+            // x carries each cell's cluster so Plotly groups this split's bodies side by
+            // side with the other splits' within every cluster slot (violinmode/boxmode 'group')
+            const cellIdx = meta.cells.map((_: string, i: number) => i)
+              .filter((i: number) => splitVals[i] === sg && groupSet.has(colorVals[i]))
+            const x = cellIdx.map((i: number) => String(colorVals[i]))
+            const y = cellIdx.map((i: number) => exprData[gene][idxMap[meta.cells[i]]] ?? 0)
+            return plotType === 'box'
+              ? { type: 'box' as const, name: sg, legendgroup: sg, x, y, boxmean: true, boxpoints: 'outliers' as const, marker: { color: splitColors[sg] } }
+              : { type: 'violin' as const, name: sg, legendgroup: sg, scalegroup: sg, x, y, box: { visible: true }, meanline: { visible: true }, marker: { color: splitColors[sg] }, line: { color: splitColors[sg] }, points: false as const }
+          }) : groups.map(grp => {
             const y = meta.cells
               .filter((_: string, i: number) => colorVals[i] === grp)
               .map((c: string) => exprData[gene][idxMap[c]] ?? 0)
@@ -776,13 +838,15 @@ function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, ses
             <Plot key={`dist-${gene}`} data={traces} layout={{
               width: w, height: h,
               title: { text: gene, font: { size: fontSize } },
-              xaxis: { title: colorBy, type: 'category', tickangle: -45, tickfont: { size: fontSize - 2 } },
+              xaxis: { title: colorBy, type: 'category', tickangle: -45, tickfont: { size: fontSize - 2 },
+                categoryorder: 'array', categoryarray: groups },
               yaxis: { title: 'Expression', zeroline: false, titlefont: { size: fontSize - 1 } },
               violinmode: 'group',
               violingap: 0.15,
               boxmode: 'group',
               boxgap: 0.15,
-              showlegend: false,
+              showlegend: !!splitBy,
+              legend: { title: { text: splitBy }, font: { size: fontSize - 2 } },
               margin: { t: 40, l: 55, r: 15, b: 90 },
               paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
             }} config={{ responsive: false }}
@@ -792,7 +856,7 @@ function DistributionPlotTab({ meta, assay, slot, selectedClusters, colorBy, ses
         })}
       </div>
     )
-  }, [exprData, cells, meta, colorBy, colorVals, groups, colorMap, plotType, validGenes, gridCols, panelW, panelH, panelFontSize])
+  }, [exprData, cells, meta, colorBy, colorVals, groups, colorMap, splitBy, splitVals, splitGroups, splitColors, plotType, validGenes, gridCols, panelW, panelH, panelFontSize])
 
   return (
     <div className="p-4 space-y-4">
@@ -4593,7 +4657,7 @@ function GuideTab() {
       details: [
         { label: 'Reduction', text: 'Choose the dimensionality reduction to display (UMAP, tSNE, PCA, …) from the sidebar.' },
         { label: 'Colour by', text: 'Select any metadata column — cluster identity, sample, cell type, etc. — to colour cells.' },
-        { label: 'Split by', text: 'Optionally split the plot into one panel per category of a second metadata column.' },
+        { label: 'Split by', text: 'Optionally split the plot into one panel per category of a second metadata column. Tick "Also apply to Feature / Violin / Box plots" under it in the sidebar to split those tabs too.' },
         { label: 'Subset clusters', text: 'Check/uncheck cluster labels in the sidebar to focus the plot on specific populations.' },
       ],
     },
@@ -4605,6 +4669,7 @@ function GuideTab() {
         { label: 'Genes', text: 'Type one or more comma-separated gene names (e.g. CD3E, CD8A). Expression is fetched from the selected assay and slot.' },
         { label: 'Assay / slot', text: 'Set in the sidebar. "data" (log-normalised) is the default; "counts" gives raw counts.' },
         { label: 'Subset', text: 'Only cells in the selected cluster subset are shown.' },
+        { label: 'Split by', text: 'With "Also apply to Feature / Violin / Box plots" ticked in the sidebar, each gene gets one row with one panel per split-by category. Axes and the colour scale are shared within a row so the panels can be compared directly.' },
         { label: 'Download PDF', text: 'Exports all gene panels tiled onto a single vector PDF page (like ggsave() in R) — paths stay fully editable when opened in Illustrator, unlike a flattened screenshot.' },
       ],
     },
@@ -4616,6 +4681,7 @@ function GuideTab() {
         { label: 'Genes', text: 'Comma-separated gene names — one violin group per gene per cluster.' },
         { label: 'Colour by', text: 'Controls which metadata column defines the x-axis grouping.' },
         { label: 'Subset', text: 'Restricts which clusters appear on the x-axis.' },
+        { label: 'Split by', text: 'With "Also apply to Feature / Violin / Box plots" ticked in the sidebar, every cluster shows one body per split-by category side by side, coloured by that category (like VlnPlot(split.by = ...)).' },
         { label: 'Download PDF', text: 'Exports all gene panels tiled onto a single vector PDF page (like ggsave() in R) — paths stay fully editable when opened in Illustrator, unlike a flattened screenshot.' },
       ],
     },
@@ -4627,6 +4693,7 @@ function GuideTab() {
         { label: 'Genes', text: 'Comma-separated gene names — one box per gene per cluster.' },
         { label: 'Colour by', text: 'Controls which metadata column defines the x-axis grouping.' },
         { label: 'Subset', text: 'Restricts which clusters appear on the x-axis.' },
+        { label: 'Split by', text: 'With "Also apply to Feature / Violin / Box plots" ticked in the sidebar, every cluster shows one body per split-by category side by side, coloured by that category (like VlnPlot(split.by = ...)).' },
         { label: 'Download PDF', text: 'Exports all gene panels tiled onto a single vector PDF page (like ggsave() in R) — paths stay fully editable when opened in Illustrator, unlike a flattened screenshot.' },
       ],
     },
@@ -4794,6 +4861,9 @@ export default function ExplorePage() {
   const [assay,    setAssay]    = useState('RNA')
   const [slot,     setSlot]     = useState('data')
   const [splitBy,  setSplitBy]  = useState('')
+  // Whether the sidebar's split-by also applies to the Feature / Violin / Box plot tabs
+  const [splitPlots, setSplitPlots] = useState(false)
+  const plotSplitBy = splitPlots ? splitBy : ''
   const [selectedClusters, setSelectedClusters] = useState<string[]>([])
   // Bumped whenever a DGE run/load/delete happens, so PathwayTab knows to refetch its
   // cached-results list from the backend (which is the source of truth, not local state).
@@ -4885,6 +4955,7 @@ export default function ExplorePage() {
         }}
         assay={assay} setAssay={setAssay} slot={slot} setSlot={setSlot}
         splitBy={splitBy} setSplitBy={setSplitBy}
+        splitPlots={splitPlots} setSplitPlots={setSplitPlots}
         selectedClusters={selectedClusters} setSelectedClusters={setSelectedClusters}
       />
 
@@ -4946,19 +5017,19 @@ export default function ExplorePage() {
             <div className={tab === 'Feature Plot' ? '' : 'hidden'}>
               <FeaturePlotTabMemo meta={meta} reduction={reduction}
                 assay={assay} slot={slot} selectedClusters={selectedClusters}
-                colorBy={colorBy} sessionId={meta.session_id} />
+                colorBy={colorBy} splitBy={plotSplitBy} sessionId={meta.session_id} />
             </div>
           )}
           {visitedTabs.has('Violin Plot') && (
             <div className={tab === 'Violin Plot' ? '' : 'hidden'}>
               <DistributionPlotTabMemo meta={meta} assay={assay} slot={slot}
-                selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="violin" />
+                selectedClusters={selectedClusters} colorBy={colorBy} splitBy={plotSplitBy} sessionId={meta.session_id} plotType="violin" />
             </div>
           )}
           {visitedTabs.has('Box Plot') && (
             <div className={tab === 'Box Plot' ? '' : 'hidden'}>
               <DistributionPlotTabMemo meta={meta} assay={assay} slot={slot}
-                selectedClusters={selectedClusters} colorBy={colorBy} sessionId={meta.session_id} plotType="box" />
+                selectedClusters={selectedClusters} colorBy={colorBy} splitBy={plotSplitBy} sessionId={meta.session_id} plotType="box" />
             </div>
           )}
           {visitedTabs.has('Module Score') && (
