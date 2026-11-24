@@ -4,9 +4,6 @@ import { useAuthStore } from './store/auth'
 import { getMe } from './api/auth'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
-import DashboardPage from './pages/DashboardPage'
-import SubmitJobPage from './pages/SubmitJobPage'
-import JobDetailPage from './pages/JobDetailPage'
 import AdminPage from './pages/AdminPage'
 import Layout from './components/Layout'
 
@@ -19,7 +16,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 function RequireAdmin({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user)
   if (!user) return null
-  if (!user.is_admin) return <Navigate to="/" replace />
+  if (!user.is_admin) return <Navigate to="/explore" replace />
   return <>{children}</>
 }
 
@@ -35,11 +32,11 @@ export default function App() {
       <Route path="/login"    element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
-        <Route index element={<DashboardPage />} />
-        <Route path="submit"  element={<SubmitJobPage />} />
-        <Route path="jobs/:id" element={<JobDetailPage />} />
+        {/* Interactive data analysis (ExplorePage) is the only app page; Layout keeps it mounted. */}
+        <Route index element={<Navigate to="/explore" replace />} />
         <Route path="explore" element={null} />
         <Route path="admin" element={<RequireAdmin><AdminPage /></RequireAdmin>} />
+        <Route path="*" element={<Navigate to="/explore" replace />} />
       </Route>
     </Routes>
   )

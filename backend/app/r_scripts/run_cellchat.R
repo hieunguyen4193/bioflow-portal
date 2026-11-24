@@ -27,6 +27,8 @@ rmarkdown::render(
   output_file   = output_html,
   output_dir    = outputdir,
   knit_root_dir = outputdir,
+  # The Rmd sits in the shared r_scripts dir — keep render's temp files per run.
+  intermediates_dir = outputdir,
   params = list(
     sample.id           = sample_id,
     path.to.s.obj       = rds_path,

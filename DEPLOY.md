@@ -26,12 +26,12 @@ cd bioflow-portal
 
 ## 2 — Choose a data directory and create it
 
-All uploads, pipeline results, and Explore session data (including saved presets) are stored under one directory that you choose. It does **not** need to live inside the repo — point it at a dedicated disk, a mounted volume, or wherever you want persistent storage to live.
+All Explore data (saved presets, uploaded objects, caches and analysis results) are stored under one directory that you choose. It does **not** need to live inside the repo — point it at a dedicated disk, a mounted volume, or wherever you want persistent storage to live.
 
 ```bash
 # Example: a dedicated path outside the repo
 export BIOFLOW_DATA_DIR=/mnt/bioflow-data
-mkdir -p "$BIOFLOW_DATA_DIR"/{uploads,results,explore}
+mkdir -p "$BIOFLOW_DATA_DIR"/explore
 ```
 
 (You can also just use a path inside the repo, e.g. `bioflow-portal/data`, if you don't need it elsewhere — that's only a default suggestion, not a requirement.)
@@ -59,7 +59,7 @@ PIPELINE_IMAGE=pipeline-portal/r-pipeline:latest
 ```
 
 > **Why host paths?** The backend calls `docker run` via the Docker socket.
-> The host Docker daemon interprets volume paths as paths on the *host machine*, not inside the backend container. `docker-compose.yml` also mounts `${BIOFLOW_DATA_DIR}/uploads`, `${BIOFLOW_DATA_DIR}/results`, and `${BIOFLOW_DATA_DIR}/explore` directly into the backend container, so this one variable controls all data storage.
+> The host Docker daemon interprets volume paths as paths on the *host machine*, not inside the backend container. `docker-compose.yml` also mounts `${BIOFLOW_DATA_DIR}/explore` into the backend container, so this one variable controls all data storage.
 
 ### `backend/.env`
 
@@ -76,18 +76,6 @@ SECRET_KEY=<paste generated key here>
 
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=10080
-
-UPLOAD_DIR=/data/uploads
-RESULTS_DIR=/data/results
-NEXTFLOW_BIN=nextflow
-NEXTFLOW_PIPELINES_DIR=/nextflow/pipelines
-
-# Optional — fill in only if you want email notifications
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your@email.com
-SMTP_PASSWORD=your-app-password
-EMAILS_FROM=noreply@bioflow.local
 ```
 
 ---
@@ -187,10 +175,8 @@ docker compose up --build -d
 bioflow-portal/
 ├── backend/
 │   ├── .env                      ← secret key, SMTP config
-│   └── app/r_scripts/            ← R scripts mounted into pipeline containers at runtime
+│   └── app/r_scripts/            ← R scripts (and the CellChat Rmd report) mounted into the R containers
 ├── frontend/
-├── nextflow/
-│   └── pipelines/                ← Nextflow pipeline definitions and Rmd reports
 ├── pipeline-image/
 │   ├── Dockerfile                ← extends base image with all R packages baked in
 │   └── install_packages.R        ← package list (edit here to add new packages)
@@ -199,8 +185,6 @@ bioflow-portal/
 └── docker-compose.yml
 
 $BIOFLOW_DATA_DIR/                ← lives wherever you chose in step 2, not necessarily in the repo
-├── uploads/                      ← uploaded input files
-├── results/                      ← Nextflow pipeline outputs
 └── explore/                      ← Explore page session data, presets, and analysis results
 ```
 
@@ -210,7 +194,7 @@ $BIOFLOW_DATA_DIR/                ← lives wherever you chose in step 2, not ne
 
 - [ ] Install Docker (24+) and Docker Compose v2
 - [ ] `git clone` the repository
-- [ ] Choose a data directory and `mkdir -p $BIOFLOW_DATA_DIR/{uploads,results,explore}`
+- [ ] Choose a data directory and `mkdir -p $BIOFLOW_DATA_DIR/explore`
 - [ ] Copy and edit `.env` (set `BIOFLOW_DATA_DIR`, `BIOFLOW_R_SCRIPTS`, `PIPELINE_IMAGE`)
 - [ ] Copy and edit `backend/.env` (set `SECRET_KEY`)
 - [ ] Build or pull the R pipeline image
@@ -242,8 +226,8 @@ docker build -t pipeline-portal/r-pipeline:latest ./pipeline-image/
 ### CellChat report shows nothing / "Open in new tab" is blank
 Make sure the Vite dev server is running (frontend container). The `/explore` route is proxied through Vite to the backend — if you access the frontend directly on port 8000 it will not work.
 
-### Nextflow pipeline fails with "Docker not found"
-Confirm this volume is present in `docker-compose.yml`:
+### Analysis fails with "Docker not found"
+The backend starts the R analyses as sibling containers. Confirm this volume is present in `docker-compose.yml`:
 ```yaml
 - /var/run/docker.sock:/var/run/docker.sock
 ```

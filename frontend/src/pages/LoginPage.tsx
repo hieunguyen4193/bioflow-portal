@@ -17,7 +17,7 @@ export default function LoginPage() {
     try {
       const token = await login(username, password)
       setToken(token)
-      navigate('/')
+      navigate('/explore')
     } catch {
       toast.error('Invalid username or password')
     } finally {

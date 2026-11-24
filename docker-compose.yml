@@ -20,10 +20,7 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend:/app
-      - ${BIOFLOW_DATA_DIR}/uploads:${BIOFLOW_DATA_DIR}/uploads
-      - ${BIOFLOW_DATA_DIR}/results:${BIOFLOW_DATA_DIR}/results
       - ${BIOFLOW_DATA_DIR}/explore:/data/explore
-      - ${BIOFLOW_REPO_DIR}/nextflow:${BIOFLOW_REPO_DIR}/nextflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
@@ -34,20 +31,6 @@ services:
       PIPELINE_IMAGE: ${PIPELINE_IMAGE:-pipeline-portal/r-pipeline:latest}
       EXPLORE_DIR: /data/explore
       R_SCRIPTS_DIR: /app/app/r_scripts
-      # Nextflow (-profile docker) launches task containers via the host's
-      # docker.sock, so its work/output dirs must resolve to the same path
-      # on the host as they do inside this container — hence identity
-      # mounts above instead of the /data/* remap used for direct file I/O.
-      UPLOAD_DIR: ${BIOFLOW_DATA_DIR}/uploads
-      RESULTS_DIR: ${BIOFLOW_DATA_DIR}/results
-      # Same reasoning: pipeline assets under nextflow/pipelines/*/assets are
-      # staged into task workdirs as symlinks to this path, which must also
-      # resolve on the host.
-      NEXTFLOW_PIPELINES_DIR: ${BIOFLOW_REPO_DIR}/nextflow/pipelines
-      # pipelines.py reads READMEs straight off disk inside this container;
-      # its default ("/nextflow/pipelines") no longer exists now that the
-      # nextflow volume is identity-mounted above.
-      PIPELINES_BASE: ${BIOFLOW_REPO_DIR}/nextflow/pipelines
     depends_on:
       db:
         condition: service_healthy

@@ -19,14 +19,8 @@ export default function Layout() {
         <div className="flex items-center gap-6">
           <span className="font-bold text-lg tracking-tight">BioInfoLab</span>
           <nav className="flex gap-4 text-sm">
-            <NavLink to="/" end className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
-              Dashboard
-            </NavLink>
-            <NavLink to="/submit" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
-              Run Pipeline
-            </NavLink>
             <NavLink to="/explore" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>
-              Explore gene expression (Seurat)
+              Interactive data analysis
             </NavLink>
             {user?.is_admin && (
               <NavLink to="/admin" className={({ isActive }) => isActive ? 'underline' : 'opacity-80 hover:opacity-100'}>

@@ -4547,7 +4547,7 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
     <div className="flex items-center justify-center h-full min-h-[60vh]">
       <div className="space-y-6 w-full max-w-xl">
         <div className="text-center">
-          <h2 className="text-2xl font-semibold text-slate-700">Interactive Explorer</h2>
+          <h2 className="text-2xl font-semibold text-slate-700">Interactive data analysis</h2>
           <p className="text-slate-400 mt-2">Upload a Seurat .rds file or load a saved preset</p>
         </div>
 

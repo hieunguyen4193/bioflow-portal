@@ -3,11 +3,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.database import engine, Base
-from app.api import auth, files, jobs, pipelines, explore, admin
+from app.api import auth, explore, admin
 import app.models.user  # noqa: F401 – register ORM models
-import app.models.job   # noqa: F401
 import app.models.project_access  # noqa: F401
-import app.models.pipeline_access  # noqa: F401
 
 
 @asynccontextmanager
@@ -30,8 +28,5 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
-app.include_router(files.router)
-app.include_router(jobs.router)
-app.include_router(pipelines.router)
 app.include_router(explore.router)
 app.include_router(admin.router)

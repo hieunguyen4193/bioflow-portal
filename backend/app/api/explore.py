@@ -291,8 +291,7 @@ async def download_preset(
     Preset objects are often several GB, so the frontend points a plain <a href>
     at this endpoint and the browser streams the file to disk, instead of
     buffering it in memory as a blob. A plain link can't send an Authorization
-    header, so the JWT comes in as a query param (same scheme as job-output
-    downloads in jobs.py)."""
+    header, so the JWT comes in as a query param."""
     username = decode_token(token)
     if not username:
         raise HTTPException(401, "Invalid token")
@@ -1519,17 +1518,8 @@ async def cancel_module_score(task_id: str, current_user: User = Depends(get_cur
 # ── CellChat Analysis ─────────────────────────────────────────────────────────
 _cellchat_tasks: dict[str, dict] = {}
 
-CELLCHAT_RMD = os.environ.get(
-    "CELLCHAT_RMD",
-    "/nextflow/pipelines/cellchat/rmd/CellChat_single_analysis.Rmd",
-)
-HOST_CELLCHAT_RMD = os.environ.get(
-    "HOST_CELLCHAT_RMD",
-    os.path.join(
-        os.environ.get("HOST_DATA_DIR", "").replace("/data", ""),
-        "nextflow/pipelines/cellchat/rmd/CellChat_single_analysis.Rmd",
-    ),
-)
+# Lives next to the other R scripts, so it's already mounted into the R container.
+CELLCHAT_RMD = os.path.join(R_SCRIPTS, "CellChat_single_analysis.Rmd")
 
 # Serve rendered HTML files from the explore dir
 @router.get("/cellchat/html/{task_id}")
@@ -1557,13 +1547,10 @@ def _run_cellchat_background(task_id: str, rds_path: str, outdir: str, req: dict
     container_script = os.path.join(R_SCRIPTS, "run_cellchat.R")
     log_path = os.path.join(outdir, "run.log")
 
-    host_base = os.environ.get("HOST_DATA_DIR", "").rstrip("/").replace("/data", "")
-
     cmd = [
         "docker", "run", "--rm",
         "-v", f"{HOST_EXPLORE}:{EXPLORE_DIR}",
         "-v", f"{HOST_SCRIPTS}:{R_SCRIPTS}",
-        "-v", f"{host_base}/nextflow:/nextflow",
         DOCKER_IMAGE,
         "Rscript", "--vanilla", container_script,
         rds_path, outdir,
