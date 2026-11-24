@@ -4698,6 +4698,17 @@ function GuideTab() {
       ],
     },
     {
+      tab: 'Module Score',
+      icon: '🧩',
+      summary: 'Score every cell for one or more gene modules with Seurat\'s AddModuleScore, then view the scores as a heatmap, feature plot or violin plot.',
+      details: [
+        { label: 'Gene modules file', text: 'Upload a .csv, .xls or .xlsx file with one column per module: the column header is the module name and the cells below are gene symbols. "Download example CSV" gives a template. Modules with no genes present in the object are skipped.' },
+        { label: 'Ctrl genes', text: 'Number of control genes per expression bin used by AddModuleScore (default 50).' },
+        { label: 'Assay', text: 'Scores are computed on the assay selected in the sidebar.' },
+        { label: 'Views', text: 'Heatmap (mean score per group of the sidebar\'s "Colour by" column, z-scored per module), Feature Plot (score on the UMAP) and Violin Plot (score per group). Pick which modules to show in the Feature and Violin views.' },
+      ],
+    },
+    {
       tab: 'DGE — Clusters',
       icon: '📊',
       summary: 'Run FindAllMarkers to find marker genes for every cluster versus all other clusters.',
@@ -4737,14 +4748,17 @@ function GuideTab() {
     {
       tab: 'Sub-cluster',
       icon: '🔬',
-      summary: 'Subset the clusters currently selected in the sidebar and re-run normalisation, PCA, UMAP, and clustering on just those cells.',
+      summary: 'Subset the clusters currently selected in the sidebar and re-run normalisation, integration, PCA, UMAP, and clustering on just those cells.',
       details: [
         { label: 'Which cells', text: 'Uses the sidebar\'s "Colour by" column and "Subset clusters" checkboxes directly — pick the clusters there first, then switch to this tab and run.' },
         { label: 'Normalisation', text: 'LogNormalize (default) or SCTransform, with an optional comma-separated list of variables to regress out (e.g. percent.mt).' },
         { label: 'PCs / resolution', text: 'Number of principal components, how many of them feed UMAP vs. the neighbour graph, and the clustering resolution — all re-computed from scratch on the subset, independent of the original object\'s settings.' },
+        { label: 'Integration', text: 'If the object is integrated, the subset must be re-integrated too, otherwise the new UMAP and clusters are no longer batch-corrected. Choose None, CCA, RPCA, Harmony, or CCA + RPCA + Harmony (as in the pipeline). The tab detects the integrations the object already has (integrated.cca / integrated.rpca / harmony reductions), marks them "(detected)" and preselects them, and warns if you pick None on an integrated object.' },
+        { label: 'Sample column', text: 'The metadata column the integration is done over (default "name", the pipeline\'s sample column). The selected cells must come from at least two of its values.' },
         { label: 'Remove TCR/BCR genes', text: 'Excludes TRAV/TRBV/IGHV/IGLV gene families from the PCA feature set, same as the DGE tabs.' },
-        { label: 'Result', text: 'A live R log and elapsed timer show progress (this re-runs the full PCA/UMAP/clustering pipeline, so it can take a few minutes); when done, a preview UMAP shows the new cluster assignments and a "Download .rds" link saves the re-clustered Seurat object.' },
-        { label: 'Cached results', text: 'Every combination of clusters, normalisation, PCs, resolution, and TCR/BCR removal is cached against this Seurat object — the "Cached results" panel lists past runs so you can reload or download them instantly without re-running, or delete them to free up storage.' },
+        { label: 'Result', text: 'A live R log and elapsed timer show progress (this re-runs the full normalisation/PCA/UMAP/clustering steps, so it can take a few minutes). With one integration method (or none) the result has one "umap" and "seurat_clusters". With CCA + RPCA + Harmony, each method gets its own <method>_UMAP and <method>.cluster.<resolution> column, and the preview has UMAP and Colour by pickers. "Download .rds" saves the re-clustered Seurat object; "Save as preset" adds it to the preset library.' },
+        { label: 'Small subsets', text: 'RPCA needs enough anchors between samples. On very small subsets it can fail with "Number of anchor cells is less than k.weight"; use CCA or Harmony alone instead.' },
+        { label: 'Cached results', text: 'Every combination of clusters, normalisation, integration, sample column, PCs, resolution, and TCR/BCR removal is cached against this Seurat object — the "Cached results" panel lists past runs so you can reload or download them instantly without re-running, or delete them to free up storage.' },
       ],
     },
     {
