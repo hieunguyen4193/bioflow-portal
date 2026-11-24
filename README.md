@@ -44,6 +44,7 @@ The **Interactive data analysis** page is the main part of the app. It opens on 
 - **Upload** a Seurat `.rds` file by drag and drop.
 - **Load a preset**: pick a project, then a file. **Download** saves that preset's `.rds` file.
 - **Remote storage (Coscine / S3)**: a separate source on the start screen; see [Remote storage](#remote-storage-coscine--s3).
+- **DATA HUB**: browse a project's data products in the RWTH DATA HUB catalog; see [DATA HUB](#data-hub).
 
 The left sidebar holds the shared settings that most tabs use: reduction, assay and slot, "Colour by", "Split by", and the "Subset clusters" checkboxes. The tabs:
 
@@ -124,6 +125,28 @@ How it works:
 - A loaded file is copied once to `$BIOFLOW_DATA_DIR/explore/remote/<hash>/`. Later loads of the same file reuse that copy unless the remote file changed (ETag or size), and cached analysis results are kept with it.
 - BioInfoLab only reads from remote storage; it never writes back.
 - Only `https://` endpoints are accepted. To restrict which hosts users may connect to, set `REMOTE_S3_ALLOWED_HOSTS` (comma-separated host names) in the backend's environment.
+
+---
+
+## DATA HUB
+
+The start screen's **DATA HUB** tab browses the data products a project has registered in the [RWTH DATA HUB](https://datahub.tools.rpdm.rwth-aachen.de/api/docs) metadata catalog.
+
+1. Enter the project's **Public ID** or **Config ID**. A token is optional; DATA HUB serves product metadata without one.
+2. **Browse** lists the products, with search, domain and access filters. Click a product for its metadata and locations.
+3. A location that points to an S3 bucket shows **Browse files**. It opens the remote storage tab with the endpoint, bucket and folder filled in, and the file highlighted; enter the read keys there to load it. Other locations are shown as links.
+
+DATA HUB stores metadata only, never files or keys. For a product to be loadable, its location URL must point to the bucket. Recognised forms:
+
+| Location URL | Result |
+|---|---|
+| `https://global.datastorage.nrw/<bucket>/<folder>/<file>.rds` | Opens that folder, file highlighted (recommended) |
+| `https://global.datastorage.nrw/<bucket>/` | Opens the bucket |
+| `s3://<bucket>/<path>` | Opens the bucket on the default endpoint |
+| Coscine resource link `…/r/<resource-id>/…` | Opens the bucket named after the resource ID on the default endpoint |
+| Anything else | Shown as a web link only |
+
+Server settings (backend environment): `DATAHUB_BASE_URL` (default `https://datahub.tools.rpdm.rwth-aachen.de`) and `DATAHUB_S3_HOSTS`, the comma-separated hosts treated as path-style S3 (default `global.datastorage.nrw`).
 
 ---
 

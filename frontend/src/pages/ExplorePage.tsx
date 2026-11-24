@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, presetDownloadUrl, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, listRemote, startRemoteLoad, getRemoteLoadStatus, cancelRemoteLoad, RemoteCreds, RemoteListing, RemoteLoadStatus, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, SubclusterIntegration, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, presetDownloadUrl, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, listRemote, startRemoteLoad, getRemoteLoadStatus, cancelRemoteLoad, listDatahubProducts, DatahubProducts, DatahubProduct, DatahubS3Target, RemoteCreds, RemoteListing, RemoteLoadStatus, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, SubclusterIntegration, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -4502,12 +4502,23 @@ const CellChatTabMemo = memo(CellChatTab)
 
 // ── Upload screen ──────────────────────────────────────────────────────────────
 function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
-  const [source, setSource] = useState<'local' | 'remote'>(() => {
-    try { return sessionStorage.getItem('explore-source') === 'remote' ? 'remote' : 'local' } catch { return 'local' }
+  type Source = 'local' | 'remote' | 'datahub'
+  const [source, setSource] = useState<Source>(() => {
+    try {
+      const v = sessionStorage.getItem('explore-source')
+      return v === 'remote' || v === 'datahub' ? v : 'local'
+    } catch { return 'local' }
   })
-  function pickSource(s: 'local' | 'remote') {
+  const [remoteTarget, setRemoteTarget] = useState<DatahubS3Target | null>(null)
+  function pickSource(s: Source) {
     setSource(s)
+    if (s !== 'remote') setRemoteTarget(null)
     try { sessionStorage.setItem('explore-source', s) } catch { /* ignore */ }
+  }
+  function openInRemote(t: DatahubS3Target) {
+    setRemoteTarget(t)
+    setSource('remote')
+    try { sessionStorage.setItem('explore-source', 'remote') } catch { /* ignore */ }
   }
   return (
     <div className="flex items-center justify-center h-full min-h-[60vh]">
@@ -4518,7 +4529,7 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
         </div>
 
         <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-1 text-sm">
-          {([['local', 'Upload / presets'], ['remote', 'Remote storage (Coscine / S3)']] as const).map(([k, label]) => (
+          {([['local', 'Upload / presets'], ['remote', 'Remote storage (Coscine / S3)'], ['datahub', 'DATA HUB']] as const).map(([k, label]) => (
             <button key={k} onClick={() => pickSource(k)}
               className={`flex-1 rounded-md px-3 py-1.5 font-medium transition-colors ${source === k ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
               {label}
@@ -4526,7 +4537,12 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
           ))}
         </div>
 
-        {source === 'local' ? <LocalSourcePanel onLoad={onLoad} /> : <RemoteSourcePanel onLoad={onLoad} />}
+        {source === 'local' && <LocalSourcePanel onLoad={onLoad} />}
+        {source === 'remote' && (
+          <RemoteSourcePanel key={remoteTarget ? `${remoteTarget.bucket}/${remoteTarget.path}` : 'manual'}
+            onLoad={onLoad} target={remoteTarget} />
+        )}
+        {source === 'datahub' && <DatahubSourcePanel onOpenS3={openInRemote} />}
       </div>
     </div>
   )
@@ -4553,9 +4569,27 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 ** 3).toFixed(2)} GB`
 }
 
-function RemoteSourcePanel({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
+// Folder to open and file to highlight for a DATA HUB S3 location path.
+function splitS3Path(path: string): { folder: string; file: string | null } {
+  const p = path.replace(/^\/+/, '')
+  if (!p) return { folder: '', file: null }
+  if (p.endsWith('/')) return { folder: p, file: null }
+  const name = p.split('/').pop() ?? ''
+  if (name.includes('.')) return { folder: p.slice(0, p.length - name.length), file: p }
+  return { folder: p + '/', file: null }
+}
+
+function RemoteSourcePanel({ onLoad, target }: { onLoad: (m: SeuratMeta) => void; target?: DatahubS3Target | null }) {
   const saved = useMemo(readSavedCreds, [])
-  const [creds, setCreds] = useState<RemoteCreds>(saved.creds)
+  // Coming from DATA HUB: take endpoint + bucket from the location, and keep the
+  // saved keys only if they were saved for that same bucket.
+  const initial = useMemo<RemoteCreds>(() => {
+    if (!target) return saved.creds
+    const same = saved.creds.bucket === target.bucket && saved.creds.endpoint.replace(/:443\/?$|\/$/, '') === target.endpoint
+    return same ? saved.creds : { endpoint: target.endpoint, bucket: target.bucket, access_key: '', secret_key: '' }
+  }, [target, saved])
+  const start = useMemo(() => splitS3Path(target?.path ?? ''), [target])
+  const [creds, setCreds] = useState<RemoteCreds>(initial)
   const [remember, setRemember] = useState(saved.remember)
   const [showSecret, setShowSecret] = useState(false)
   const [listing, setListing] = useState<RemoteListing | null>(null)
@@ -4591,6 +4625,12 @@ function RemoteSourcePanel({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
       toast.error(e.response?.data?.detail || 'Could not list the bucket')
     } finally { setBrowsing(false) }
   }
+
+  // Arriving from DATA HUB with keys already saved for this bucket: go straight in.
+  useEffect(() => {
+    if (target && initial.access_key && initial.secret_key) browse(start.folder, initial)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Poll the download / read task.
   useEffect(() => {
@@ -4641,7 +4681,14 @@ function RemoteSourcePanel({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
   return (
     <div className="space-y-4">
       {!connected ? (
-        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (complete) browse('', creds) }}>
+        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (complete) browse(start.folder, creds) }}>
+          {target && (
+            <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
+              From DATA HUB: <span className="font-mono break-all">{target.bucket}/{target.path}</span>
+              {target.guessed && <span className="block mt-1 text-amber-700">The location didn't name an S3 endpoint, so the default is filled in. Change it if your resource lives elsewhere.</span>}
+              <span className="block mt-1">Enter the read keys for this bucket to browse it.</span>
+            </div>
+          )}
           <p className="text-xs text-slate-500">
             For a Coscine resource, the endpoint, bucket name and keys are on the resource's settings page.
             Use the <b>read</b> key pair; BioInfoLab never writes to remote storage.
@@ -4719,7 +4766,7 @@ function RemoteSourcePanel({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
             {listing?.files.map((f) => {
               const isRds = f.name.toLowerCase().endsWith('.rds')
               return (
-                <div key={f.key} className={`flex items-center gap-2 px-3 py-2 text-sm ${isRds ? '' : 'text-slate-400'}`}>
+                <div key={f.key} className={`flex items-center gap-2 px-3 py-2 text-sm ${isRds ? '' : 'text-slate-400'} ${f.key === start.file ? 'bg-amber-50' : ''}`}>
                   <span>{isRds ? '🧬' : '📄'}</span>
                   <span className="flex-1 truncate" title={f.key}>{f.name}</span>
                   <span className="shrink-0 text-xs text-slate-400">{fmtBytes(f.size)}</span>
@@ -4765,6 +4812,189 @@ function RemoteSourcePanel({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
           <p className="text-xs text-slate-400">
             A loaded file is copied to the server once and reused on later loads, as long as it hasn't changed remotely.
           </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── DATA HUB catalog browser ──────────────────────────────────────────────────
+const DATAHUB_KEY = 'explore-datahub'
+
+function DatahubSourcePanel({ onOpenS3 }: { onOpenS3: (t: DatahubS3Target) => void }) {
+  const saved = useMemo(() => {
+    try {
+      const v = localStorage.getItem(DATAHUB_KEY) ?? sessionStorage.getItem(DATAHUB_KEY)
+      if (v) return { ...JSON.parse(v), remember: localStorage.getItem(DATAHUB_KEY) !== null }
+    } catch { /* ignore */ }
+    return { project_id: '', id_kind: 'public', token: '', remember: false }
+  }, [])
+  const [projectId, setProjectId] = useState<string>(saved.project_id ?? '')
+  const [idKind, setIdKind] = useState<'public' | 'config'>(saved.id_kind === 'config' ? 'config' : 'public')
+  const [token, setToken] = useState<string>(saved.token ?? '')
+  const [remember, setRemember] = useState<boolean>(!!saved.remember)
+  const [data, setData] = useState<DatahubProducts | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [search, setSearch] = useState('')
+  const [domain, setDomain] = useState('')
+  const [access, setAccess] = useState('')
+  const [onlyS3, setOnlyS3] = useState(false)
+  const [open, setOpen] = useState<string | null>(null)
+
+  async function fetchProducts() {
+    if (!projectId.trim()) return
+    setLoading(true)
+    try {
+      const d = await listDatahubProducts(projectId.trim(), idKind, token.trim() || undefined)
+      setData(d); setOpen(null)
+      try {
+        const v = JSON.stringify({ project_id: projectId.trim(), id_kind: idKind, token: token.trim() })
+        if (remember) { localStorage.setItem(DATAHUB_KEY, v); sessionStorage.removeItem(DATAHUB_KEY) }
+        else { sessionStorage.setItem(DATAHUB_KEY, v); localStorage.removeItem(DATAHUB_KEY) }
+      } catch { /* ignore */ }
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Could not reach DATA HUB')
+    } finally { setLoading(false) }
+  }
+
+  const products = data?.products ?? []
+  const domains = useMemo(() => [...new Set(products.map((p) => p.domain).filter(Boolean))].sort(), [products])
+  const accesses = useMemo(() => [...new Set(products.map((p) => p.access).filter(Boolean))].sort(), [products])
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return products.filter((p) =>
+      (!domain || p.domain === domain) &&
+      (!access || p.access === access) &&
+      (!onlyS3 || p.locations.some((l) => l.s3)) &&
+      (!q || [p.name, p.description, p.format, p.modality, p.registry_id, p.id, ...p.keywords].join(' ').toLowerCase().includes(q)))
+  }, [products, search, domain, access, onlyS3])
+
+  const input = 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white disabled:opacity-50'
+  const accessColour = (a: string) =>
+    a === 'Open' ? 'bg-emerald-50 text-emerald-700' : a === 'Controlled' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'
+
+  return (
+    <div className="space-y-4">
+      <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); fetchProducts() }}>
+        <p className="text-xs text-slate-500">
+          Browse the data products a project registered in DATA HUB. DATA HUB holds the metadata only;
+          products with a Coscine / S3 location open in the remote storage browser, where you enter the read keys.
+        </p>
+        <div className="flex gap-2">
+          <select value={idKind} onChange={(e) => setIdKind(e.target.value as 'public' | 'config')} disabled={loading}
+            className="border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white disabled:opacity-50">
+            <option value="public">Public ID</option>
+            <option value="config">Config ID</option>
+          </select>
+          <input className={input + ' font-mono'} value={projectId} onChange={(e) => setProjectId(e.target.value)}
+            placeholder="Project ID" disabled={loading} />
+        </div>
+        <label className="block text-xs font-medium text-slate-600">Token <span className="font-normal text-slate-400">(optional; reading products normally needs none)</span>
+          <input className={input + ' mt-1 font-mono'} type="password" value={token} autoComplete="off"
+            onChange={(e) => setToken(e.target.value)} disabled={loading} />
+        </label>
+        <div className="flex items-center justify-between gap-3">
+          <label className="flex items-center gap-2 text-xs text-slate-500">
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            Remember on this browser
+          </label>
+          <button type="submit" disabled={!projectId.trim() || loading}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            {loading ? 'Loading…' : data ? 'Refresh' : 'Browse'}
+          </button>
+        </div>
+      </form>
+
+      {data && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <input className={input + ' flex-1 min-w-[10rem]'} placeholder="Search name, format, keywords…"
+              value={search} onChange={(e) => setSearch(e.target.value)} />
+            {domains.length > 0 && (
+              <select value={domain} onChange={(e) => setDomain(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
+                <option value="">All domains</option>
+                {domains.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            )}
+            {accesses.length > 0 && (
+              <select value={access} onChange={(e) => setAccess(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
+                <option value="">All access</option>
+                {accesses.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            )}
+          </div>
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={onlyS3} onChange={(e) => setOnlyS3(e.target.checked)} />
+              Only products with a Coscine / S3 location
+            </label>
+            <span>{shown.length} of {data.count}</span>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-[28rem] overflow-y-auto bg-white">
+            {shown.length === 0 && <p className="px-3 py-6 text-center text-sm text-slate-400">No matching data products.</p>}
+            {shown.map((p) => {
+              const isOpen = open === p.id
+              const hasS3 = p.locations.some((l) => l.s3)
+              return (
+                <div key={p.id}>
+                  <button onClick={() => setOpen(isOpen ? null : p.id)}
+                    className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-slate-50">
+                    <span className="mt-0.5 text-slate-400 text-xs">{isOpen ? '▾' : '▸'}</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-medium text-slate-700 truncate">{p.name}</span>
+                      <span className="block text-xs text-slate-400 truncate">
+                        {[p.format, p.modality, p.size_gb != null ? `${p.size_gb} GB` : ''].filter(Boolean).join(' · ')}
+                      </span>
+                    </span>
+                    {hasS3 && <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">S3</span>}
+                    {p.access && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${accessColour(p.access)}`}>{p.access}</span>}
+                  </button>
+                  {isOpen && (
+                    <div className="px-8 pb-3 space-y-3 text-xs text-slate-600">
+                      {p.description && <p className="whitespace-pre-line">{p.description}</p>}
+                      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                        {([
+                          ['ID', p.registry_id || p.id], ['Domain', p.domain], ['Status', p.status], ['Lifecycle', p.lifecycle],
+                          ['Version', p.version], ['Records', p.records != null ? String(p.records) : ''], ['License', p.license],
+                          ['Data steward', p.data_steward], ['Updated', p.updated], ['Access procedure', p.access_procedure],
+                        ] as const).filter(([, v]) => v).map(([k, v]) => (
+                          <Fragment key={k}><dt className="text-slate-400">{k}</dt><dd className="break-words">{v}</dd></Fragment>
+                        ))}
+                      </dl>
+                      {p.keywords.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {p.keywords.map((k) => <span key={k} className="rounded bg-slate-100 px-1.5 py-0.5">{k}</span>)}
+                        </div>
+                      )}
+                      <div className="space-y-1.5">
+                        <div className="font-medium text-slate-500">Locations</div>
+                        {p.locations.length === 0 && <p className="text-slate-400">None registered.</p>}
+                        {p.locations.map((l, i) => (
+                          <div key={i} className="flex items-center gap-2 rounded border border-slate-100 px-2 py-1.5">
+                            <span className="flex-1 min-w-0">
+                              <span className="block text-slate-700 truncate">{l.label || l.type || 'Location'}</span>
+                              {/^https?:\/\//i.test(l.url)
+                                ? <a href={l.url} target="_blank" rel="noopener noreferrer" className="block truncate text-indigo-600 hover:underline">{l.url}</a>
+                                : <span className="block truncate text-slate-400">{l.url}</span>}
+                            </span>
+                            {l.s3 ? (
+                              <button onClick={() => onOpenS3(l.s3!)}
+                                className="shrink-0 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-medium">
+                                Browse files
+                              </button>
+                            ) : (
+                              <span className="shrink-0 text-slate-400" title="This location is not an S3 bucket, so BioInfoLab can't open it directly">web link</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -4922,6 +5152,17 @@ function GuideTab() {
         { label: 'Browse & load', text: 'Click folders to browse; click Load next to an .rds file. The server downloads it (progress bar, Cancel) and opens it like an upload.' },
         { label: 'Reuse', text: 'The file is copied to the server once. Loading it again reuses that copy, and earlier cached results, unless the remote file has changed.' },
         { label: 'Keys', text: 'Keys are never stored on the server. The browser keeps them for this tab, or permanently if you tick "Remember on this browser"; "Forget keys" clears them.' },
+      ],
+    },
+    {
+      tab: 'DATA HUB',
+      icon: '🗂️',
+      summary: 'Browse the data products a project registered in the RWTH DATA HUB catalog, and open their Coscine / S3 locations.',
+      details: [
+        { label: 'Browse', text: 'On the start screen, pick "DATA HUB", enter the project\'s Public ID or Config ID and click Browse. A token is optional.' },
+        { label: 'Find', text: 'Search by name, format or keyword, filter by domain and access level, or show only products with a Coscine / S3 location.' },
+        { label: 'Open files', text: 'Click a product to see its metadata. "Browse files" on an S3 location opens the remote storage tab with the bucket and folder filled in; enter the read keys there and load the .rds.' },
+        { label: 'Web links', text: 'Locations that are not S3 buckets are shown as links only. Ask the data steward to add the S3 URL of the files (https://global.datastorage.nrw/<bucket>/<path>) as a location.' },
       ],
     },
     {

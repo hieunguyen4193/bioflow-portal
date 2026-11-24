@@ -94,6 +94,32 @@ export async function cancelRemoteLoad(task_id: string): Promise<void> {
   await api.post(`/explore/remote/load/${task_id}/cancel`)
 }
 
+// ── DATA HUB metadata catalog ─────────────────────────────────────────────────
+export interface DatahubS3Target { endpoint: string; bucket: string; path: string; guessed: boolean }
+
+export interface DatahubLocation {
+  type: string; label: string; url: string; access: string
+  s3: DatahubS3Target | null
+}
+
+export interface DatahubProduct {
+  id: string; registry_id: string; name: string; description: string
+  domain: string; modality: string; format: string; status: string; lifecycle: string
+  access: string; access_procedure: string; license: string; version: string
+  data_steward: string; updated: string; size_gb: number | null; records: number | null
+  keywords: string[]; imported: boolean; locations: DatahubLocation[]
+}
+
+export interface DatahubProducts {
+  project_id: string; id_kind: 'public' | 'config'; base_url: string
+  count: number; products: DatahubProduct[]
+}
+
+export async function listDatahubProducts(project_id: string, id_kind: 'public' | 'config', token?: string): Promise<DatahubProducts> {
+  const { data } = await api.post<DatahubProducts>('/explore/datahub/products', { project_id, id_kind, token: token || null }, { timeout: 60000 })
+  return data
+}
+
 export async function uploadRds(file: File): Promise<SeuratMeta> {
   const form = new FormData()
   form.append('file', file)

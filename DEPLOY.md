@@ -96,6 +96,14 @@ REMOTE_S3_ALLOWED_HOSTS: global.datastorage.nrw
 ```
 The backend must reach the endpoint over the network (port 443).
 
+### Optional: DATA HUB settings
+
+The DATA HUB tab reads from `https://datahub.tools.rpdm.rwth-aachen.de` by default. To use another DATA HUB instance, or to treat more hosts as S3 storage in product locations, set these in the `backend` service's `environment:`:
+```yaml
+DATAHUB_BASE_URL: https://datahub.tools.rpdm.rwth-aachen.de
+DATAHUB_S3_HOSTS: global.datastorage.nrw
+```
+
 ---
 
 ## 4 — Build the R image

@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.database import engine, Base
-from app.api import auth, explore, admin, remote_storage
+from app.api import auth, explore, admin, remote_storage, datahub
 import app.models.user  # noqa: F401 – register ORM models
 import app.models.project_access  # noqa: F401
 
@@ -31,3 +31,4 @@ app.include_router(auth.router)
 app.include_router(explore.router)
 app.include_router(admin.router)
 app.include_router(remote_storage.router)
+app.include_router(datahub.router)
