@@ -41,6 +41,7 @@ What ends up in it:
 $BIOFLOW_DATA_DIR/explore/
 ├── presets/<project>/<name>.rds   ← preset objects, one folder per project
 ├── <uuid>.rds                     ← objects users uploaded
+├── remote/<hash>/<name>.rds       ← local copies of files loaded from remote S3 storage (Coscine)
 └── .dge_cache_*, .subcluster_cache_*, module_score_*, …   ← cached analysis results
 ```
 
@@ -86,6 +87,14 @@ SECRET_KEY=<paste generated key here>
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=10080
 ```
+
+### Optional: restrict remote storage hosts
+
+Users can load `.rds` files from S3-compatible storage such as Coscine (see the README). Any `https://` endpoint is allowed by default. To allow only specific hosts, add this to the `backend` service's `environment:` in `docker-compose.yml`:
+```yaml
+REMOTE_S3_ALLOWED_HOSTS: global.datastorage.nrw
+```
+The backend must reach the endpoint over the network (port 443).
 
 ---
 
@@ -259,6 +268,11 @@ The backend starts the R analyses as sibling containers. Confirm this volume is 
 
 ### CellChat report is blank / "Open in new tab" shows nothing
 Open the app on port 5173, not 8000. The report is fetched through the frontend's `/api` proxy.
+
+### Remote storage: "Access denied" or "Could not connect"
+"Access denied" means the access key or secret key is wrong, or the key has no read permission on that bucket. "Could not connect" means the backend container can't reach the endpoint; check with `docker compose exec backend curl -sI https://global.datastorage.nrw`.
+
+Files loaded from remote storage are kept under `$BIOFLOW_DATA_DIR/explore/remote/`. Delete folders there to free disk space; they are downloaded again on the next load.
 
 ### Permission denied on the data directory
 The R containers write results into `$BIOFLOW_DATA_DIR/explore`. Make the directory writable for the user the containers run as, for example with a shared group:

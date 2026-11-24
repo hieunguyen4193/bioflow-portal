@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Plot from 'react-plotly.js'
 import toast from 'react-hot-toast'
-import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, presetDownloadUrl, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, SubclusterIntegration, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
+import { uploadRds, getGeneExpression, startDGE, getDgeStatus, cancelDGE, listDgeCache, loadDgeCacheEntry, deleteDgeCacheEntry, listPresets, loadPreset, presetDownloadUrl, startPathwayAnalysis, getPathwayResult, cancelPathwayAnalysis, startCellChat, getCellChatStatus, cancelCellChat, getCacheStatus, startCacheBuild, listExprCache, deleteExprCache, startSubcluster, getSubclusterStatus, cancelSubcluster, listSubclusterCache, loadSubclusterCacheEntry, deleteSubclusterCacheEntry, downloadSubclusterRds, saveSubclusterAsPreset, fetchCellChatReport, startModuleScore, getModuleScoreStatus, cancelModuleScore, startRecluster, getReclusterStatus, cancelRecluster, listPathwayCache, loadPathwayCacheEntry, deletePathwayCacheEntry, listRemote, startRemoteLoad, getRemoteLoadStatus, cancelRemoteLoad, RemoteCreds, RemoteListing, RemoteLoadStatus, SeuratMeta, DGEResult, DgeCacheEntry, PresetProject, SubclusterResult, SubclusterCacheEntry, SubclusterIntegration, ReclusterResult, PathwayCacheEntry, ExprCacheEntry } from '../api/explore'
 
 // ── Colour scales ──────────────────────────────────────────────────────────────
 const CAT_COLORS = [
@@ -4502,6 +4502,276 @@ const CellChatTabMemo = memo(CellChatTab)
 
 // ── Upload screen ──────────────────────────────────────────────────────────────
 function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
+  const [source, setSource] = useState<'local' | 'remote'>(() => {
+    try { return sessionStorage.getItem('explore-source') === 'remote' ? 'remote' : 'local' } catch { return 'local' }
+  })
+  function pickSource(s: 'local' | 'remote') {
+    setSource(s)
+    try { sessionStorage.setItem('explore-source', s) } catch { /* ignore */ }
+  }
+  return (
+    <div className="flex items-center justify-center h-full min-h-[60vh]">
+      <div className="space-y-6 w-full max-w-xl">
+        <div className="text-center">
+          <h2 className="text-2xl font-semibold text-slate-700">Interactive data analysis</h2>
+          <p className="text-slate-400 mt-2">Load a Seurat .rds object to start</p>
+        </div>
+
+        <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-1 text-sm">
+          {([['local', 'Upload / presets'], ['remote', 'Remote storage (Coscine / S3)']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => pickSource(k)}
+              className={`flex-1 rounded-md px-3 py-1.5 font-medium transition-colors ${source === k ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {source === 'local' ? <LocalSourcePanel onLoad={onLoad} /> : <RemoteSourcePanel onLoad={onLoad} />}
+      </div>
+    </div>
+  )
+}
+
+// ── Remote S3 storage (Coscine RDS-S3, any S3-compatible endpoint) ─────────────
+const REMOTE_CREDS_KEY = 'explore-remote-creds'
+const EMPTY_CREDS: RemoteCreds = { endpoint: 'https://global.datastorage.nrw', bucket: '', access_key: '', secret_key: '' }
+
+function readSavedCreds(): { creds: RemoteCreds; remember: boolean } {
+  try {
+    const local = localStorage.getItem(REMOTE_CREDS_KEY)
+    if (local) return { creds: { ...EMPTY_CREDS, ...JSON.parse(local) }, remember: true }
+    const sess = sessionStorage.getItem(REMOTE_CREDS_KEY)
+    if (sess) return { creds: { ...EMPTY_CREDS, ...JSON.parse(sess) }, remember: false }
+  } catch { /* ignore */ }
+  return { creds: EMPTY_CREDS, remember: false }
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`
+  return `${(n / 1024 ** 3).toFixed(2)} GB`
+}
+
+function RemoteSourcePanel({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
+  const saved = useMemo(readSavedCreds, [])
+  const [creds, setCreds] = useState<RemoteCreds>(saved.creds)
+  const [remember, setRemember] = useState(saved.remember)
+  const [showSecret, setShowSecret] = useState(false)
+  const [listing, setListing] = useState<RemoteListing | null>(null)
+  const [connected, setConnected] = useState<RemoteCreds | null>(null)
+  const [browsing, setBrowsing] = useState(false)
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const [progress, setProgress] = useState<RemoteLoadStatus | null>(null)
+  const onLoadRef = useRef(onLoad)
+  onLoadRef.current = onLoad
+
+  const complete = creds.endpoint.trim() && creds.bucket.trim() && creds.access_key.trim() && creds.secret_key.trim()
+
+  function persist(c: RemoteCreds, rem: boolean) {
+    try {
+      if (rem) { localStorage.setItem(REMOTE_CREDS_KEY, JSON.stringify(c)); sessionStorage.removeItem(REMOTE_CREDS_KEY) }
+      else { sessionStorage.setItem(REMOTE_CREDS_KEY, JSON.stringify(c)); localStorage.removeItem(REMOTE_CREDS_KEY) }
+    } catch { /* ignore */ }
+  }
+
+  function forget() {
+    try { localStorage.removeItem(REMOTE_CREDS_KEY); sessionStorage.removeItem(REMOTE_CREDS_KEY) } catch { /* ignore */ }
+    setCreds(EMPTY_CREDS); setRemember(false); setListing(null); setConnected(null)
+  }
+
+  async function browse(prefix: string, c: RemoteCreds = connected ?? creds) {
+    setBrowsing(true)
+    try {
+      const l = await listRemote(c, prefix)
+      setListing(l)
+      setConnected(c)
+      persist(c, remember)
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Could not list the bucket')
+    } finally { setBrowsing(false) }
+  }
+
+  // Poll the download / read task.
+  useEffect(() => {
+    if (!taskId) return
+    let stopped = false
+    const tick = async () => {
+      try {
+        const st = await getRemoteLoadStatus(taskId)
+        if (stopped) return
+        setProgress(st)
+        if (st.status === 'done' && st.result) {
+          setTaskId(null)
+          toast.success('Object loaded!')
+          onLoadRef.current(st.result)
+          return
+        }
+        if (st.status === 'error' || st.status === 'cancelled') {
+          setTaskId(null)
+          if (st.status === 'error') toast.error(st.error || 'Loading failed')
+          return
+        }
+        setTimeout(tick, 1000)
+      } catch (e: any) {
+        if (stopped) return
+        setTaskId(null)
+        toast.error(e.response?.data?.detail || 'Lost track of the download')
+      }
+    }
+    tick()
+    return () => { stopped = true }
+  }, [taskId])
+
+  async function loadFile(key: string) {
+    if (!connected) return
+    try {
+      setProgress(null)
+      const { task_id } = await startRemoteLoad(connected, key)
+      setTaskId(task_id)
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Could not start loading')
+    }
+  }
+
+  const busy = browsing || taskId !== null
+  const crumbs = listing ? listing.prefix.split('/').filter(Boolean) : []
+  const input = 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white disabled:opacity-50'
+
+  return (
+    <div className="space-y-4">
+      {!connected ? (
+        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (complete) browse('', creds) }}>
+          <p className="text-xs text-slate-500">
+            For a Coscine resource, the endpoint, bucket name and keys are on the resource's settings page.
+            Use the <b>read</b> key pair; BioInfoLab never writes to remote storage.
+          </p>
+          <label className="block text-xs font-medium text-slate-600">Endpoint
+            <input className={input + ' mt-1'} value={creds.endpoint} disabled={busy}
+              onChange={(e) => setCreds({ ...creds, endpoint: e.target.value })} placeholder="https://global.datastorage.nrw" />
+          </label>
+          <label className="block text-xs font-medium text-slate-600">Bucket name
+            <input className={input + ' mt-1 font-mono'} value={creds.bucket} disabled={busy}
+              onChange={(e) => setCreds({ ...creds, bucket: e.target.value })} placeholder="cc010390-…" />
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block text-xs font-medium text-slate-600">Access key
+              <input className={input + ' mt-1 font-mono'} value={creds.access_key} disabled={busy} autoComplete="off"
+                onChange={(e) => setCreds({ ...creds, access_key: e.target.value })} />
+            </label>
+            <label className="block text-xs font-medium text-slate-600">Secret key
+              <div className="relative mt-1">
+                <input className={input + ' font-mono pr-14'} type={showSecret ? 'text' : 'password'} value={creds.secret_key}
+                  disabled={busy} autoComplete="off" onChange={(e) => setCreds({ ...creds, secret_key: e.target.value })} />
+                <button type="button" onClick={() => setShowSecret(!showSecret)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600">
+                  {showSecret ? 'Hide' : 'Show'}
+                </button>
+              </div>
+            </label>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <label className="flex items-center gap-2 text-xs text-slate-500">
+              <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+              Remember on this browser
+            </label>
+            <button type="submit" disabled={!complete || busy}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              {browsing ? 'Connecting…' : 'Connect'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="truncate text-slate-500" title={`${connected.endpoint} · ${connected.bucket}`}>
+              Connected to <span className="font-mono text-slate-700">{connected.bucket}</span>
+            </span>
+            <div className="flex shrink-0 gap-3">
+              <button disabled={busy} onClick={() => { setConnected(null); setListing(null) }} className="text-indigo-600 hover:underline disabled:opacity-40">Change</button>
+              <button disabled={busy} onClick={forget} className="text-slate-400 hover:text-red-600 disabled:opacity-40">Forget keys</button>
+            </div>
+          </div>
+
+          {/* Breadcrumbs */}
+          <div className="flex flex-wrap items-center gap-1 text-sm">
+            <button disabled={busy} onClick={() => browse('')} className="text-indigo-600 hover:underline disabled:opacity-50">bucket</button>
+            {crumbs.map((c, i) => (
+              <span key={i} className="flex items-center gap-1">
+                <span className="text-slate-300">/</span>
+                <button disabled={busy} onClick={() => browse(crumbs.slice(0, i + 1).join('/') + '/')}
+                  className="text-indigo-600 hover:underline disabled:opacity-50">{c}</button>
+              </span>
+            ))}
+            {browsing && <span className="ml-2 text-xs text-slate-400 animate-pulse">loading…</span>}
+          </div>
+
+          <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-80 overflow-y-auto bg-white">
+            {listing && listing.folders.length === 0 && listing.files.length === 0 && (
+              <p className="px-3 py-6 text-center text-sm text-slate-400">This folder is empty.</p>
+            )}
+            {listing?.folders.map((f) => (
+              <button key={f.prefix} disabled={busy} onClick={() => browse(f.prefix)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-50">
+                <span>📁</span><span className="truncate">{f.name}</span>
+              </button>
+            ))}
+            {listing?.files.map((f) => {
+              const isRds = f.name.toLowerCase().endsWith('.rds')
+              return (
+                <div key={f.key} className={`flex items-center gap-2 px-3 py-2 text-sm ${isRds ? '' : 'text-slate-400'}`}>
+                  <span>{isRds ? '🧬' : '📄'}</span>
+                  <span className="flex-1 truncate" title={f.key}>{f.name}</span>
+                  <span className="shrink-0 text-xs text-slate-400">{fmtBytes(f.size)}</span>
+                  {isRds && (
+                    <button disabled={busy} onClick={() => loadFile(f.key)}
+                      className="shrink-0 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded disabled:opacity-40">
+                      Load
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          {listing?.truncated && <p className="text-xs text-amber-600">Only the first 5000 entries are shown.</p>}
+
+          {taskId && (
+            <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs text-indigo-800">
+                <span className="truncate">
+                  {progress?.phase === 'reading'
+                    ? (progress.from_cache ? 'Already downloaded. Reading Seurat object…' : 'Reading Seurat object…')
+                    : `Downloading ${progress?.key.split('/').pop() ?? ''}…`}
+                </span>
+                {progress?.phase !== 'reading' && (
+                  <button onClick={() => taskId && cancelRemoteLoad(taskId)} className="shrink-0 ml-2 text-indigo-600 hover:text-red-600">Cancel</button>
+                )}
+              </div>
+              {progress?.phase !== 'reading' ? (
+                <>
+                  <div className="h-2 rounded bg-indigo-100 overflow-hidden">
+                    <div className="h-full bg-indigo-500 transition-all"
+                      style={{ width: `${progress?.bytes_total ? Math.min(100, (100 * progress.bytes_done) / progress.bytes_total) : 0}%` }} />
+                  </div>
+                  <p className="text-xs text-indigo-700">
+                    {fmtBytes(progress?.bytes_done ?? 0)}{progress?.bytes_total ? ` of ${fmtBytes(progress.bytes_total)}` : ''}
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-indigo-700 animate-pulse">This can take a minute for large objects.</p>
+              )}
+            </div>
+          )}
+          <p className="text-xs text-slate-400">
+            A loaded file is copied to the server once and reused on later loads, as long as it hasn't changed remotely.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LocalSourcePanel({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
   const [loading, setLoading] = useState(false)
   const [loadingPreset, setLoadingPreset] = useState<string | null>(null)
 
@@ -4544,13 +4814,7 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
   const anyLoading = loading || loadingPreset !== null
 
   return (
-    <div className="flex items-center justify-center h-full min-h-[60vh]">
-      <div className="space-y-6 w-full max-w-xl">
-        <div className="text-center">
-          <h2 className="text-2xl font-semibold text-slate-700">Interactive data analysis</h2>
-          <p className="text-slate-400 mt-2">Upload a Seurat .rds file or load a saved preset</p>
-        </div>
-
+      <div className="space-y-6">
         {/* Drop zone */}
         <div {...getRootProps()} className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors
           ${isDragActive ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-300 hover:bg-slate-50'}
@@ -4643,13 +4907,23 @@ function UploadScreen({ onLoad }: { onLoad: (m: SeuratMeta) => void }) {
           </p>
         )}
       </div>
-    </div>
   )
 }
 
 // ── Guide Tab ─────────────────────────────────────────────────────────────────
 function GuideTab() {
   const sections = [
+    {
+      tab: 'Remote storage (Coscine / S3)',
+      icon: '☁️',
+      summary: 'Load a Seurat .rds file from an S3 bucket, such as a Coscine RDS-S3 resource, instead of uploading it.',
+      details: [
+        { label: 'Connect', text: 'On the start screen, pick "Remote storage (Coscine / S3)" and enter the endpoint, bucket name and the read access key and secret key from the Coscine resource settings.' },
+        { label: 'Browse & load', text: 'Click folders to browse; click Load next to an .rds file. The server downloads it (progress bar, Cancel) and opens it like an upload.' },
+        { label: 'Reuse', text: 'The file is copied to the server once. Loading it again reuses that copy, and earlier cached results, unless the remote file has changed.' },
+        { label: 'Keys', text: 'Keys are never stored on the server. The browser keeps them for this tab, or permanently if you tick "Remember on this browser"; "Forget keys" clears them.' },
+      ],
+    },
     {
       tab: 'UMAP',
       icon: '🔵',

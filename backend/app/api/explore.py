@@ -497,11 +497,21 @@ async def upload_rds(file: UploadFile = File(...), current_user: User = Depends(
     with open(rds_path, "wb") as f:
         f.write(content)
 
+    data = open_rds_session(rds_path, file.filename or os.path.basename(rds_path),
+                            current_user.id, session_id=session_id)
+    return JSONResponse(data)
+
+
+def open_rds_session(rds_path: str, label: str, owner_id: str,
+                     session_id: Optional[str] = None) -> dict:
+    """Register a session for an .rds already on local disk, read its metadata
+    and start building the expression cache. Used by uploads and remote-storage
+    loads. Raises HTTPException if the R extraction fails."""
+    session_id = session_id or str(uuid.uuid4())
+    data = _run_r("extract_seurat.R", [rds_path], timeout=600)
     _sessions[session_id] = rds_path
-    _session_labels[session_id] = file.filename or os.path.basename(rds_path)
-    _session_owners[session_id] = current_user.id
-    cache_base = _cache_base_for(rds_path)
-    data = _run_r("extract_seurat.R", [rds_path], timeout=180)
+    _session_labels[session_id] = label
+    _session_owners[session_id] = owner_id
     data["session_id"] = session_id
     data["dge_cache"] = _list_dge_cache(rds_path)
     data["subcluster_cache"] = _list_subcluster_cache(rds_path)
@@ -511,10 +521,10 @@ async def upload_rds(file: UploadFile = File(...), current_user: User = Depends(
     if default_assay:
         threading.Thread(
             target=_build_expr_cache_bg,
-            args=(rds_path, cache_base, default_assay, "data"),
+            args=(rds_path, _cache_base_for(rds_path), default_assay, "data"),
             daemon=True,
         ).start()
-    return JSONResponse(data)
+    return data
 
 
 # ── Gene expression ─────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ export interface SeuratMeta {
   pathway_cache?: PathwayCacheEntry[]
   preset_project?: string   // set only when the session was loaded from a preset
   preset_name?:    string
+  remote_source?:  { endpoint: string; bucket: string; key: string }  // set when loaded from remote S3 storage
 }
 
 export interface PresetFile {
@@ -45,6 +46,52 @@ export function presetDownloadUrl(project: string, filename: string): string {
   const token = localStorage.getItem('token') ?? ''
   const q = new URLSearchParams({ project, filename, token })
   return `/api/explore/presets/download?${q.toString()}`
+}
+
+// ── Remote S3 storage (e.g. Coscine) ─────────────────────────────────────────
+// Credentials are sent with each request and never stored on the server.
+export interface RemoteCreds {
+  endpoint:   string
+  bucket:     string
+  access_key: string
+  secret_key: string
+}
+
+export interface RemoteListing {
+  prefix:    string
+  folders:   { prefix: string; name: string }[]
+  files:     { key: string; name: string; size: number; last_modified: string }[]
+  truncated: boolean
+}
+
+export interface RemoteLoadStatus {
+  status:      'running' | 'done' | 'error' | 'cancelled'
+  phase:       'downloading' | 'reading' | 'done'
+  bytes_done:  number
+  bytes_total: number | null
+  from_cache:  boolean
+  key:         string
+  error:       string | null
+  result?:     SeuratMeta
+}
+
+export async function listRemote(creds: RemoteCreds, prefix: string): Promise<RemoteListing> {
+  const { data } = await api.post<RemoteListing>('/explore/remote/list', { ...creds, prefix }, { timeout: 120000 })
+  return data
+}
+
+export async function startRemoteLoad(creds: RemoteCreds, key: string): Promise<{ task_id: string }> {
+  const { data } = await api.post('/explore/remote/load/start', { ...creds, key })
+  return data
+}
+
+export async function getRemoteLoadStatus(task_id: string): Promise<RemoteLoadStatus> {
+  const { data } = await api.get<RemoteLoadStatus>(`/explore/remote/load/${task_id}`)
+  return data
+}
+
+export async function cancelRemoteLoad(task_id: string): Promise<void> {
+  await api.post(`/explore/remote/load/${task_id}/cancel`)
 }
 
 export async function uploadRds(file: File): Promise<SeuratMeta> {

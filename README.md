@@ -43,6 +43,7 @@ The **Interactive data analysis** page is the main part of the app. It opens on 
 
 - **Upload** a Seurat `.rds` file by drag and drop.
 - **Load a preset**: pick a project, then a file. **Download** saves that preset's `.rds` file.
+- **Remote storage (Coscine / S3)**: a separate source on the start screen; see [Remote storage](#remote-storage-coscine--s3).
 
 The left sidebar holds the shared settings that most tabs use: reduction, assay and slot, "Colour by", "Split by", and the "Subset clusters" checkboxes. The tabs:
 
@@ -107,6 +108,22 @@ $BIOFLOW_DATA_DIR/explore/presets/<project>/<name>.rds
 ```
 
 To add one, copy an `.rds` file into a project folder, or use **Save as preset** on a Sub-cluster result. Users only see the projects they have access to (see below).
+
+---
+
+## Remote storage (Coscine / S3)
+
+The start screen's **Remote storage (Coscine / S3)** tab browses any S3-compatible bucket, such as a Coscine RDS-S3 resource, and loads `.rds` files from it.
+
+1. Enter the endpoint (default `https://global.datastorage.nrw`), bucket name, access key and secret key. For Coscine these are on the resource's settings page; use the **read** key pair.
+2. **Connect**, browse folders, and click **Load** next to an `.rds` file.
+3. The server downloads the file (with a progress bar and Cancel) and then opens it like an upload.
+
+How it works:
+- Keys are sent with each request and are never stored on the server. The browser keeps them for the tab session, or in local storage if you tick "Remember on this browser". "Forget keys" clears them.
+- A loaded file is copied once to `$BIOFLOW_DATA_DIR/explore/remote/<hash>/`. Later loads of the same file reuse that copy unless the remote file changed (ETag or size), and cached analysis results are kept with it.
+- BioInfoLab only reads from remote storage; it never writes back.
+- Only `https://` endpoints are accepted. To restrict which hosts users may connect to, set `REMOTE_S3_ALLOWED_HOSTS` (comma-separated host names) in the backend's environment.
 
 ---
 
